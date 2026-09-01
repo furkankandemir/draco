@@ -1,0 +1,780 @@
+using UnityEngine;
+using UnityEngine.UI;
+using System.Collections;
+using System.Collections.Generic;
+
+namespace EntropyOnline.UI
+{
+    /// <summary>
+    /// Entropy Online — Auto Attack Settings (Genie) Arayüz Paneli
+    /// Birebir referans görseline uygun, sol ortada açılan orta çağ RPG temalı arayüz.
+    /// </summary>
+    public class KOMobileAutoAttackSettingsUI : MonoBehaviour
+    {
+        public static KOMobileAutoAttackSettingsUI Instance { get; private set; }
+
+        private Font _uiFont;
+        private Dictionary<string, Sprite> _spriteCache = new Dictionary<string, Sprite>();
+
+        // Slot listeleri
+        private Image[] _attackSlots = new Image[12]; // 0-11
+        private int[] _attackSkillIds = new int[12];
+
+        private Image[] _buffSlots = new Image[12];   // 12-23
+        private int[] _buffSkillIds = new int[12];
+        private int[] _buffItemIds = new int[12];     // HP-AC Buff slotları hem skill hem item kabul eder (Scroll vb.)
+
+        private Image _hpPotSlot;                    // 24
+        private int _hpPotItemId;
+        private Image _mpPotSlot;                    // 25
+        private int _mpPotItemId;
+
+        // Ayar değerleri
+        public float AttackRange = 40f;
+        public float RecoveryThreshold = 80f;
+        public float HpPotThreshold = 80f;
+        public float MpPotThreshold = 80f;
+
+        public bool BasicAttackEnabled = true;
+        public bool AutoGenieEnabled = true;
+        public bool FollowLeaderEnabled = false;
+        public bool SkillInOrderEnabled = false;
+        public int[] AttackSkillIds => _attackSkillIds;
+        public int[] BuffSkillIds => _buffSkillIds;
+        public int[] BuffItemIds => _buffItemIds;
+        public int HpPotItemId => _hpPotItemId;
+        public int MpPotItemId => _mpPotItemId;
+
+        private void Awake()
+        {
+            Instance = this;
+
+            // Panel RectTransform ayarları (Ekranın Sol Ortasına Hizalama)
+            var rect = GetComponent<RectTransform>();
+            if (rect == null) rect = gameObject.AddComponent<RectTransform>();
+
+            rect.anchorMin = new Vector2(0, 0.5f);
+            rect.anchorMax = new Vector2(0, 0.5f);
+            rect.pivot = new Vector2(0, 0.5f);
+            rect.anchoredPosition = new Vector2(15, 0); // Soldan 15px içeride
+            rect.sizeDelta = new Vector2(320, 520);    // Son derece kompakt ve şık boyut
+        }
+
+        private void Start()
+        {
+            _uiFont = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            if (_uiFont == null) _uiFont = Resources.GetBuiltinResource<Font>("Arial.ttf");
+
+            CreatePanelLayout();
+        }
+
+        private void CreatePanelLayout()
+        {
+            // Panel Arka Planı (Yumuşak köşe yuvarlatmalı koyu RPG teması)
+            var bgImg = gameObject.AddComponent<Image>();
+            bgImg.sprite = GetRoundedRectSprite("settings_bg", 320, 520, 12, new Color(0.06f, 0.06f, 0.06f, 0.98f), new Color(0.45f, 0.35f, 0.15f, 1), 2);
+
+            // Dikey Düzen Grubu (Vertical Layout Group)
+            var vlg = gameObject.AddComponent<VerticalLayoutGroup>();
+            vlg.spacing = 8f;
+            vlg.padding = new RectOffset(10, 10, 10, 10);
+            vlg.childAlignment = TextAnchor.UpperCenter;
+            vlg.childControlWidth = true;
+            vlg.childControlHeight = false;
+            vlg.childForceExpandWidth = true;
+            vlg.childForceExpandHeight = false;
+
+            // 1. BAŞLIK & KAPATMA BUTONU
+            var headerRow = CreateSubContainer("HeaderRow", 30f);
+            var titleObj = new GameObject("Title", typeof(RectTransform));
+            titleObj.transform.SetParent(headerRow.transform, false);
+            var titleRect = titleObj.GetComponent<RectTransform>();
+            titleRect.anchorMin = new Vector2(0, 0);
+            titleRect.anchorMax = new Vector2(0.85f, 1);
+            titleRect.offsetMin = Vector2.zero;
+            titleRect.offsetMax = Vector2.zero;
+
+            var titleTxt = titleObj.AddComponent<Text>();
+            titleTxt.font = _uiFont;
+            titleTxt.fontSize = 11;
+            titleTxt.fontStyle = FontStyle.Bold;
+            titleTxt.alignment = TextAnchor.MiddleLeft;
+            titleTxt.color = new Color(0.9f, 0.75f, 0.25f);
+            titleTxt.text = "AUTO ATTACK SETTINGS";
+            AddTextShadow(titleObj);
+
+            // Kapatma (X) Butonu
+            var closeObj = new GameObject("CloseBtn", typeof(RectTransform));
+            closeObj.transform.SetParent(headerRow.transform, false);
+            var closeRect = closeObj.GetComponent<RectTransform>();
+            closeRect.anchorMin = new Vector2(0.85f, 0.5f);
+            closeRect.anchorMax = new Vector2(1f, 0.5f);
+            closeRect.pivot = new Vector2(1, 0.5f);
+            closeRect.anchoredPosition = Vector2.zero;
+            closeRect.sizeDelta = new Vector2(20, 20);
+
+            var closeImg = closeObj.AddComponent<Image>();
+            closeImg.sprite = GetRoundedRectSprite("close_btn_bg", 20, 20, 4, new Color(0.18f, 0.18f, 0.18f, 1), new Color(0.45f, 0.35f, 0.15f, 1), 1);
+
+            var closeTxtObj = new GameObject("Text", typeof(RectTransform));
+            closeTxtObj.transform.SetParent(closeObj.transform, false);
+            StretchUI(closeTxtObj);
+            var closeTxt = closeTxtObj.AddComponent<Text>();
+            closeTxt.font = _uiFont;
+            closeTxt.fontSize = 12;
+            closeTxt.fontStyle = FontStyle.Bold;
+            closeTxt.alignment = TextAnchor.MiddleCenter;
+            closeTxt.color = new Color(0.85f, 0.85f, 0.7f);
+            closeTxt.text = "X";
+            AddTextShadow(closeTxtObj);
+
+            var closeBtn = closeObj.AddComponent<Button>();
+            closeBtn.onClick.AddListener(() => {
+                gameObject.SetActive(false);
+            });
+
+            // Yatay ayırıcı şerit (Horizontal Divider)
+            var dividerObj = new GameObject("HeaderDivider", typeof(RectTransform));
+            dividerObj.transform.SetParent(gameObject.transform, false);
+            var divRect = dividerObj.GetComponent<RectTransform>();
+            divRect.sizeDelta = new Vector2(0, 2); // 2px yükseklik
+            var divImg = dividerObj.AddComponent<Image>();
+            divImg.sprite = GetRoundedRectSprite("header_divider", 300, 2, 0, new Color(0.45f, 0.35f, 0.15f, 0.4f), Color.clear, 0);
+
+            // 2. ATTACK & DEBUFF BAŞLIĞI & SLOTLARI
+            CreateSectionHeader("ATTACK & DEBUFF");
+            var attackGrid = CreateGridContainer("AttackGrid", 72f);
+            for (int i = 0; i < 12; i++)
+            {
+                _attackSlots[i] = CreateSlot(attackGrid.transform, i + 1, i);
+            }
+
+            // 3. HEAL & BUFFS (HP-AC) BAŞLIĞI & SLOTLARI
+            CreateSectionHeader("HEAL & BUFFS (HP-AC)");
+            var buffGrid = CreateGridContainer("BuffGrid", 72f);
+            for (int i = 0; i < 12; i++)
+            {
+                _buffSlots[i] = CreateSlot(buffGrid.transform, i + 1, i + 12);
+            }
+
+            // 4. POTION BAŞLIĞI & SLOTLARI
+            var potionRow = CreateSubContainer("PotionRow", 32f);
+            var potLblObj = new GameObject("PotionLabel", typeof(RectTransform));
+            potLblObj.transform.SetParent(potionRow.transform, false);
+            var plRect = potLblObj.GetComponent<RectTransform>();
+            plRect.anchorMin = new Vector2(0, 0);
+            plRect.anchorMax = new Vector2(0.5f, 1);
+            plRect.offsetMin = Vector2.zero;
+            plRect.offsetMax = Vector2.zero;
+
+            var potLbl = potLblObj.AddComponent<Text>();
+            potLbl.font = _uiFont;
+            potLbl.fontSize = 9;
+            potLbl.fontStyle = FontStyle.Bold;
+            potLbl.alignment = TextAnchor.MiddleLeft;
+            potLbl.color = new Color(0.85f, 0.75f, 0.55f);
+            potLbl.text = "POTION >";
+            AddTextShadow(potLblObj);
+
+            // HP Pot Slotu (24)
+            var hpSlotContainer = new GameObject("HpPotSlot", typeof(RectTransform));
+            hpSlotContainer.transform.SetParent(potionRow.transform, false);
+            var hpRect = hpSlotContainer.GetComponent<RectTransform>();
+            hpRect.anchorMin = new Vector2(0.65f, 0.5f);
+            hpRect.anchorMax = new Vector2(0.65f, 0.5f);
+            hpRect.pivot = new Vector2(0.5f, 0.5f);
+            hpRect.anchoredPosition = Vector2.zero;
+            hpRect.sizeDelta = new Vector2(34, 34);
+
+            _hpPotSlot = hpSlotContainer.AddComponent<Image>();
+            _hpPotSlot.sprite = GetRoundedRectSprite("slot_hp", 34, 34, 0, new Color(0.08f, 0.08f, 0.08f, 1), new Color(0.45f, 0.35f, 0.15f, 0.8f), 1);
+            CreateSlotBadge(hpSlotContainer.transform, "HP", new Color(0.7f, 0.1f, 0.1f));
+
+            var hpBtn = hpSlotContainer.AddComponent<Button>();
+            hpBtn.onClick.AddListener(() => {
+                _hpPotSlot.sprite = GetRoundedRectSprite("slot_hp", 34, 34, 0, new Color(0.08f, 0.08f, 0.08f, 1), new Color(0.45f, 0.35f, 0.15f, 0.8f), 1);
+                _hpPotItemId = 0;
+            });
+
+            // MP Pot Slotu (25)
+            var mpSlotContainer = new GameObject("MpPotSlot", typeof(RectTransform));
+            mpSlotContainer.transform.SetParent(potionRow.transform, false);
+            var mpRect = mpSlotContainer.GetComponent<RectTransform>();
+            mpRect.anchorMin = new Vector2(0.85f, 0.5f);
+            mpRect.anchorMax = new Vector2(0.85f, 0.5f);
+            mpRect.pivot = new Vector2(0.5f, 0.5f);
+            mpRect.anchoredPosition = Vector2.zero;
+            mpRect.sizeDelta = new Vector2(34, 34);
+
+            _mpPotSlot = mpSlotContainer.AddComponent<Image>();
+            _mpPotSlot.sprite = GetRoundedRectSprite("slot_mp", 34, 34, 0, new Color(0.08f, 0.08f, 0.08f, 1), new Color(0.45f, 0.35f, 0.15f, 0.8f), 1);
+            CreateSlotBadge(mpSlotContainer.transform, "MP", new Color(0.1f, 0.4f, 0.7f));
+
+            var mpBtn = mpSlotContainer.AddComponent<Button>();
+            mpBtn.onClick.AddListener(() => {
+                _mpPotSlot.sprite = GetRoundedRectSprite("slot_mp", 34, 34, 0, new Color(0.08f, 0.08f, 0.08f, 1), new Color(0.45f, 0.35f, 0.15f, 0.8f), 1);
+                _mpPotItemId = 0;
+            });
+
+            // 5. SLIDERS (KAYDIRICILAR)
+            CreateSlider(transform, "ATTACK RANGE", 0f, 100f, AttackRange, false, "", (val) => AttackRange = val);
+            CreateSlider(transform, "USE SKILL RECOVERY AT", 0f, 100f, RecoveryThreshold, true, "%", (val) => RecoveryThreshold = val);
+            CreateSlider(transform, "AT % CONSUME HP POTION", 0f, 100f, HpPotThreshold, true, "%", (val) => HpPotThreshold = val);
+            CreateSlider(transform, "AT % CONSUME MP POTION", 0f, 100f, MpPotThreshold, true, "%", (val) => MpPotThreshold = val);
+
+            // 6. CHECKBOXES (SEÇENEK KUTULARI)
+            var checkRow1 = CreateSubContainer("CheckRow1", 20f);
+            var hlg1 = checkRow1.AddComponent<HorizontalLayoutGroup>();
+            hlg1.spacing = 10f;
+            hlg1.childControlWidth = true;
+            hlg1.childForceExpandWidth = true;
+
+            CreateCheckbox(checkRow1.transform, "[R] Basic Attack", BasicAttackEnabled, (val) => BasicAttackEnabled = val);
+            CreateCheckbox(checkRow1.transform, "Auto Genie Sprit", AutoGenieEnabled, (val) => AutoGenieEnabled = val);
+
+            var checkRow2 = CreateSubContainer("CheckRow2", 20f);
+            var hlg2 = checkRow2.AddComponent<HorizontalLayoutGroup>();
+            hlg2.spacing = 10f;
+            hlg2.childControlWidth = true;
+            hlg2.childForceExpandWidth = true;
+
+            CreateCheckbox(checkRow2.transform, "Follow Party Leader", FollowLeaderEnabled, (val) => FollowLeaderEnabled = val);
+            CreateCheckbox(checkRow2.transform, "Skill Use in Order", SkillInOrderEnabled, (val) => SkillInOrderEnabled = val);
+        }
+
+        // ==========================================
+        // DÜZENLEME & YETENEK / ITEM SÜRÜKLE BIRAK YÖNETİMİ
+        // ==========================================
+
+        /// <summary>
+        /// Sürükleme sonunda parmağın/farenin hangi skill slotu üzerinde olduğunu bulur (0-23)
+        /// </summary>
+        public int GetSlotAtScreenPosition(Vector2 screenPos)
+        {
+            // Attack slots (0-11)
+            for (int i = 0; i < 12; i++)
+            {
+                if (_attackSlots[i] == null) continue;
+                if (IsPointInsideRectTransform(_attackSlots[i].rectTransform, screenPos))
+                    return i;
+            }
+            // Buff slots (12-23)
+            for (int i = 0; i < 12; i++)
+            {
+                if (_buffSlots[i] == null) continue;
+                if (IsPointInsideRectTransform(_buffSlots[i].rectTransform, screenPos))
+                    return i + 12;
+            }
+            return -1;
+        }
+
+        /// <summary>
+        /// Sürükleme sonunda parmağın/farenin hangi item slotu üzerinde olduğunu bulur (12-23 buff, 24 HP pot, 25 MP pot)
+        /// </summary>
+        public int GetItemSlotAtScreenPosition(Vector2 screenPos)
+        {
+            // Buff slots (12-23)
+            for (int i = 0; i < 12; i++)
+            {
+                if (_buffSlots[i] == null) continue;
+                if (IsPointInsideRectTransform(_buffSlots[i].rectTransform, screenPos))
+                    return i + 12;
+            }
+            // HP Pot (24)
+            if (_hpPotSlot != null && IsPointInsideRectTransform(_hpPotSlot.rectTransform, screenPos))
+                return 24;
+            // MP Pot (25)
+            if (_mpPotSlot != null && IsPointInsideRectTransform(_mpPotSlot.rectTransform, screenPos))
+                return 25;
+
+            return -1;
+        }
+
+        private bool IsPointInsideRectTransform(RectTransform rt, Vector2 screenPos)
+        {
+            if (rt == null) return false;
+            Vector3[] corners = new Vector3[4];
+            rt.GetWorldCorners(corners);
+            
+            float minX = Mathf.Min(corners[0].x, corners[2].x);
+            float maxX = Mathf.Max(corners[0].x, corners[2].x);
+            float minY = Mathf.Min(corners[0].y, corners[2].y);
+            float maxY = Mathf.Max(corners[0].y, corners[2].y);
+            
+            // Mobilde daha kolay bırakılabilmesi için 10 piksellik tolerans payı ekleyelim
+            minX -= 10f;
+            maxX += 10f;
+            minY -= 10f;
+            maxY += 10f;
+
+            return screenPos.x >= minX && screenPos.x <= maxX && screenPos.y >= minY && screenPos.y <= maxY;
+        }
+
+        /// <summary>Drag & drop sonucu yeteneği slota yerleştirir</summary>
+        public void SetSkillIcon(int slotIndex, Sprite icon, int magicNum)
+        {
+            if (slotIndex >= 0 && slotIndex < 12)
+            {
+                _attackSlots[slotIndex].sprite = icon;
+                _attackSlots[slotIndex].color = Color.white;
+                _attackSkillIds[slotIndex] = magicNum;
+            }
+            else if (slotIndex >= 12 && slotIndex < 24)
+            {
+                int buffIdx = slotIndex - 12;
+                _buffSlots[buffIdx].sprite = icon;
+                _buffSlots[buffIdx].color = Color.white;
+                _buffSkillIds[buffIdx] = magicNum;
+                _buffItemIds[buffIdx] = 0; // Skill eklenince item'ı temizle
+            }
+        }
+
+        /// <summary>Drag & drop sonucu iksiri/itemı slota yerleştirir</summary>
+        public void SetItemSlot(int slotIndex, KOItemSlotHandler itemSlot)
+        {
+            if (itemSlot == null) return;
+            Sprite icon = itemSlot.GetComponent<Image>()?.sprite;
+            if (icon == null) return;
+
+            int itemId = itemSlot.tooltipItemDefId;
+            if (itemId <= 0 && itemSlot.itemData != null)
+            {
+                itemId = itemSlot.itemData.ItemDefId;
+            }
+
+            SetItemSlotRaw(slotIndex, itemId, icon);
+        }
+
+        public void SetItemSlotRaw(int slotIndex, int itemId, Sprite icon)
+        {
+            if (icon == null) return;
+
+            if (slotIndex == 24)
+            {
+                _hpPotSlot.sprite = icon;
+                _hpPotSlot.color = Color.white;
+                _hpPotItemId = itemId;
+            }
+            else if (slotIndex == 25)
+            {
+                _mpPotSlot.sprite = icon;
+                _mpPotSlot.color = Color.white;
+                _mpPotItemId = itemId;
+            }
+            else if (slotIndex >= 12 && slotIndex < 24)
+            {
+                int buffIdx = slotIndex - 12;
+                _buffSlots[buffIdx].sprite = icon;
+                _buffSlots[buffIdx].color = Color.white;
+                _buffItemIds[buffIdx] = itemId;
+                _buffSkillIds[buffIdx] = 0; // Item eklenince skill'i temizle
+            }
+        }
+
+        // ==========================================
+        // YARDIMCI ARAYÜZ OLUŞTURMA METOTLARI
+        // ==========================================
+
+        private void CreateSectionHeader(string title)
+        {
+            var container = CreateSubContainer("Header_" + title, 16f);
+
+            // Sol dikey altın şerit (Left Accent Line)
+            var accentObj = new GameObject("Accent", typeof(RectTransform));
+            accentObj.transform.SetParent(container.transform, false);
+            var accentRect = accentObj.GetComponent<RectTransform>();
+            accentRect.anchorMin = new Vector2(0, 0.1f);
+            accentRect.anchorMax = new Vector2(0, 0.9f);
+            accentRect.pivot = new Vector2(0, 0.5f);
+            accentRect.anchoredPosition = Vector2.zero;
+            accentRect.sizeDelta = new Vector2(3, 0); // 3px genişlik
+
+            var accentImg = accentObj.AddComponent<Image>();
+            accentImg.sprite = GetRoundedRectSprite("accent_line_" + title, 3, 16, 0, new Color(0.45f, 0.35f, 0.15f, 1f), Color.clear, 0);
+
+            var txtObj = new GameObject("Text", typeof(RectTransform));
+            txtObj.transform.SetParent(container.transform, false);
+            StretchUI(txtObj);
+
+            // Yazıyı çizgiden kurtarmak için 8px sağa kaydır
+            var txtRect = txtObj.GetComponent<RectTransform>();
+            txtRect.offsetMin = new Vector2(8, 0);
+
+            var txt = txtObj.AddComponent<Text>();
+            txt.font = _uiFont;
+            txt.fontSize = 9;
+            txt.fontStyle = FontStyle.Bold;
+            txt.alignment = TextAnchor.MiddleLeft;
+            txt.color = new Color(0.85f, 0.75f, 0.55f);
+            txt.text = title;
+            AddTextShadow(txtObj);
+        }
+
+        private Image CreateSlot(Transform parent, int number, int slotIndex)
+        {
+            var slotContainer = new GameObject("Slot_" + number, typeof(RectTransform));
+            slotContainer.transform.SetParent(parent, false);
+            var rect = slotContainer.GetComponent<RectTransform>();
+            rect.sizeDelta = new Vector2(34, 34);
+
+            var img = slotContainer.AddComponent<Image>();
+            img.sprite = GetRoundedRectSprite("slot_bg_" + slotIndex, 34, 34, 4, new Color(0.08f, 0.08f, 0.08f, 1), new Color(0.45f, 0.35f, 0.15f, 0.8f), 1);
+
+            // Double click / Right click to clear slot
+            var btn = slotContainer.AddComponent<Button>();
+            btn.onClick.AddListener(() => {
+                img.sprite = GetRoundedRectSprite("slot_bg_" + slotIndex, 34, 34, 4, new Color(0.08f, 0.08f, 0.08f, 1), new Color(0.45f, 0.35f, 0.15f, 0.8f), 1);
+                if (slotIndex < 12) _attackSkillIds[slotIndex] = 0;
+                else if (slotIndex < 24) { _buffSkillIds[slotIndex - 12] = 0; _buffItemIds[slotIndex - 12] = 0; }
+            });
+
+            // Numara etiketi (Sol üstte)
+            var badgeObj = new GameObject("Badge", typeof(RectTransform));
+            badgeObj.transform.SetParent(slotContainer.transform, false);
+            var bRect = badgeObj.GetComponent<RectTransform>();
+            bRect.anchorMin = new Vector2(0, 1);
+            bRect.anchorMax = new Vector2(0, 1);
+            bRect.pivot = new Vector2(0, 1);
+            bRect.anchoredPosition = new Vector2(1, -1);
+            bRect.sizeDelta = new Vector2(10, 10);
+
+            var badgeTxt = badgeObj.AddComponent<Text>();
+            badgeTxt.font = _uiFont;
+            badgeTxt.fontSize = 8;
+            badgeTxt.fontStyle = FontStyle.Bold;
+            badgeTxt.alignment = TextAnchor.MiddleCenter;
+            badgeTxt.color = new Color(0.9f, 0.75f, 0.25f);
+            badgeTxt.text = number.ToString();
+            AddTextShadow(badgeObj);
+
+            return img;
+        }
+
+        private void CreateSlotBadge(Transform parent, string text, Color badgeColor)
+        {
+            var badge = new GameObject("Badge", typeof(RectTransform));
+            badge.transform.SetParent(parent, false);
+            var rect = badge.GetComponent<RectTransform>();
+            rect.anchorMin = new Vector2(0.5f, 1f);
+            rect.anchorMax = new Vector2(0.5f, 1f);
+            rect.pivot = new Vector2(0.5f, 0.5f);
+            rect.anchoredPosition = new Vector2(0, 0);
+            rect.sizeDelta = new Vector2(16, 9);
+
+            var img = badge.AddComponent<Image>();
+            img.sprite = GetRoundedRectSprite("badge_bg_" + text, 16, 9, 0, badgeColor, badgeColor, 0);
+
+            var txtObj = new GameObject("Text", typeof(RectTransform));
+            txtObj.transform.SetParent(badge.transform, false);
+            StretchUI(txtObj);
+
+            var txt = txtObj.AddComponent<Text>();
+            txt.font = _uiFont;
+            txt.fontSize = 7;
+            txt.fontStyle = FontStyle.Bold;
+            txt.alignment = TextAnchor.MiddleCenter;
+            txt.color = Color.white;
+            txt.text = text;
+        }
+
+        private Slider CreateSlider(Transform parent, string labelText, float minVal, float maxVal, float startVal, bool isPercent, string suffix, System.Action<float> onValChanged)
+        {
+            var container = new GameObject("Slider_" + labelText, typeof(RectTransform));
+            container.transform.SetParent(parent, false);
+            var cRect = container.GetComponent<RectTransform>();
+            cRect.sizeDelta = new Vector2(300, 36);
+
+            // Label Text (e.g. ATTACK RANGE)
+            var lblObj = new GameObject("Label", typeof(RectTransform));
+            lblObj.transform.SetParent(container.transform, false);
+            var lblRect = lblObj.GetComponent<RectTransform>();
+            lblRect.anchorMin = new Vector2(0, 0.55f);
+            lblRect.anchorMax = new Vector2(0.8f, 1);
+            lblRect.pivot = new Vector2(0, 0.5f);
+            lblRect.anchoredPosition = Vector2.zero;
+            lblRect.sizeDelta = Vector2.zero;
+
+            var txt = lblObj.AddComponent<Text>();
+            txt.font = _uiFont;
+            txt.fontSize = 9;
+            txt.fontStyle = FontStyle.Bold;
+            txt.color = new Color(0.85f, 0.75f, 0.55f);
+            txt.text = labelText.ToUpper();
+            AddTextShadow(lblObj);
+
+            // Value Text
+            var valObj = new GameObject("ValText", typeof(RectTransform));
+            valObj.transform.SetParent(container.transform, false);
+            var valRect = valObj.GetComponent<RectTransform>();
+            valRect.anchorMin = new Vector2(0.8f, 0.55f);
+            valRect.anchorMax = new Vector2(1, 1);
+            valRect.pivot = new Vector2(1, 0.5f);
+            valRect.anchoredPosition = Vector2.zero;
+            valRect.sizeDelta = Vector2.zero;
+
+            var valTxt = valObj.AddComponent<Text>();
+            valTxt.font = _uiFont;
+            valTxt.fontSize = 9;
+            valTxt.fontStyle = FontStyle.Bold;
+            valTxt.alignment = TextAnchor.MiddleRight;
+            valTxt.color = Color.white;
+            valTxt.text = isPercent ? (suffix + startVal) : (startVal + suffix);
+            AddTextShadow(valObj);
+
+            // Slider Object
+            var sliderObj = new GameObject("Slider", typeof(RectTransform));
+            sliderObj.transform.SetParent(container.transform, false);
+            var sRect = sliderObj.GetComponent<RectTransform>();
+            sRect.anchorMin = new Vector2(0, 0);
+            sRect.anchorMax = new Vector2(1, 0.45f);
+            sRect.pivot = new Vector2(0.5f, 0.5f);
+            sRect.anchoredPosition = Vector2.zero;
+            sRect.sizeDelta = Vector2.zero;
+
+            var slider = sliderObj.AddComponent<Slider>();
+
+            // Slider Background
+            var bgObj = new GameObject("Background", typeof(RectTransform));
+            bgObj.transform.SetParent(sliderObj.transform, false);
+            var bgRect = bgObj.GetComponent<RectTransform>();
+            bgRect.anchorMin = new Vector2(0, 0.35f);
+            bgRect.anchorMax = new Vector2(1, 0.65f);
+            bgRect.offsetMin = Vector2.zero;
+            bgRect.offsetMax = Vector2.zero;
+
+            var bgImg = bgObj.AddComponent<Image>();
+            bgImg.sprite = GetRoundedRectSprite("slider_bg_" + labelText, 200, 8, 4, new Color(0.12f, 0.12f, 0.12f, 1), new Color(0.3f, 0.25f, 0.15f, 0.8f), 1);
+
+            // Fill Area
+            var fillArea = new GameObject("Fill Area", typeof(RectTransform));
+            fillArea.transform.SetParent(sliderObj.transform, false);
+            var faRect = fillArea.GetComponent<RectTransform>();
+            faRect.anchorMin = new Vector2(0, 0);
+            faRect.anchorMax = new Vector2(1, 1);
+            faRect.offsetMin = new Vector2(5, 0);
+            faRect.offsetMax = new Vector2(-5, 0);
+
+            var fillObj = new GameObject("Fill", typeof(RectTransform));
+            fillObj.transform.SetParent(fillArea.transform, false);
+            var fRect = fillObj.GetComponent<RectTransform>();
+            fRect.anchorMin = new Vector2(0, 0.35f);
+            fRect.anchorMax = new Vector2(0, 0.65f);
+            fRect.offsetMin = Vector2.zero;
+            fRect.offsetMax = Vector2.zero;
+
+            var fillImg = fillObj.AddComponent<Image>();
+            Color fillColor = new Color(0.55f, 0.42f, 0.15f, 1);
+            if (labelText.Contains("HP")) fillColor = new Color(0.7f, 0.1f, 0.1f, 1);
+            else if (labelText.Contains("MP")) fillColor = new Color(0.1f, 0.4f, 0.7f, 1);
+            
+            fillImg.sprite = GetRoundedRectSprite("slider_fill_" + labelText, 200, 8, 4, fillColor, fillColor, 0);
+
+            // Handle Slide Area
+            var handleArea = new GameObject("Handle Slide Area", typeof(RectTransform));
+            handleArea.transform.SetParent(sliderObj.transform, false);
+            var haRect = handleArea.GetComponent<RectTransform>();
+            haRect.anchorMin = new Vector2(0, 0);
+            haRect.anchorMax = new Vector2(1, 1);
+            haRect.offsetMin = new Vector2(5, 0);
+            haRect.offsetMax = new Vector2(-5, 0);
+
+            var handleObj = new GameObject("Handle", typeof(RectTransform));
+            handleObj.transform.SetParent(handleArea.transform, false);
+            var hRect = handleObj.GetComponent<RectTransform>();
+            hRect.anchorMin = new Vector2(0, 0.5f);
+            hRect.anchorMax = new Vector2(0, 0.5f);
+            hRect.pivot = new Vector2(0.5f, 0.5f);
+            hRect.anchoredPosition = Vector2.zero;
+            hRect.sizeDelta = new Vector2(14, 14);
+
+            var handleImg = handleObj.AddComponent<Image>();
+            handleImg.sprite = GetRoundedRectSprite("slider_handle_" + labelText, 14, 14, 7, new Color(0.75f, 0.6f, 0.25f, 1), new Color(0.45f, 0.35f, 0.15f, 1), 1);
+
+            // Link components
+            slider.fillRect = fRect;
+            slider.handleRect = hRect;
+            slider.targetGraphic = handleImg;
+            slider.minValue = minVal;
+            slider.maxValue = maxVal;
+            slider.value = startVal;
+
+            slider.onValueChanged.AddListener((val) => {
+                valTxt.text = isPercent ? (suffix + Mathf.RoundToInt(val)) : (Mathf.RoundToInt(val) + suffix);
+                onValChanged?.Invoke(val);
+            });
+
+            return slider;
+        }
+
+        private Toggle CreateCheckbox(Transform parent, string labelText, bool startVal, System.Action<bool> onValChanged)
+        {
+            var container = new GameObject("Checkbox_" + labelText, typeof(RectTransform));
+            container.transform.SetParent(parent, false);
+            var cRect = container.GetComponent<RectTransform>();
+            cRect.sizeDelta = new Vector2(140, 20);
+
+            var toggle = container.AddComponent<Toggle>();
+
+            // Checkbox Background
+            var bgObj = new GameObject("Background", typeof(RectTransform));
+            bgObj.transform.SetParent(container.transform, false);
+            var bgRect = bgObj.GetComponent<RectTransform>();
+            bgRect.anchorMin = new Vector2(0, 0.5f);
+            bgRect.anchorMax = new Vector2(0, 0.5f);
+            bgRect.pivot = new Vector2(0, 0.5f);
+            bgRect.anchoredPosition = new Vector2(0, 0);
+            bgRect.sizeDelta = new Vector2(16, 16);
+
+            var bgImg = bgObj.AddComponent<Image>();
+            bgImg.sprite = GetRoundedRectSprite("checkbox_bg_" + labelText, 16, 16, 3, new Color(0.08f, 0.08f, 0.08f, 1), new Color(0.45f, 0.35f, 0.15f, 0.8f), 1);
+
+            // Checkmark
+            var checkmarkObj = new GameObject("Checkmark", typeof(RectTransform));
+            checkmarkObj.transform.SetParent(bgObj.transform, false);
+            var checkRect = checkmarkObj.GetComponent<RectTransform>();
+            checkRect.anchorMin = Vector2.zero;
+            checkRect.anchorMax = Vector2.one;
+            checkRect.offsetMin = new Vector2(2, 2);
+            checkRect.offsetMax = new Vector2(-2, -2);
+
+            var checkImg = checkmarkObj.AddComponent<Image>();
+            checkImg.sprite = GetRoundedRectSprite("checkbox_tick_" + labelText, 12, 12, 2, new Color(0.2f, 0.65f, 0.2f, 1), new Color(0.2f, 0.65f, 0.2f, 1), 0);
+
+            // Label Text
+            var lblObj = new GameObject("Label", typeof(RectTransform));
+            lblObj.transform.SetParent(container.transform, false);
+            var lblRect = lblObj.GetComponent<RectTransform>();
+            lblRect.anchorMin = new Vector2(0, 0);
+            lblRect.anchorMax = new Vector2(1, 1);
+            lblRect.pivot = new Vector2(0, 0.5f);
+            lblRect.anchoredPosition = new Vector2(22, 0);
+            lblRect.sizeDelta = new Vector2(-22, 0);
+
+            var txt = lblObj.AddComponent<Text>();
+            txt.font = _uiFont;
+            txt.fontSize = 10;
+            txt.fontStyle = FontStyle.Bold;
+            txt.alignment = TextAnchor.MiddleLeft;
+            txt.color = new Color(0.85f, 0.85f, 0.7f);
+            txt.text = labelText;
+            AddTextShadow(lblObj);
+
+            // Link components
+            toggle.graphic = checkImg;
+            toggle.targetGraphic = bgImg;
+            toggle.isOn = startVal;
+
+            toggle.onValueChanged.AddListener((val) => {
+                onValChanged?.Invoke(val);
+            });
+
+            return toggle;
+        }
+
+        private GameObject CreateSubContainer(string name, float height)
+        {
+            var container = new GameObject(name, typeof(RectTransform));
+            container.transform.SetParent(transform, false);
+            var rect = container.GetComponent<RectTransform>();
+            rect.sizeDelta = new Vector2(300, height);
+            return container;
+        }
+
+        private GameObject CreateGridContainer(string name, float height)
+        {
+            var container = CreateSubContainer(name, height);
+            var grid = container.AddComponent<GridLayoutGroup>();
+            grid.cellSize = new Vector2(34, 34);
+            grid.spacing = new Vector2(6, 4);
+            grid.startCorner = GridLayoutGroup.Corner.UpperLeft;
+            grid.startAxis = GridLayoutGroup.Axis.Horizontal;
+            grid.childAlignment = TextAnchor.MiddleCenter;
+            return container;
+        }
+
+        private void StretchUI(GameObject obj)
+        {
+            var rect = obj.GetComponent<RectTransform>();
+            rect.anchorMin = Vector2.zero;
+            rect.anchorMax = Vector2.one;
+            rect.offsetMin = Vector2.zero;
+            rect.offsetMax = Vector2.zero;
+        }
+
+        private void AddTextShadow(GameObject obj)
+        {
+            var shadow = obj.AddComponent<Shadow>();
+            shadow.effectColor = Color.black;
+            shadow.effectDistance = new Vector2(1, -1);
+        }
+
+        private Sprite GetRoundedRectSprite(string key, int w, int h, int radius, Color fillColor, Color borderColor, int borderWidth)
+        {
+            if (_spriteCache.TryGetValue(key, out Sprite sp))
+                return sp;
+
+            Texture2D tex = new Texture2D(w, h, TextureFormat.RGBA32, false);
+            tex.filterMode = radius <= 0 ? FilterMode.Point : FilterMode.Bilinear;
+            tex.wrapMode = TextureWrapMode.Clamp;
+
+            for (int x = 0; x < w; x++)
+            {
+                for (int y = 0; y < h; y++)
+                {
+                    if (radius <= 0)
+                    {
+                        bool isBorder = (x < borderWidth || x >= w - borderWidth || y < borderWidth || y >= h - borderWidth);
+                        tex.SetPixel(x, y, isBorder ? borderColor : fillColor);
+                        continue;
+                    }
+
+                    bool isInside = true;
+                    float dx = 0, dy = 0;
+
+                    if (x < radius && y < radius) { dx = radius - x; dy = radius - y; isInside = (dx*dx + dy*dy) <= radius*radius; }
+                    else if (x >= w - radius && y < radius) { dx = x - (w - 1 - radius); dy = radius - y; isInside = (dx*dx + dy*dy) <= radius*radius; }
+                    else if (x < radius && y >= h - radius) { dx = radius - x; dy = y - (h - 1 - radius); isInside = (dx*dx + dy*dy) <= radius*radius; }
+                    else if (x >= w - radius && y >= h - radius) { dx = x - (w - 1 - radius); dy = y - (h - 1 - radius); isInside = (dx*dx + dy*dy) <= radius*radius; }
+
+                    if (isInside)
+                    {
+                        bool isBorder = false;
+                        if (x < borderWidth || x >= w - borderWidth || y < borderWidth || y >= h - borderWidth)
+                            isBorder = true;
+                        else if (x < radius || x >= w - radius || y < radius || y >= h - radius)
+                        {
+                            float dist = Mathf.Sqrt(dx*dx + dy*dy);
+                            if (dist >= radius - borderWidth)
+                                isBorder = true;
+                        }
+
+                        float edgeDist = 0f;
+                        if (x < radius && y < radius) edgeDist = Mathf.Sqrt(dx*dx + dy*dy) - radius;
+                        else if (x >= w - radius && y < radius) edgeDist = Mathf.Sqrt(dx*dx + dy*dy) - radius;
+                        else if (x < radius && y >= h - radius) edgeDist = Mathf.Sqrt(dx*dx + dy*dy) - radius;
+                        else if (x >= w - radius && y >= h - radius) edgeDist = Mathf.Sqrt(dx*dx + dy*dy) - radius;
+
+                        if (edgeDist > 0f && edgeDist < 1f)
+                        {
+                            Color c = isBorder ? borderColor : fillColor;
+                            c.a *= (1f - edgeDist);
+                            tex.SetPixel(x, y, c);
+                        }
+                        else
+                        {
+                            tex.SetPixel(x, y, isBorder ? borderColor : fillColor);
+                        }
+                    }
+                    else
+                    {
+                        tex.SetPixel(x, y, Color.clear);
+                    }
+                }
+            }
+            tex.Apply();
+            Sprite sprite = Sprite.Create(tex, new Rect(0, 0, w, h), new Vector2(0.5f, 0.5f));
+            _spriteCache[key] = sprite;
+            return sprite;
+        }
+    }
+}

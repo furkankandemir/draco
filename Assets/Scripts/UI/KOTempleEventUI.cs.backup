@@ -1,0 +1,873 @@
+using System;
+using System.Collections;
+using UnityEngine;
+using UnityEngine.UI;
+using EntropyOnline.Network.KO;
+using EntropyOnline.Core;
+using EntropyOnline.World;
+
+namespace EntropyOnline.UI
+{
+    /// <summary>
+    /// Tapınak Etkinlikleri (BDW, Juraid Mountain, Chaos Dungeon) için istemci arayüzü.
+    /// Programatik olarak şık ve modern (koyu tema, altın çerçeveli) UI elemanlarını oluşturur ve yönetir.
+    /// </summary>
+    public class KOTempleEventUI : MonoBehaviour
+    {
+        public static KOTempleEventUI Instance { get; private set; }
+
+        // Opcodes & Constants
+        private const byte TEMPLE_EVENT = 7;
+        private const byte TEMPLE_EVENT_JOIN = 8;
+        private const byte TEMPLE_EVENT_DISBAND = 9;
+        private const byte TEMPLE_EVENT_COUNTER = 16;
+
+        private const byte ZONE_BDW = 84;
+        private const byte ZONE_CHAOS = 85;
+        private const byte ZONE_JURAID = 87;
+
+        private const short EVENT_BDW = 4;
+        private const short EVENT_CHAOS = 24;
+        private const short EVENT_JURAID = 100;
+
+        // UI GameObjects
+        private GameObject _invitationPanel;
+        private GameObject _scoreboardPanel;
+        private GameObject _announcementOverlay;
+
+        // Invitation Panel UI References
+        private Text _invTitleText;
+        private Text _invTimerText;
+        private Text _invQueueText;
+        private Button _registerButton;
+        private Button _cancelButton;
+        private Text _registerBtnText;
+        private Text _cancelBtnText;
+
+        // Scoreboard Panel UI References
+        private Text _scoreTitleText;
+        private Text _scoreTimerText;
+        private Text _scoreKarusText;
+        private Text _scoreElmoText;
+        private Text _scoreExtraText;
+
+        // Announcement Overlay references
+        private Text _announcementText;
+        private float _announcementFadeTimer;
+
+        // Active State variables
+        private short _activeEventId = -1;
+        private float _invitationTimeLeft = 0f;
+        private bool _isRegistered = false;
+        private short _queueKarusCount = 0;
+        private short _queueElmoCount = 0;
+        private short _queueChaosCount = 0;
+
+        // In-Event variables
+        private float _eventTimeLeft = 1200f; // 20 minutes default
+        private short _bdwKarusScore = 0;
+        private short _bdwElmoScore = 0;
+        private byte _bdwAltarControlNation = 0; // 0 = Neutral, 1 = Karus, 2 = Elmo
+        private int _chaosKills = 0;
+        private int _chaosDeaths = 0;
+        private int _juraidStage = 1;
+
+        private bool _uiInitialized = false;
+        private Vector3 _invTargetPos;
+        private Vector3 _invStartPos;
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+        public static void AutoInit()
+        {
+            var go = new GameObject("KOTempleEventUI");
+            Instance = go.AddComponent<KOTempleEventUI>();
+            DontDestroyOnLoad(go);
+            Debug.Log("[TEMPLE-UI] AutoInit: KOTempleEventUI created.");
+        }
+
+        private void Awake()
+        {
+            if (Instance != null && Instance != this)
+            {
+                Destroy(gameObject);
+                return;
+            }
+            Instance = this;
+        }
+
+        private void OnEnable()
+        {
+            KOPacketHandler.OnEvent += OnEventPacket;
+            KOPacketHandler.OnCapture += OnCapturePacket;
+            KOPacketHandler.OnDead += OnDeadPacket;
+        }
+
+        private void OnDisable()
+        {
+            KOPacketHandler.OnEvent -= OnEventPacket;
+            KOPacketHandler.OnCapture -= OnCapturePacket;
+            KOPacketHandler.OnDead -= OnDeadPacket;
+        }
+
+        private void Start()
+        {
+            StartCoroutine(InitializeUIWhenCanvasReady());
+        }
+
+        private IEnumerator InitializeUIWhenCanvasReady()
+        {
+            Transform canvasTransform = null;
+            while (canvasTransform == null)
+            {
+                if (KOUIManager.Instance != null && KOUIManager.Instance.Canvas != null)
+                {
+                    canvasTransform = KOUIManager.Instance.Canvas.transform;
+                }
+                else
+                {
+                    GameObject canvasObj = GameObject.Find("KOCanvas");
+                    if (canvasObj != null)
+                    {
+                        canvasTransform = canvasObj.transform;
+                    }
+                }
+                yield return new WaitForSeconds(0.5f);
+            }
+
+            BuildUI(canvasTransform);
+        }
+
+        private Font GetUIFont()
+        {
+            Font font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            if (font == null)
+            {
+                font = Font.CreateDynamicFontFromOSFont("Arial", 14);
+            }
+            return font;
+        }
+
+        private void BuildUI(Transform parent)
+        {
+            Font font = GetUIFont();
+
+            // -------------------------------------------------------------
+            // 1. INVITATION PANEL (Slide-in)
+            // -------------------------------------------------------------
+            _invitationPanel = new GameObject("TempleInvitationPanel");
+            _invitationPanel.transform.SetParent(parent, false);
+            var invRT = _invitationPanel.AddComponent<RectTransform>();
+            invRT.anchorMin = new Vector2(1, 0.5f);
+            invRT.anchorMax = new Vector2(1, 0.5f);
+            invRT.pivot = new Vector2(0, 0.5f); // Start off-screen
+            invRT.sizeDelta = new Vector2(300, 200);
+            
+            _invStartPos = new Vector3(320, 0, 0);
+            _invTargetPos = new Vector3(-320, 0, 0);
+            invRT.localPosition = _invStartPos;
+
+            // Background (Dark glassmorphism style)
+            var invBg = _invitationPanel.AddComponent<Image>();
+            invBg.color = new Color(0.1f, 0.1f, 0.15f, 0.92f);
+
+            // Outline (Golden border)
+            var invOutline = new GameObject("Outline").AddComponent<Image>();
+            invOutline.transform.SetParent(_invitationPanel.transform, false);
+            var outlineRT = invOutline.GetComponent<RectTransform>();
+            outlineRT.anchorMin = Vector2.zero;
+            outlineRT.anchorMax = Vector2.one;
+            outlineRT.sizeDelta = new Vector2(-4, -4);
+            invOutline.color = new Color(0.83f, 0.69f, 0.22f, 0.6f); // Antique Gold
+            invOutline.raycastTarget = false;
+
+            var innerBg = new GameObject("InnerBg").AddComponent<Image>();
+            innerBg.transform.SetParent(invOutline.transform, false);
+            var innerRT = innerBg.GetComponent<RectTransform>();
+            innerRT.anchorMin = Vector2.zero;
+            innerRT.anchorMax = Vector2.one;
+            innerRT.sizeDelta = new Vector2(-2, -2);
+            innerBg.color = new Color(0.08f, 0.08f, 0.1f, 0.95f);
+            innerBg.raycastTarget = false;
+
+            // Title
+            var titleGo = new GameObject("Title");
+            titleGo.transform.SetParent(_invitationPanel.transform, false);
+            _invTitleText = titleGo.AddComponent<Text>();
+            _invTitleText.font = font;
+            _invTitleText.text = "EVENT INVITATION";
+            _invTitleText.color = new Color(0.83f, 0.69f, 0.22f, 1f);
+            _invTitleText.fontSize = 15;
+            _invTitleText.alignment = TextAnchor.MiddleCenter;
+            _invTitleText.raycastTarget = false;
+            var titleRT = titleGo.GetComponent<RectTransform>();
+            titleRT.anchorMin = new Vector2(0, 0.8f);
+            titleRT.anchorMax = new Vector2(1, 0.95f);
+            titleRT.sizeDelta = Vector2.zero;
+            titleGo.AddComponent<Shadow>().effectColor = Color.black;
+
+            // Timer Text
+            var timerGo = new GameObject("Timer");
+            timerGo.transform.SetParent(_invitationPanel.transform, false);
+            _invTimerText = timerGo.AddComponent<Text>();
+            _invTimerText.font = font;
+            _invTimerText.text = "Kalan Süre: 00:00";
+            _invTimerText.color = Color.white;
+            _invTimerText.fontSize = 13;
+            _invTimerText.alignment = TextAnchor.MiddleCenter;
+            _invTimerText.raycastTarget = false;
+            var timerRT = timerGo.GetComponent<RectTransform>();
+            timerRT.anchorMin = new Vector2(0, 0.6f);
+            timerRT.anchorMax = new Vector2(1, 0.75f);
+            timerRT.sizeDelta = Vector2.zero;
+
+            // Queue Text
+            var queueGo = new GameObject("Queue");
+            queueGo.transform.SetParent(_invitationPanel.transform, false);
+            _invQueueText = queueGo.AddComponent<Text>();
+            _invQueueText.font = font;
+            _invQueueText.text = "Kayıtlı: Karus: 0 | El Morad: 0";
+            _invQueueText.color = new Color(0.7f, 0.7f, 0.8f, 1f);
+            _invQueueText.fontSize = 12;
+            _invQueueText.alignment = TextAnchor.MiddleCenter;
+            _invQueueText.raycastTarget = false;
+            var queueRT = queueGo.GetComponent<RectTransform>();
+            queueRT.anchorMin = new Vector2(0, 0.4f);
+            queueRT.anchorMax = new Vector2(1, 0.55f);
+            queueRT.sizeDelta = Vector2.zero;
+
+            // Buttons Container
+            var buttonsContainer = new GameObject("Buttons").AddComponent<RectTransform>();
+            buttonsContainer.SetParent(_invitationPanel.transform, false);
+            buttonsContainer.anchorMin = new Vector2(0.05f, 0.05f);
+            buttonsContainer.anchorMax = new Vector2(0.95f, 0.35f);
+            buttonsContainer.sizeDelta = Vector2.zero;
+
+            // Register Button
+            var regGo = new GameObject("RegisterButton");
+            regGo.transform.SetParent(buttonsContainer, false);
+            _registerButton = regGo.AddComponent<Button>();
+            var regImg = regGo.AddComponent<Image>();
+            regImg.color = new Color(0.15f, 0.4f, 0.15f, 0.9f);
+            _registerButton.targetGraphic = regImg;
+            _registerButton.onClick.AddListener(OnRegisterClicked);
+            
+            var regTxtGo = new GameObject("Text");
+            regTxtGo.transform.SetParent(regGo.transform, false);
+            _registerBtnText = regTxtGo.AddComponent<Text>();
+            _registerBtnText.font = font;
+            _registerBtnText.text = "Kayıt Ol";
+            _registerBtnText.color = Color.white;
+            _registerBtnText.fontSize = 13;
+            _registerBtnText.alignment = TextAnchor.MiddleCenter;
+            var regTxtRT = regTxtGo.GetComponent<RectTransform>();
+            regTxtRT.anchorMin = Vector2.zero;
+            regTxtRT.anchorMax = Vector2.one;
+            regTxtRT.sizeDelta = Vector2.zero;
+
+            var regRT = regGo.GetComponent<RectTransform>();
+            regRT.anchorMin = new Vector2(0, 0);
+            regRT.anchorMax = new Vector2(0.48f, 1);
+            regRT.sizeDelta = Vector2.zero;
+
+            // Cancel Button
+            var canGo = new GameObject("CancelButton");
+            canGo.transform.SetParent(buttonsContainer, false);
+            _cancelButton = canGo.AddComponent<Button>();
+            var canImg = canGo.AddComponent<Image>();
+            canImg.color = new Color(0.5f, 0.15f, 0.15f, 0.9f);
+            _cancelButton.targetGraphic = canImg;
+            _cancelButton.onClick.AddListener(OnCancelClicked);
+
+            var canTxtGo = new GameObject("Text");
+            canTxtGo.transform.SetParent(canGo.transform, false);
+            _cancelBtnText = canTxtGo.AddComponent<Text>();
+            _cancelBtnText.font = font;
+            _cancelBtnText.text = "İptal";
+            _cancelBtnText.color = Color.white;
+            _cancelBtnText.fontSize = 13;
+            _cancelBtnText.alignment = TextAnchor.MiddleCenter;
+            var canTxtRT = canTxtGo.GetComponent<RectTransform>();
+            canTxtRT.anchorMin = Vector2.zero;
+            canTxtRT.anchorMax = Vector2.one;
+            canTxtRT.sizeDelta = Vector2.zero;
+
+            var canRT = canGo.GetComponent<RectTransform>();
+            canRT.anchorMin = new Vector2(0.52f, 0);
+            canRT.anchorMax = new Vector2(1, 1);
+            canRT.sizeDelta = Vector2.zero;
+
+            _invitationPanel.SetActive(false);
+
+            // -------------------------------------------------------------
+            // 2. SCOREBOARD PANEL (Top-right overlay in event zone)
+            // -------------------------------------------------------------
+            _scoreboardPanel = new GameObject("TempleScoreboardPanel");
+            _scoreboardPanel.transform.SetParent(parent, false);
+            var scoreRT = _scoreboardPanel.AddComponent<RectTransform>();
+            scoreRT.anchorMin = new Vector2(1, 1);
+            scoreRT.anchorMax = new Vector2(1, 1);
+            scoreRT.pivot = new Vector2(1, 1);
+            scoreRT.sizeDelta = new Vector2(250, 120);
+            scoreRT.localPosition = new Vector3(-20, -100, 0);
+
+            var scoreBg = _scoreboardPanel.AddComponent<Image>();
+            scoreBg.color = new Color(0.08f, 0.08f, 0.12f, 0.85f);
+            scoreBg.raycastTarget = false;
+
+            var scoreOutline = new GameObject("Outline").AddComponent<Image>();
+            scoreOutline.transform.SetParent(_scoreboardPanel.transform, false);
+            var scoreOutlineRT = scoreOutline.GetComponent<RectTransform>();
+            scoreOutlineRT.anchorMin = Vector2.zero;
+            scoreOutlineRT.anchorMax = Vector2.one;
+            scoreOutlineRT.sizeDelta = new Vector2(-2, -2);
+            scoreOutline.color = new Color(0.5f, 0.5f, 0.6f, 0.4f);
+            scoreOutline.raycastTarget = false;
+
+            // Score Title
+            var sTitleGo = new GameObject("ScoreTitle");
+            sTitleGo.transform.SetParent(_scoreboardPanel.transform, false);
+            _scoreTitleText = sTitleGo.AddComponent<Text>();
+            _scoreTitleText.font = font;
+            _scoreTitleText.text = "BORDER DEFENSE WAR";
+            _scoreTitleText.color = new Color(0.9f, 0.75f, 0.15f, 1f);
+            _scoreTitleText.fontSize = 13;
+            _scoreTitleText.alignment = TextAnchor.MiddleCenter;
+            _scoreTitleText.raycastTarget = false;
+            var sTitleRT = sTitleGo.GetComponent<RectTransform>();
+            sTitleRT.anchorMin = new Vector2(0, 0.75f);
+            sTitleRT.anchorMax = new Vector2(1, 0.95f);
+            sTitleRT.sizeDelta = Vector2.zero;
+
+            // Score Timer
+            var sTimerGo = new GameObject("ScoreTimer");
+            sTimerGo.transform.SetParent(_scoreboardPanel.transform, false);
+            _scoreTimerText = sTimerGo.AddComponent<Text>();
+            _scoreTimerText.font = font;
+            _scoreTimerText.text = "Kalan Süre: 20:00";
+            _scoreTimerText.color = Color.white;
+            _scoreTimerText.fontSize = 12;
+            _scoreTimerText.alignment = TextAnchor.MiddleCenter;
+            _scoreTimerText.raycastTarget = false;
+            var sTimerRT = sTimerGo.GetComponent<RectTransform>();
+            sTimerRT.anchorMin = new Vector2(0, 0.52f);
+            sTimerRT.anchorMax = new Vector2(1, 0.72f);
+            sTimerRT.sizeDelta = Vector2.zero;
+
+            // Karus Score / Stats
+            var sKarusGo = new GameObject("KarusScore");
+            sKarusGo.transform.SetParent(_scoreboardPanel.transform, false);
+            _scoreKarusText = sKarusGo.AddComponent<Text>();
+            _scoreKarusText.font = font;
+            _scoreKarusText.text = "Karus: 0";
+            _scoreKarusText.color = new Color(1f, 0.3f, 0.3f, 1f); // Red
+            _scoreKarusText.fontSize = 14;
+            _scoreKarusText.alignment = TextAnchor.MiddleCenter;
+            _scoreKarusText.raycastTarget = false;
+            var sKarusRT = sKarusGo.GetComponent<RectTransform>();
+            sKarusRT.anchorMin = new Vector2(0, 0.25f);
+            sKarusRT.anchorMax = new Vector2(0.5f, 0.48f);
+            sKarusRT.sizeDelta = Vector2.zero;
+
+            // El Morad Score / Stats
+            var sElmoGo = new GameObject("ElmoScore");
+            sElmoGo.transform.SetParent(_scoreboardPanel.transform, false);
+            _scoreElmoText = sElmoGo.AddComponent<Text>();
+            _scoreElmoText.font = font;
+            _scoreElmoText.text = "El Morad: 0";
+            _scoreElmoText.color = new Color(0.3f, 0.5f, 1f, 1f); // Blue
+            _scoreElmoText.fontSize = 14;
+            _scoreElmoText.alignment = TextAnchor.MiddleCenter;
+            _scoreElmoText.raycastTarget = false;
+            var sElmoRT = sElmoGo.GetComponent<RectTransform>();
+            sElmoRT.anchorMin = new Vector2(0.5f, 0.25f);
+            sElmoRT.anchorMax = new Vector2(1, 0.48f);
+            sElmoRT.sizeDelta = Vector2.zero;
+
+            // Altar / Extra Text
+            var sExtraGo = new GameObject("AltarState");
+            sExtraGo.transform.SetParent(_scoreboardPanel.transform, false);
+            _scoreExtraText = sExtraGo.AddComponent<Text>();
+            _scoreExtraText.font = font;
+            _scoreExtraText.text = "Altar Kontrolü: BOŞTA";
+            _scoreExtraText.color = Color.gray;
+            _scoreExtraText.fontSize = 11;
+            _scoreExtraText.alignment = TextAnchor.MiddleCenter;
+            _scoreExtraText.raycastTarget = false;
+            var sExtraRT = sExtraGo.GetComponent<RectTransform>();
+            sExtraRT.anchorMin = new Vector2(0, 0.02f);
+            sExtraRT.anchorMax = new Vector2(1, 0.22f);
+            sExtraRT.sizeDelta = Vector2.zero;
+
+            _scoreboardPanel.SetActive(false);
+
+            // -------------------------------------------------------------
+            // 3. ANNOUNCEMENT OVERLAY (Center banner)
+            // -------------------------------------------------------------
+            _announcementOverlay = new GameObject("TempleAnnouncementOverlay");
+            _announcementOverlay.transform.SetParent(parent, false);
+            var annRT = _announcementOverlay.AddComponent<RectTransform>();
+            annRT.anchorMin = new Vector2(0, 0.7f);
+            annRT.anchorMax = new Vector2(1, 0.8f);
+            annRT.sizeDelta = Vector2.zero;
+
+            _announcementText = _announcementOverlay.AddComponent<Text>();
+            _announcementText.font = font;
+            _announcementText.text = "";
+            _announcementText.color = new Color(1f, 0.85f, 0f, 0f); // Initially transparent
+            _announcementText.fontSize = 22;
+            _announcementText.alignment = TextAnchor.MiddleCenter;
+            _announcementText.raycastTarget = false;
+            _announcementOverlay.AddComponent<Shadow>().effectColor = Color.black;
+
+            _uiInitialized = true;
+            Debug.Log("[TEMPLE-UI] BuildUI: UI layouts constructed dynamically successfully.");
+        }
+
+        private void Update()
+        {
+            if (!_uiInitialized) return;
+
+            // 1. Update Registration Countdown
+            if (_invitationTimeLeft > 0f)
+            {
+                _invitationTimeLeft -= Time.deltaTime;
+                if (_invitationTimeLeft <= 0f)
+                {
+                    _invitationTimeLeft = 0f;
+                    HideInvitation();
+                }
+                else
+                {
+                    TimeSpan t = TimeSpan.FromSeconds(_invitationTimeLeft);
+                    _invTimerText.text = string.Format("Kalan Süre: {0:D2}:{1:D2}", t.Minutes, t.Seconds);
+                }
+            }
+
+            // 2. Invitation panel slide-in animation
+            var invRT = _invitationPanel.GetComponent<RectTransform>();
+            if (_invitationPanel.activeSelf)
+            {
+                invRT.localPosition = Vector3.Lerp(invRT.localPosition, _invTargetPos, Time.deltaTime * 6f);
+            }
+            else
+            {
+                invRT.localPosition = Vector3.Lerp(invRT.localPosition, _invStartPos, Time.deltaTime * 6f);
+            }
+
+            // 3. Event Zone Detection and Scoreboard Toggling
+            var gm = GameManager.Instance;
+            if (gm != null)
+            {
+                short currentZone = gm.CurrentZoneId;
+                if (currentZone == ZONE_BDW || currentZone == ZONE_CHAOS || currentZone == ZONE_JURAID)
+                {
+                    if (!_scoreboardPanel.activeSelf)
+                    {
+                        SetupScoreboardForZone(currentZone);
+                        _scoreboardPanel.SetActive(true);
+                    }
+                    UpdateScoreboardValues(currentZone);
+                }
+                else
+                {
+                    if (_scoreboardPanel.activeSelf)
+                    {
+                        _scoreboardPanel.SetActive(false);
+                    }
+                }
+            }
+
+            // 4. Announcement Fading
+            if (_announcementFadeTimer > 0f)
+            {
+                _announcementFadeTimer -= Time.deltaTime;
+                if (_announcementFadeTimer <= 0f)
+                {
+                    _announcementText.color = new Color(_announcementText.color.r, _announcementText.color.g, _announcementText.color.b, 0f);
+                }
+                else if (_announcementFadeTimer < 1.0f)
+                {
+                    // Fade out in the last second
+                    _announcementText.color = new Color(_announcementText.color.r, _announcementText.color.g, _announcementText.color.b, _announcementFadeTimer);
+                }
+            }
+        }
+
+        // ==========================================
+        // OPERATIONS
+        // ==========================================
+
+        private void OnRegisterClicked()
+        {
+            var net = KONetworkManager.Instance;
+            if (net != null && net.IsConnected)
+            {
+                using var pkt = new KOPacketWriter(WizOpcode.WIZ_EVENT);
+                pkt.WriteByte(TEMPLE_EVENT_JOIN);
+                net.SendPacket(pkt);
+                Debug.Log("[TEMPLE-UI] Send TEMPLE_EVENT_JOIN request.");
+            }
+        }
+
+        private void OnCancelClicked()
+        {
+            var net = KONetworkManager.Instance;
+            if (net != null && net.IsConnected)
+            {
+                using var pkt = new KOPacketWriter(WizOpcode.WIZ_EVENT);
+                pkt.WriteByte(TEMPLE_EVENT_DISBAND);
+                net.SendPacket(pkt);
+                Debug.Log("[TEMPLE-UI] Send TEMPLE_EVENT_DISBAND request.");
+            }
+        }
+
+        private void ShowInvitation(short activeEvent, short seconds)
+        {
+            if (seconds <= 0)
+            {
+                HideInvitation();
+                return;
+            }
+
+            if (_activeEventId != activeEvent)
+            {
+                _isRegistered = false;
+            }
+            _activeEventId = activeEvent;
+            _invitationTimeLeft = seconds;
+
+            string eventName = "ETKİNLİK";
+            if (activeEvent == EVENT_BDW) eventName = "BORDER DEFENSE WAR";
+            else if (activeEvent == EVENT_CHAOS) eventName = "CHAOS DUNGEON";
+            else if (activeEvent == EVENT_JURAID) eventName = "JURAID MOUNTAIN";
+
+            _invTitleText.text = eventName;
+            _invQueueText.text = "Kayıtlı: Karus: 0 | El Morad: 0";
+            
+            if (_isRegistered)
+            {
+                _registerButton.gameObject.SetActive(false);
+                _cancelButton.gameObject.SetActive(true);
+                _cancelBtnText.text = "Kaydı İptal Et";
+            }
+            else
+            {
+                _registerButton.gameObject.SetActive(true);
+                _cancelButton.gameObject.SetActive(false);
+            }
+
+            _invitationPanel.SetActive(true);
+            
+            // Trigger a sound if any
+            Debug.Log($"[TEMPLE-UI] ShowInvitation: {eventName} starts in {seconds} seconds.");
+        }
+
+        private void HideInvitation()
+        {
+            _invitationPanel.SetActive(false);
+        }
+
+        private void HandleJoinResult(byte result, short eventId)
+        {
+            if (result == 1) // Success
+            {
+                _isRegistered = true;
+                _registerButton.gameObject.SetActive(false);
+                _cancelButton.gameObject.SetActive(true);
+                _cancelBtnText.text = "Kaydı İptal Et";
+                
+                if (KOUIManager.Instance != null)
+                {
+                    KOUIManager.Instance.AddMsgOutput("Etkinliğe başarıyla kayıt oldunuz.", new Color(0.2f, 1f, 0.2f, 1f));
+                }
+            }
+            else if (result == 3) // Missing Item
+            {
+                if (KOUIManager.Instance != null)
+                {
+                    KOUIManager.Instance.AddMsgOutput("Kayıt olunamadı! Çantanızda Kaos Haritası (Chaos Map) bulunmalıdır.", Color.red);
+                }
+            }
+            else
+            {
+                if (KOUIManager.Instance != null)
+                {
+                    KOUIManager.Instance.AddMsgOutput("Kayıt başarısız oldu.", Color.red);
+                }
+            }
+        }
+
+        private void HandleDisbandResult(byte result, short eventId)
+        {
+            if (result == 1) // Success
+            {
+                _isRegistered = false;
+                _registerButton.gameObject.SetActive(true);
+                _cancelButton.gameObject.SetActive(false);
+                
+                if (KOUIManager.Instance != null)
+                {
+                    KOUIManager.Instance.AddMsgOutput("Etkinlik kaydınız iptal edildi.", new Color(1f, 0.6f, 0f, 1f));
+                }
+            }
+        }
+
+        private void UpdateQueueCounter(short eventId, short param1, short param2)
+        {
+            if (eventId == EVENT_CHAOS)
+            {
+                _queueChaosCount = param1;
+                _invQueueText.text = $"Kayıtlı Oyuncu: {param1}";
+            }
+            else
+            {
+                _queueKarusCount = param1;
+                _queueElmoCount = param2;
+                _invQueueText.text = $"Kayıtlı: Karus: {param1} | El Morad: {param2}";
+            }
+        }
+
+        // ==========================================
+        // SCOREBOARD SYSTEM
+        // ==========================================
+
+        private void SetupScoreboardForZone(short zone)
+        {
+            _eventTimeLeft = 1200f; // 20 minutes countdown
+
+            if (zone == ZONE_BDW)
+            {
+                _scoreTitleText.text = "BORDER DEFENSE WAR";
+                _scoreKarusText.gameObject.SetActive(true);
+                _scoreElmoText.gameObject.SetActive(true);
+                _scoreExtraText.gameObject.SetActive(true);
+
+                _bdwKarusScore = 0;
+                _bdwElmoScore = 0;
+                _bdwAltarControlNation = 0;
+            }
+            else if (zone == ZONE_CHAOS)
+            {
+                _scoreTitleText.text = "CHAOS DUNGEON";
+                _scoreKarusText.gameObject.SetActive(true);
+                _scoreElmoText.gameObject.SetActive(true);
+                _scoreExtraText.gameObject.SetActive(false);
+
+                _scoreKarusText.text = "Öldürme: 0";
+                _scoreKarusText.color = Color.green;
+                _scoreElmoText.text = "Ölüm: 0";
+                _scoreElmoText.color = Color.red;
+
+                _chaosKills = 0;
+                _chaosDeaths = 0;
+            }
+            else if (zone == ZONE_JURAID)
+            {
+                _scoreTitleText.text = "JURAID MOUNTAIN";
+                _scoreKarusText.gameObject.SetActive(false);
+                _scoreElmoText.gameObject.SetActive(false);
+                _scoreExtraText.gameObject.SetActive(true);
+
+                _juraidStage = 1;
+                _scoreExtraText.text = "Bölge: 1. Oda";
+                _scoreExtraText.color = Color.cyan;
+            }
+        }
+
+        private void UpdateScoreboardValues(short zone)
+        {
+            if (_eventTimeLeft > 0f)
+            {
+                _eventTimeLeft -= Time.deltaTime;
+                if (_eventTimeLeft < 0f) _eventTimeLeft = 0f;
+            }
+
+            TimeSpan t = TimeSpan.FromSeconds(_eventTimeLeft);
+            _scoreTimerText.text = string.Format("Kalan Süre: {0:D2}:{1:D2}", t.Minutes, t.Seconds);
+
+            if (zone == ZONE_BDW)
+            {
+                _scoreKarusText.text = $"Karus: {_bdwKarusScore}";
+                _scoreElmoText.text = $"El Morad: {_bdwElmoScore}";
+                
+                if (_bdwAltarControlNation == 0)
+                {
+                    _scoreExtraText.text = "Altar Kontrolü: BOŞTA";
+                    _scoreExtraText.color = Color.gray;
+                }
+                else if (_bdwAltarControlNation == 1)
+                {
+                    _scoreExtraText.text = "Altar Kontrolü: KARUS";
+                    _scoreExtraText.color = new Color(1f, 0.3f, 0.3f, 1f);
+                }
+                else
+                {
+                    _scoreExtraText.text = "Altar Kontrolü: EL MORAD";
+                    _scoreExtraText.color = new Color(0.3f, 0.5f, 1f, 1f);
+                }
+            }
+            else if (zone == ZONE_CHAOS)
+            {
+                _scoreKarusText.text = $"Öldürme: {_chaosKills}";
+                _scoreElmoText.text = $"Ölüm: {_chaosDeaths}";
+            }
+            else if (zone == ZONE_JURAID)
+            {
+                // Juraid updates stage based on spawns / gates
+                _scoreExtraText.text = $"Bölge: {_juraidStage}. Oda";
+            }
+        }
+
+        // ==========================================
+        // PACKET LISTENERS
+        // ==========================================
+
+        private void OnEventPacket(byte[] rawData)
+        {
+            var r = new KOPacketReader(rawData);
+            byte subOpcode = r.ReadByte();
+
+            switch (subOpcode)
+            {
+                case TEMPLE_EVENT:
+                    {
+                        short activeEvent = r.ReadInt16();
+                        short remainSeconds = r.ReadInt16();
+                        ShowInvitation(activeEvent, remainSeconds);
+                    }
+                    break;
+
+                case TEMPLE_EVENT_JOIN:
+                    {
+                        byte result = r.ReadByte();
+                        short activeEvent = r.ReadInt16();
+                        HandleJoinResult(result, activeEvent);
+                    }
+                    break;
+
+                case TEMPLE_EVENT_DISBAND:
+                    {
+                        byte result = r.ReadByte();
+                        short activeEvent = r.ReadInt16();
+                        HandleDisbandResult(result, activeEvent);
+                    }
+                    break;
+
+                case TEMPLE_EVENT_COUNTER:
+                    {
+                        short activeEvent = r.ReadInt16();
+                        if (activeEvent == EVENT_CHAOS)
+                        {
+                            short allCount = r.ReadInt16();
+                            UpdateQueueCounter(activeEvent, allCount, 0);
+                        }
+                        else
+                        {
+                            short karusCount = r.ReadInt16();
+                            short elmoCount = r.ReadInt16();
+                            UpdateQueueCounter(activeEvent, karusCount, elmoCount);
+                        }
+                    }
+                    break;
+            }
+        }
+
+        private void OnCapturePacket(byte[] rawData)
+        {
+            var r = new KOPacketReader(rawData);
+            byte subOpcode = r.ReadByte();
+
+            if (subOpcode == 0x05) // Announcement
+            {
+                byte nation = r.ReadByte();
+                string npcName = r.ReadKOString();
+                
+                string nationName = nation == 1 ? "Karus" : "El Morad";
+                Color nationColor = nation == 1 ? new Color(1f, 0.3f, 0.3f, 1f) : new Color(0.3f, 0.5f, 1f, 1f);
+
+                _bdwAltarControlNation = nation;
+
+                ShowBannerAnnouncement($"{nationName} ırkı {npcName} anıtını ele geçirdi!", nationColor);
+            }
+            else if (subOpcode == 0x04) // Score and capture timer reset
+            {
+                byte nation = r.ReadByte();
+                short capSeconds = r.ReadInt16(); // KO = 360 seconds
+                
+                if (nation == 1) _bdwKarusScore++;
+                else if (nation == 2) _bdwElmoScore++;
+
+                _bdwAltarControlNation = nation;
+
+                // Adjust event timer or show feedback
+                Debug.Log($"[TEMPLE-UI] Altar capture updated score. Karus: {_bdwKarusScore} | Elmo: {_bdwElmoScore}");
+            }
+        }
+
+        private void OnDeadPacket(byte[] rawData)
+        {
+            var r = new KOPacketReader(rawData);
+            // Wire: [WIZ_DEAD] [nid:int16]
+            short deadNid = r.ReadInt16();
+
+            // Detect if we killed a boss / gatekeeper in Juraid or got a kill in Chaos
+            var gm = GameManager.Instance;
+            if (gm != null)
+            {
+                short currentZone = gm.CurrentZoneId;
+                if (currentZone == ZONE_CHAOS)
+                {
+                    // Chaos: If the entity dead is someone else and we are in Chaos, we might get points.
+                    // Note: Actual scoring is determined by server attack/death sync. 
+                    // Let's increment local kills if we receive a packet indicating our kill.
+                    // Normally the server sends WIZ_ATTACK or WIZ_CHAT with kill confirmations.
+                }
+                else if (currentZone == ZONE_JURAID)
+                {
+                    // Juraid: If a gatekeeper (NPCSid matches gatekeeper IDs) dies, we progress stage.
+                    var entity = EntityManager.Instance?.GetEntityByInstanceId(deadNid);
+                    if (entity != null)
+                    {
+                        // Gatekeeper prototype IDs usually end in 01, 02, etc. or contain Gatekeeper names
+                        if (entity.EntityName.ToLower().Contains("gatekeeper") || entity.EntityName.ToLower().Contains("kapıcı") || entity.EntityName.ToLower().Contains("deva"))
+                        {
+                            _juraidStage++;
+                            if (_juraidStage > 4) _juraidStage = 4;
+                            
+                            ShowBannerAnnouncement($"Tebrikler! Bir sonraki odaya geçtiniz.", Color.cyan);
+                        }
+                    }
+                }
+            }
+        }
+
+        // ==========================================
+        // FEEDBACK BANNER UI
+        // ==========================================
+
+        private void ShowBannerAnnouncement(string text, Color textColor)
+        {
+            if (_announcementText == null) return;
+
+            _announcementText.text = text;
+            _announcementText.color = textColor;
+            _announcementFadeTimer = 4.0f; // Display for 4 seconds
+            
+            Debug.Log($"[TEMPLE-ANNOUNCE] {text}");
+        }
+
+        // ==========================================
+        // EXTERNAL INTEGRATION
+        // ==========================================
+
+        public void IncrementChaosKill()
+        {
+            _chaosKills++;
+        }
+
+        public void IncrementChaosDeath()
+        {
+            _chaosDeaths++;
+        }
+    }
+}

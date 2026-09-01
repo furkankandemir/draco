@@ -1,0 +1,3035 @@
+using UnityEngine;
+
+using UnityEngine.UI;
+
+using System.Collections.Generic;
+
+using EntropyOnline.Network;
+using EntropyOnline.Network.KO;
+
+
+
+
+namespace EntropyOnline.UI
+
+{
+
+    /// <summary>
+
+    /// Mobil Skill Bar — Sağ tarafta yuvarlak dokunmatik butonlar.
+
+    /// Nova Online World referansı: grid/diamond pattern.
+
+    /// </summary>
+
+    public class MobileSkillBar : MonoBehaviour
+
+    {
+
+        public static MobileSkillBar Instance { get; private set; }
+        public static bool IsBaking = false;
+
+        public static Sprite CircleSprite => _circleSprite;
+        public static Sprite SlotFrameSprite => _slotFrameSprite;
+        public static Sprite AttackFrameSprite => _attackFrameSprite;
+        public static Sprite PageFrameSprite => _pageFrameSprite;
+        public static Sprite TextGlowSprite => _textGlowSprite;
+
+
+
+        private Canvas _canvas;
+
+        private RectTransform _buttonContainer; // Tüm butonların parent'ı — offset için
+
+        private readonly List<SkillSlot> _skillSlots = new();
+
+        private SkillSlot _attackButton;
+
+        private GameObject _customAtkSubBtnRight;
+        private GameObject _customAtkSubBtnLeft;
+        private GameObject _customAtkCancelBtn;
+
+
+
+        // ================================
+
+        // SAYFALAMA (PAGINATION) DEĞİŞKENLERİ
+
+        // ================================
+
+        private static float pgOffX = -70.0f;
+        private static float pgOffY = 272.0f;
+
+        private static float subBtnRightX = -42.0f;
+        private static float subBtnRightY = -155.0f;
+        private static float subBtnLeftX = -73.0f;
+        private static float subBtnLeftY = -80.0f;
+
+        private static float cancelBtnX = -39.2f;
+        private static float cancelBtnY = -112.6f;
+
+
+
+        private RectTransform _pageControllerContainer;
+        private RectTransform _marginContainer;
+        private Vector2[] _defaultSlotPositions;
+        private Vector2 _defaultAttackPosition;
+        private Vector2 _defaultAttackSize;
+        private Vector2 _defaultSubLeftPosition;
+        private Vector2 _defaultSubLeftSize;
+        private Vector2 _defaultSubRightPosition;
+        private Vector2 _defaultCancelPosition;
+        private Vector2 _defaultPageControllerPosition;
+
+        private Text _pageText;
+
+
+
+        private int _currentPage = 0; // 0-5 (6 Sayfa)
+
+        private readonly int[,] _pagedMagicNums = new int[6, 14];
+
+        /// <summary>
+        /// Sunucudan skillbar verisi geldi mi?
+        /// İlk giriş sonrası sunucu WIZ_SKILLDATA gönderir.
+        /// </summary>
+        private bool _serverDataLoaded = false;
+
+
+
+        // Buton boyutları (Constant Pixel Size modunda)
+
+        private const float ATTACK_SIZE = 105f;   // Ana saldırı butonu
+
+        private const float SKILL_SIZE = 60f;     // Skill butonları
+
+        private const float GAP = 8f;             // Butonlar arası boşluk
+
+
+
+        // Renkler — Orijinal mat altın rengi ve cam-morfik arka planlar
+
+        private static readonly Color SLOT_BG = new(0.12f, 0.10f, 0.08f, 0.85f);
+
+        private static readonly Color SLOT_BORDER = new(0.60f, 0.48f, 0.22f, 0.90f); // Orijinal Mat Altın Rengi
+
+        private static readonly Color ATTACK_BG = new(0.40f, 0.10f, 0.08f, 0.90f);
+
+        private static readonly Color ATTACK_BORDER = new(0.95f, 0.85f, 0.35f, 0.95f);
+
+        private static readonly Color TEXT_COLOR = new(0.95f, 0.85f, 0.35f, 1f);
+
+
+
+        private static Sprite _circleSprite;
+
+        private static Sprite _slotFrameSprite;
+
+        private static Sprite _attackFrameSprite;
+
+        private static Sprite _pageFrameSprite;
+
+        private static Sprite _textGlowSprite;
+
+
+
+        private void Awake()
+
+        {
+
+            if (IsBaking) return;
+            if (Instance != null && Instance != this) { Destroy(gameObject); return; }
+
+            Instance = this;
+
+        }
+
+
+
+        private void OnDestroy()
+
+        {
+
+            KOPacketHandler.OnSkillData -= OnSkillBarPacketReceived;
+
+            if (Instance == this) Instance = null;
+
+        }
+
+
+
+        public void Initialize()
+        {
+            EnsurePremiumSprites();
+
+            bool isPrefab = transform.Find("MobileSkillBarCanvas") != null;
+            if (isPrefab)
+            {
+                BindPrefabElements();
+            }
+            else
+            {
+                CreateCanvas();
+                CreateLayout();
+            }
+
+            CaptureDefaultPositions();
+
+            // Sunucudan gelen skillbar verisini dinle
+            KOPacketHandler.OnSkillData -= OnSkillBarPacketReceived;
+            KOPacketHandler.OnSkillData += OnSkillBarPacketReceived;
+
+            RefreshPage(); // Sayfa 1'i yükle ve göster (sunucu verisi gelince tekrar yüklenecek)
+
+            RefreshPage(); // Sayfa 1'i yükle ve göster (sunucu verisi gelince tekrar yüklenecek)
+
+            ApplyZButtonScale();
+            ApplyZAndRLayout();
+            ApplyExtraSkillsActiveState();
+            LoadSavedPositions();
+            SetSkillDragEnabled(false);
+
+        }
+
+        private void ConfigureButtonGraphics(GameObject btnObj, Sprite frameSprite)
+        {
+            if (btnObj == null) return;
+            var img = btnObj.GetComponent<Image>();
+            if (img != null && (img.sprite == null || img.sprite.name == "UIMask" || img.sprite.name == "Background" || img.sprite.name == "unity_builtin_extra"))
+            {
+                img.sprite = frameSprite;
+                img.color = Color.white;
+            }
+            var innerTrans = btnObj.transform.Find("Inner");
+            if (innerTrans != null)
+            {
+                var innerImg = innerTrans.GetComponent<Image>();
+                if (innerImg != null && (innerImg.sprite == null || innerImg.sprite.name == "UIMask" || innerImg.sprite.name == "Background" || innerImg.sprite.name == "unity_builtin_extra"))
+                {
+                    innerImg.sprite = _circleSprite;
+                    innerImg.color = new Color(0f, 0f, 0f, 0.4f); // Yarı saydam siyah slot içi
+                }
+            }
+        }
+
+        private void BindPrefabElements()
+        {
+            _canvas = GetComponentInChildren<Canvas>();
+            
+            var containerTrans = transform.Find("MobileSkillBarCanvas/ButtonContainer");
+            if (containerTrans != null)
+            {
+                _buttonContainer = containerTrans.GetComponent<RectTransform>();
+            }
+            else
+            {
+                _buttonContainer = GetComponentInChildren<RectTransform>();
+            }
+
+            if (_buttonContainer == null) return;
+
+            // 1. Resolve any null fonts in Text components (LegacyRuntime.ttf)
+            var allTexts = GetComponentsInChildren<Text>(true);
+            var defaultFont = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            foreach (var txt in allTexts)
+            {
+                if (txt.font == null && defaultFont != null)
+                {
+                    txt.font = defaultFont;
+                }
+            }
+
+            // 2. AttackButton
+            var atkTrans = _buttonContainer.Find("AttackButton");
+            if (atkTrans != null)
+            {
+                var atkObj = atkTrans.gameObject;
+                ConfigureButtonGraphics(atkObj, _attackFrameSprite);
+                _attackButton = new SkillSlot { SlotIndex = -1, Root = atkObj, Button = atkObj.GetComponent<Button>() };
+                if (_attackButton.Button != null)
+                {
+                    _attackButton.Button.onClick.RemoveAllListeners();
+                    _attackButton.Button.onClick.AddListener(OnAttackPressed);
+                }
+
+                // Set dragon-breath icon and hide label text
+                var labelTrans = atkTrans.Find("Inner/Label");
+                if (labelTrans != null) labelTrans.gameObject.SetActive(false);
+
+                var iconTrans = atkTrans.Find("Inner/Icon");
+                if (iconTrans != null)
+                {
+                    var iconImg = iconTrans.GetComponent<Image>();
+                    if (iconImg != null)
+                    {
+                        var tex = Resources.Load<Texture2D>("UI/dragon-breath");
+                        if (tex != null)
+                        {
+                            iconImg.sprite = Sprite.Create(tex, new Rect(0, 0, tex.width, tex.height), new Vector2(0.5f, 0.5f));
+                            iconImg.color = new Color(0.82f, 0.68f, 0.38f, 1f);
+                        }
+                    }
+                }
+            }
+
+            // 3. CustomAtkSubBtnRight
+            var subRightTrans = _buttonContainer.Find("CustomAtkSubBtnRight");
+            if (subRightTrans != null)
+            {
+                _customAtkSubBtnRight = subRightTrans.gameObject;
+                ConfigureButtonGraphics(_customAtkSubBtnRight, _slotFrameSprite);
+                var btnRight = _customAtkSubBtnRight.GetComponent<Button>();
+                if (btnRight != null)
+                {
+                    btnRight.onClick.RemoveAllListeners();
+                    btnRight.onClick.AddListener(() => {
+                        var selector = EntropyOnline.World.KOTargetSelector.Instance;
+                        if (selector != null) selector.TargetNearestMonster();
+                    });
+                }
+
+                // Set target icon PNG (target_icon_monster) and hide label text
+                var labelTrans = subRightTrans.Find("Inner/Label");
+                if (labelTrans != null) labelTrans.gameObject.SetActive(false);
+
+                var iconTrans = subRightTrans.Find("Inner/Icon");
+                if (iconTrans != null)
+                {
+                    var iconImg = iconTrans.GetComponent<Image>();
+                    if (iconImg != null)
+                    {
+                        var tex = Resources.Load<Texture2D>("UI/target_icon_monster");
+                        if (tex != null)
+                        {
+                            iconImg.sprite = Sprite.Create(tex, new Rect(0, 0, tex.width, tex.height), new Vector2(0.5f, 0.5f));
+                            iconImg.color = new Color(0.85f, 0.1f, 0.1f, 1f);
+                        }
+                    }
+                }
+            }
+
+            // 4. CustomAtkSubBtnLeft
+            var subLeftTrans = _buttonContainer.Find("CustomAtkSubBtnLeft");
+            if (subLeftTrans != null)
+            {
+                _customAtkSubBtnLeft = subLeftTrans.gameObject;
+                ConfigureButtonGraphics(_customAtkSubBtnLeft, _slotFrameSprite);
+                var btnLeft = _customAtkSubBtnLeft.GetComponent<Button>();
+                if (btnLeft != null)
+                {
+                    btnLeft.onClick.RemoveAllListeners();
+                    btnLeft.onClick.AddListener(() => {
+                        var selector = EntropyOnline.World.KOTargetSelector.Instance;
+                        if (selector != null) selector.TargetNearestEnemy();
+                    });
+                }
+
+                // Set target icon PNG (target_icon_player) and hide label text
+                var labelTrans = subLeftTrans.Find("Inner/Label");
+                if (labelTrans != null) labelTrans.gameObject.SetActive(false);
+
+                var iconTrans = subLeftTrans.Find("Inner/Icon");
+                if (iconTrans != null)
+                {
+                    var iconImg = iconTrans.GetComponent<Image>();
+                    if (iconImg != null)
+                    {
+                        var tex = Resources.Load<Texture2D>("UI/target_icon_player");
+                        if (tex != null)
+                        {
+                            iconImg.sprite = Sprite.Create(tex, new Rect(0, 0, tex.width, tex.height), new Vector2(0.5f, 0.5f));
+                            iconImg.color = new Color(0.82f, 0.68f, 0.38f, 1f);
+                        }
+                    }
+                }
+            }
+
+            // 5. CustomAtkCancelBtn
+            var cancelTrans = _buttonContainer.Find("CustomAtkCancelBtn");
+            if (cancelTrans != null)
+            {
+                _customAtkCancelBtn = cancelTrans.gameObject;
+                ConfigureButtonGraphics(_customAtkCancelBtn, _slotFrameSprite);
+                var btnCancel = _customAtkCancelBtn.GetComponent<Button>();
+                if (btnCancel != null)
+                {
+                    btnCancel.onClick.RemoveAllListeners();
+                    btnCancel.onClick.AddListener(() => {
+                        var selector = EntropyOnline.World.KOTargetSelector.Instance;
+                        if (selector != null) selector.ClearTarget();
+                    });
+                }
+            }
+
+            // 6. 8 Skill slots
+            _skillSlots.Clear();
+            for (int i = 0; i < 8; i++)
+            {
+                int slotNum = i + 1;
+                var slotTrans = _buttonContainer.Find($"Skill_{slotNum}");
+                if (slotTrans != null)
+                {
+                    var obj = slotTrans.gameObject;
+                    ConfigureButtonGraphics(obj, _slotFrameSprite);
+                    
+                    var slot = new SkillSlot
+                    {
+                        SlotIndex = i,
+                        Root = obj,
+                        Button = obj.GetComponent<Button>(),
+                        CooldownOverlay = obj.transform.Find("Inner/CooldownOverlay")?.GetComponent<Image>()
+                    ,
+                        CooldownText = obj.transform.Find("Inner/CooldownText")?.GetComponent<Text>()
+                    };
+                    if (slot.Button != null)
+                    {
+                        slot.Button.onClick.RemoveAllListeners();
+                        var aimHandler = obj.GetComponent<KOSkillAimHandler>() ?? obj.AddComponent<KOSkillAimHandler>();
+                        aimHandler.SlotIndex = i;
+                    }
+
+                    if (slot.CooldownOverlay != null)
+                    {
+                        slot.CooldownOverlay.sprite = _circleSprite;
+                        slot.CooldownOverlay.color = new Color(0f, 0f, 0f, 0.65f); // Yarı saydam siyah radial cooldown maskesi
+                        slot.CooldownOverlay.fillAmount = 0f;
+                    }
+
+                    var dragDrop = obj.GetComponent<KOSkillBarSlotDragDrop>() ?? obj.AddComponent<KOSkillBarSlotDragDrop>();
+                    dragDrop.SlotIndex = i;
+
+                    _skillSlots.Add(slot);
+                }
+            }
+
+            // 8. Page Controller
+            var pageContTrans = _buttonContainer.Find("PageControllerContainer");
+            if (pageContTrans != null)
+            {
+                _pageControllerContainer = pageContTrans.GetComponent<RectTransform>();
+                
+                var btnPageLeftTrans = pageContTrans.Find("BtnPageLeft");
+                if (btnPageLeftTrans != null)
+                {
+                    var btnPageLeft = btnPageLeftTrans.GetComponent<Button>();
+                    if (btnPageLeft != null)
+                    {
+                        ConfigureButtonGraphics(btnPageLeft.gameObject, _pageFrameSprite);
+                        btnPageLeft.onClick.RemoveAllListeners();
+                        btnPageLeft.onClick.AddListener(PrevPage);
+                    }
+                }
+
+                var btnPageRightTrans = pageContTrans.Find("BtnPageRight");
+                if (btnPageRightTrans != null)
+                {
+                    var btnPageRight = btnPageRightTrans.GetComponent<Button>();
+                    if (btnPageRight != null)
+                    {
+                        ConfigureButtonGraphics(btnPageRight.gameObject, _pageFrameSprite);
+                        btnPageRight.onClick.RemoveAllListeners();
+                        btnPageRight.onClick.AddListener(NextPage);
+                    }
+                }
+
+                var textGlowTrans = pageContTrans.Find("PageTextGlow") ?? pageContTrans.Find("TextGlow");
+                if (textGlowTrans != null)
+                {
+                    var glowImg = textGlowTrans.GetComponent<Image>();
+                    if (glowImg != null)
+                    {
+                        glowImg.sprite = _textGlowSprite;
+                        glowImg.color = Color.white;
+                    }
+                }
+
+                var pageTextTrans = pageContTrans.Find("PageText");
+                if (pageTextTrans != null)
+                {
+                    _pageText = pageTextTrans.GetComponent<Text>();
+                }
+            }
+            CreateExtraSlotsForPrefab();
+        }
+
+
+
+        // ================================
+
+        // CIRCLE SPRITE
+
+        // ================================
+
+
+
+        private static void EnsurePremiumSprites()
+
+        {
+
+            if (_circleSprite != null) return;
+
+
+
+            // 1. Maske Şablonu (Beyaz Yuvarlak)
+
+            int maskSize = 128;
+
+            var maskTex = new Texture2D(maskSize, maskSize, TextureFormat.RGBA32, false);
+
+            float maskCenter = maskSize / 2f;
+
+            float maskRadius = maskCenter - 1f;
+
+
+
+            for (int y = 0; y < maskSize; y++)
+
+            {
+
+                for (int x = 0; x < maskSize; x++)
+
+                {
+
+                    float dist = Vector2.Distance(new Vector2(x, y), new Vector2(maskCenter, maskCenter));
+
+                    if (dist <= maskRadius)
+
+                    {
+
+                        float alpha = Mathf.Clamp01(maskRadius - dist);
+
+                        maskTex.SetPixel(x, y, new Color(1, 1, 1, alpha));
+
+                    }
+
+                    else
+
+                    {
+
+                        maskTex.SetPixel(x, y, Color.clear);
+
+                    }
+
+                }
+
+            }
+
+            maskTex.Apply();
+
+            _circleSprite = Sprite.Create(maskTex, new UnityEngine.Rect(0, 0, maskSize, maskSize), new Vector2(0.5f, 0.5f));
+            _circleSprite.name = "MobileSkillBar_CircleMask";
+
+
+
+            // 2. Premium Slot Çerçevesi (Kavisli Altın Süslemeler + Düz Koyu Arka Plan)
+
+            _slotFrameSprite = CreatePremiumFrame(128, SLOT_BORDER, SLOT_BG, false, false);
+            _slotFrameSprite.name = "MobileSkillBar_SlotFrame";
+
+
+
+            // 3. Premium Atak Çerçevesi (Altın Çerçeve + Kanatçıklar + Düz Ruby Kırmızı Arka Plan)
+
+            _attackFrameSprite = CreatePremiumFrame(128, SLOT_BORDER, ATTACK_BG, true, false);
+            _attackFrameSprite.name = "MobileSkillBar_AttackFrame";
+
+
+
+            // 4. Premium Sayfa Butonu Çerçevesi (Düz Altın Çerçeve + Düz Koyu Arka Plan, Süslemesiz)
+
+            _pageFrameSprite = CreatePremiumFrame(128, SLOT_BORDER, SLOT_BG, false, true);
+            _pageFrameSprite.name = "MobileSkillBar_PageFrame";
+
+
+
+            // 5. Rakam Arkası Yatay Kapsül Gölgelendirme (Soft Fading Glow)
+
+            int glowW = 64;
+
+            int glowH = 32;
+
+            var glowTex = new Texture2D(glowW, glowH, TextureFormat.RGBA32, false);
+
+            for (int y = 0; y < glowH; y++)
+
+            {
+
+                for (int x = 0; x < glowW; x++)
+
+                {
+
+                    float nx = (x - glowW / 2f) / (glowW / 2f);
+
+                    float ny = (y - glowH / 2f) / (glowH / 2f);
+
+                    float alphaX = Mathf.Clamp01(1f - nx * nx);
+
+                    float alphaY = Mathf.Clamp01(1f - ny * ny);
+
+                    float alpha = alphaX * alphaY;
+
+                    glowTex.SetPixel(x, y, new Color(0f, 0f, 0f, alpha * 0.55f));
+
+                }
+
+            }
+
+            glowTex.Apply();
+
+            _textGlowSprite = Sprite.Create(glowTex, new Rect(0, 0, glowW, glowH), new Vector2(0.5f, 0.5f));
+            _textGlowSprite.name = "MobileSkillBar_TextGlow";
+
+        }
+
+
+
+        private static Sprite CreatePremiumFrame(int size, Color borderCol, Color fillCol, bool isAttack, bool isPageBtn)
+
+        {
+
+            var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
+
+            tex.filterMode = FilterMode.Bilinear;
+
+            tex.wrapMode = TextureWrapMode.Clamp;
+
+
+
+            float center = size / 2f;
+
+            float radius = center - 7f; // Süslemeler için pay bırakıyoruz
+
+
+
+            float borderWidth = 3.5f; // Atak ve normal slotların çerçeve kalınlığı eşitlendi
+
+
+
+            // Gradyan Renkleri (Merkez -> Kenar) - Translucent Cam Morfik Opaklıklar
+
+            Color centerColor;
+
+            Color edgeColor;
+
+
+
+            if (isAttack)
+
+            {
+
+                centerColor = new Color(0.55f, 0.12f, 0.08f, 0.85f); // Merkez %85 opak yakut kırmızı
+
+                edgeColor = new Color(0.12f, 0.02f, 0.01f, 0.90f);   // Kenar %90 opak koyu kırmızı
+
+            }
+
+            else
+
+            {
+
+                centerColor = new Color(0.24f, 0.22f, 0.20f, 0.80f); // Merkez %80 opak koyu antrasit
+
+                edgeColor = new Color(0.04f, 0.04f, 0.04f, 0.85f);   // Kenar %85 opak koyu siyah
+
+            }
+
+
+
+            for (int y = 0; y < size; y++)
+
+            {
+
+                for (int x = 0; x < size; x++)
+
+                {
+
+                    float dist = Vector2.Distance(new Vector2(x, y), new Vector2(center, center));
+
+                    Color pxColor = Color.clear;
+
+
+
+                    if (dist <= radius)
+
+                    {
+
+                        // Daire içi
+
+                        if (dist >= radius - borderWidth)
+
+                        {
+
+                            // Ana çerçeve halkası (Altın)
+
+                            pxColor = borderCol;
+
+                        }
+
+                        else
+
+                        {
+
+                            // 3D Metalik Gradyan (Merkezden kenara)
+
+                            float fillDist = dist / (radius - borderWidth);
+
+                            pxColor = Color.Lerp(centerColor, edgeColor, fillDist);
+
+
+
+                            // Küre Parlaması (Sol-Üst Glossy Highlight)
+
+                            float dx = x - (center - radius * 0.35f);
+
+                            float dy = y - (center + radius * 0.35f);
+
+                            float distToHighlight = Mathf.Sqrt(dx * dx + dy * dy);
+
+                            float highlightRadius = radius * 0.35f;
+
+                            if (distToHighlight < highlightRadius)
+
+                            {
+
+                                float gloss = (1f - distToHighlight / highlightRadius) * 0.32f;
+
+                                pxColor.r = Mathf.Clamp01(pxColor.r + gloss);
+
+                                pxColor.g = Mathf.Clamp01(pxColor.g + gloss * 0.95f);
+
+                                pxColor.b = Mathf.Clamp01(pxColor.b + gloss * 0.90f);
+
+                            }
+
+                        }
+
+                    }
+
+                    else
+
+                    {
+
+                        // Daire dışı: Sadece sayfa butonlarında süsleme olmayacak.
+
+                        // Normal slotlar ve Atak butonunun üst/alt kavisli süslemeleri (kanatçıkları)
+
+                        if (!isPageBtn)
+
+                        {
+
+                            float dx = x - center;
+
+                            float dy = y - center;
+
+                            float absDx = Mathf.Abs(dx);
+
+
+
+                            // Süslemenin yatay genişliği
+
+                            float ornamentWidth = radius * 0.45f;
+
+                            if (absDx < ornamentWidth)
+
+                            {
+
+                                // Merkeze yaklaştıkça yüksekliği artan kavisli kanat
+
+                                float crescentMaxHeight = isAttack ? 6f : 5f;
+
+                                float crescentHeight = crescentMaxHeight - (absDx / ornamentWidth) * crescentMaxHeight;
+
+                                if (dist > radius && dist <= radius + crescentHeight)
+
+                                {
+
+                                    pxColor = borderCol;
+
+                                }
+
+                            }
+
+                        }
+
+                    }
+
+
+
+                    // Yumuşatma (Anti-Aliasing) filtresi
+
+                    float outerEdge = radius;
+
+                    if (!isPageBtn)
+
+                    {
+
+                        float dxEdge = x - center;
+
+                        float dyEdge = y - center;
+
+                        float absDxEdge = Mathf.Abs(dxEdge);
+
+                        float edgeWidth = radius * 0.45f;
+
+                        if (absDxEdge < edgeWidth)
+
+                        {
+
+                            float crescentMaxHeight = isAttack ? 6f : 5f;
+
+                            outerEdge += crescentMaxHeight - (absDxEdge / edgeWidth) * crescentMaxHeight;
+
+                        }
+
+                    }
+
+
+
+                    if (dist > outerEdge - 1f && dist <= outerEdge + 1f)
+
+                    {
+
+                        float alpha = 1f - (dist - (outerEdge - 1f)) / 2f;
+
+                        pxColor.a *= Mathf.Clamp01(alpha);
+
+                    }
+
+
+
+
+
+
+
+                    tex.SetPixel(x, y, pxColor);
+
+                }
+
+            }
+
+
+
+            tex.Apply();
+
+            return Sprite.Create(tex, new Rect(0f, 0f, size, size), new Vector2(0.5f, 0.5f));
+
+        }
+
+
+
+        // ================================
+
+        // CANVAS
+
+        // ================================
+
+
+
+        private void CreateCanvas()
+
+        {
+
+            var canvasObj = new GameObject("MobileSkillBarCanvas");
+
+            canvasObj.transform.SetParent(transform, false);
+
+            _canvas = canvasObj.AddComponent<Canvas>();
+
+            _canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+
+            _canvas.sortingOrder = 110;
+
+
+
+            var scaler = canvasObj.AddComponent<CanvasScaler>();
+
+            // Sabit piksel boyutu moduna alıyoruz (ekran boyutu değiştikçe butonlar değişmez)
+
+            // Gelecekte oyuncu ayarlarından bu canvas'ın scaleFactor değeri (örn: 1.0, 1.2) değiştirilerek genel boyut ayarlanabilir.
+
+            scaler.uiScaleMode = CanvasScaler.ScaleMode.ConstantPixelSize;
+
+            scaler.scaleFactor = 1f;
+
+
+
+            canvasObj.AddComponent<GraphicRaycaster>();
+
+
+
+            // Butonları taşıyacak container — offset için
+
+            var containerObj = new GameObject("ButtonContainer");
+
+            containerObj.transform.SetParent(canvasObj.transform, false);
+
+            _buttonContainer = containerObj.AddComponent<RectTransform>();
+
+            _buttonContainer.anchorMin = Vector2.zero;
+
+            _buttonContainer.anchorMax = Vector2.one;
+
+            _buttonContainer.offsetMin = Vector2.zero;
+
+            _buttonContainer.offsetMax = Vector2.zero;
+
+        }
+
+
+
+        // ================================
+
+        // LAYOUT — Nova Online referansı
+
+        // ================================
+
+        //
+
+        // Sağ kenardan offset ile hesaplanan grid düzeni.
+
+        // Anchor: sağ-üst (1,1)
+
+        // X offset: negatif (sağdan sola)
+
+        // Y offset: negatif (üstten aşağı)
+
+
+
+        private void CreateLayout()
+        {
+            // Saldırı butonu: Elle dizilen koordinatlarla yerleşim
+
+            float atkOffX = -109.8f;
+
+            float atkOffY = -125.4f;
+
+
+
+            var atkObj = CreateCircleButton(_buttonContainer, "AttackButton",
+                atkOffX, atkOffY, ATTACK_SIZE, _attackFrameSprite, "", 24);
+
+            _attackButton = new SkillSlot { SlotIndex = -1, Root = atkObj, Button = atkObj.GetComponent<Button>() };
+            _attackButton.Button.onClick.AddListener(OnAttackPressed);
+
+            // Set dragon-breath icon and hide label text
+            var labelTrans = atkObj.transform.Find("Inner/Label");
+            if (labelTrans != null) labelTrans.gameObject.SetActive(false);
+
+            var iconTrans = atkObj.transform.Find("Inner/Icon");
+            if (iconTrans != null)
+            {
+                var iconImg = iconTrans.GetComponent<Image>();
+                if (iconImg != null)
+                {
+                    var tex = Resources.Load<Texture2D>("UI/dragon-breath");
+                    if (tex != null)
+                    {
+                        iconImg.sprite = Sprite.Create(tex, new Rect(0, 0, tex.width, tex.height), new Vector2(0.5f, 0.5f));
+                        iconImg.color = new Color(0.82f, 0.68f, 0.38f, 1f);
+                    }
+                }
+            }
+
+            // 2 Yeni custom sub-button (Attack butonunun sağ aşağısına ve soluna)
+            _customAtkSubBtnRight = CreateCircleButton(_buttonContainer, "CustomAtkSubBtnRight",
+                subBtnRightX, subBtnRightY, SKILL_SIZE, _slotFrameSprite, "?R", 14);
+            var btnRight = _customAtkSubBtnRight.GetComponent<Button>();
+            if (btnRight != null)
+            {
+                btnRight.onClick.AddListener(() => {
+                    var selector = EntropyOnline.World.KOTargetSelector.Instance;
+                    if (selector != null) selector.TargetNearestMonster();
+                });
+            }
+
+            _customAtkSubBtnLeft = CreateCircleButton(_buttonContainer, "CustomAtkSubBtnLeft",
+                subBtnLeftX, subBtnLeftY, SKILL_SIZE, _slotFrameSprite, "?L", 14);
+            var btnLeft = _customAtkSubBtnLeft.GetComponent<Button>();
+            if (btnLeft != null)
+            {
+                btnLeft.onClick.AddListener(() => {
+                    var selector = EntropyOnline.World.KOTargetSelector.Instance;
+                    if (selector != null) selector.TargetNearestEnemy();
+                });
+            }
+
+            // Yeni Seçim İptal Çarpı Butonu (X)
+            _customAtkCancelBtn = CreateCircleButton(_buttonContainer, "CustomAtkCancelBtn",
+                cancelBtnX, cancelBtnY, SKILL_SIZE, _slotFrameSprite, "X", 14);
+            var btnCancel = _customAtkCancelBtn.GetComponent<Button>();
+            if (btnCancel != null)
+            {
+                btnCancel.onClick.AddListener(() => {
+                    var selector = EntropyOnline.World.KOTargetSelector.Instance;
+                    if (selector != null) selector.ClearTarget();
+                });
+            }
+            var cancelTxt = _customAtkCancelBtn.GetComponentInChildren<Text>();
+            if (cancelTxt != null)
+            {
+                cancelTxt.color = new Color(0.85f, 0.2f, 0.2f, 1f); // Red X
+                cancelTxt.fontStyle = FontStyle.Bold;
+            }
+            _customAtkCancelBtn.SetActive(false); // Başlangıçta gizli
+
+            // 14 skill slotu (8 normal + 6 ekstra) — Orijinal koordinatlarıyla yerleşim
+            var positions = new (float x, float y)[]
+            {
+                (-190.0f, -90.3f),  // S1
+                (-190.0f, -155.0f), // S2
+                (-140.0f, -205.0f), // S3
+                (-71.9f, -205.0f),  // S4
+                (-255.2f, -103.0f), // S5
+                (-253.6f, -170.0f), // S6
+                (-212.0f, -223.0f), // S7
+                (-165.0f, -270.0f), // S8
+                (-320.0f, -115.0f), // S9 (Extra 1)
+                (-320.0f, -180.0f), // S10 (Extra 2)
+                (-280.0f, -240.0f), // S11 (Extra 3)
+                (-230.0f, -290.0f), // S12 (Extra 4)
+                (-385.0f, -125.0f), // S13 (Extra 5)
+                (-385.0f, -190.0f)  // S14 (Extra 6)
+            };
+
+            for (int i = 0; i < 14; i++)
+            {
+                int slotNum = i + 1;
+                var obj = CreateCircleButton(_buttonContainer, $"Skill_{slotNum}",
+                    positions[i].x, positions[i].y, SKILL_SIZE,
+                    _slotFrameSprite, "", 15);
+
+                var slot = new SkillSlot
+                {
+                    SlotIndex = i,
+                    Root = obj,
+                    Button = obj.GetComponent<Button>(),
+                    CooldownOverlay = obj.transform.Find("Inner/CooldownOverlay")?.GetComponent<Image>(),
+                    CooldownText = obj.transform.Find("Inner/CooldownText")?.GetComponent<Text>(),
+                    CountText = obj.transform.Find("Inner/Count")?.GetComponent<Text>()
+                };
+
+                if (slot.Button != null)
+                {
+                    slot.Button.onClick.RemoveAllListeners();
+                }
+                var aimHandler = obj.GetComponent<KOSkillAimHandler>() ?? obj.AddComponent<KOSkillAimHandler>();
+                aimHandler.SlotIndex = i;
+
+                // Sürükle-bırak etkileşimi ekle (Taşıma ve Silme için)
+                var dragDrop = obj.AddComponent<KOSkillBarSlotDragDrop>();
+                dragDrop.SlotIndex = i;
+
+                _skillSlots.Add(slot);
+
+            }
+
+
+
+            CreatePageController(); // Sayfalama butonlarını oluştur
+
+        }
+
+
+
+        // ================================
+
+        // YUVARLAK BUTON (sağ-üst anchor)
+
+        // ================================
+
+
+
+        private GameObject CreateCircleButton(
+
+            Transform parent, string name,
+
+            float offsetX, float offsetY,
+
+            float diameter,
+
+            Sprite frameSprite,
+
+            string label, int fontSize,
+
+            bool isPageBtn = false)
+
+        {
+
+            var outer = new GameObject(name);
+
+            outer.transform.SetParent(parent, false);
+
+            var outerRT = outer.AddComponent<RectTransform>();
+
+            // Sağ-alt köşeye anchor
+
+            outerRT.anchorMin = new Vector2(1, 0);
+
+            outerRT.anchorMax = new Vector2(1, 0);
+
+            outerRT.pivot = new Vector2(0.5f, 0.5f);
+
+            // Dış kutu boyutu tam olarak istenen çapa (diameter) eşit olacak
+
+            outerRT.sizeDelta = new Vector2(diameter, diameter);
+
+            outerRT.anchoredPosition = new Vector2(offsetX, -offsetY); // offsetY negatif → yukarı
+
+
+
+            var outerImg = outer.AddComponent<Image>();
+
+            outerImg.sprite = frameSprite;
+
+            outerImg.color = Color.white;
+
+            outerImg.type = Image.Type.Simple;
+
+            outerImg.raycastTarget = true; // Sürükle-bırak için
+
+
+
+            // Maske görevi gören İç Daire (Inner)
+
+            var inner = new GameObject("Inner");
+
+            inner.transform.SetParent(outer.transform, false);
+
+            var innerRT = inner.AddComponent<RectTransform>();
+
+            innerRT.anchorMin = new Vector2(0.5f, 0.5f);
+
+            innerRT.anchorMax = new Vector2(0.5f, 0.5f);
+
+            innerRT.pivot = new Vector2(0.5f, 0.5f);
+
+            // Çerçevenin altın halkasının iç sınırlarına sığması için çapı oranlıyoruz (%81'i içine oturur)
+
+            float innerSize = diameter * 0.81f;
+
+            innerRT.sizeDelta = new Vector2(innerSize, innerSize);
+
+            innerRT.anchoredPosition = Vector2.zero;
+
+            var innerImg = inner.AddComponent<Image>();
+            innerImg.sprite = _circleSprite; // Maskeleme için beyaz yuvarlak şablon
+            innerImg.color = Color.white;
+            innerImg.type = Image.Type.Simple;
+
+            var mask = inner.AddComponent<Mask>();
+            mask.showMaskGraphic = false; // Maske görselini gizle, sadece çocukları kes
+
+            // Asıl Skill İkonunu Taşıyan Alt Nesne (Icon)
+
+            var iconObj = new GameObject("Icon");
+
+            iconObj.transform.SetParent(inner.transform, false);
+
+            var iconRT = iconObj.AddComponent<RectTransform>();
+
+            iconRT.anchorMin = Vector2.zero;
+
+            iconRT.anchorMax = Vector2.one;
+
+            iconRT.offsetMin = Vector2.zero;
+
+            iconRT.offsetMax = Vector2.zero;
+
+
+
+            var iconImg = iconObj.AddComponent<Image>();
+
+            iconImg.color = Color.clear; // Başlangıçta boş
+
+            iconImg.raycastTarget = false;
+
+
+
+            // Cooldown Karartması (Yarı saydam radial fill)
+
+            var cdObj = new GameObject("CooldownOverlay");
+
+            cdObj.transform.SetParent(inner.transform, false);
+
+            var cdRT = cdObj.AddComponent<RectTransform>();
+
+            cdRT.anchorMin = Vector2.zero;
+
+            cdRT.anchorMax = Vector2.one;
+
+            cdRT.offsetMin = Vector2.zero;
+
+            cdRT.offsetMax = Vector2.zero;
+
+
+
+            var cdImg = cdObj.AddComponent<Image>();
+
+            cdImg.sprite = _circleSprite;
+
+            cdImg.color = new Color(0f, 0f, 0f, 0.65f); // %65 şeffaf siyah
+
+            cdImg.type = Image.Type.Filled;
+
+            cdImg.fillMethod = Image.FillMethod.Radial360;
+
+            cdImg.fillOrigin = (int)Image.Origin360.Top;
+
+            cdImg.fillClockwise = false;
+
+            cdImg.fillAmount = 0f;
+
+            cdImg.raycastTarget = false;
+
+            // Cooldown Süresi Yazısı (Text)
+            var cdTextObj = new GameObject("CooldownText");
+            cdTextObj.transform.SetParent(inner.transform, false);
+            var cdTextRT = cdTextObj.AddComponent<RectTransform>();
+            cdTextRT.anchorMin = Vector2.zero;
+            cdTextRT.anchorMax = Vector2.one;
+            cdTextRT.offsetMin = Vector2.zero;
+            cdTextRT.offsetMax = Vector2.zero;
+
+            var cdText = cdTextObj.AddComponent<Text>();
+            cdText.alignment = TextAnchor.MiddleCenter;
+            cdText.color = Color.white;
+            cdText.font = Font.CreateDynamicFontFromOSFont("Arial", fontSize);
+            if (cdText.font == null) cdText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            if (cdText.font == null) cdText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+            cdText.fontSize = Mathf.Max(12, (int)(fontSize * 0.45f));
+            cdText.fontStyle = FontStyle.Bold;
+            cdText.raycastTarget = false;
+
+            var cdShadow = cdTextObj.AddComponent<Shadow>();
+            cdShadow.effectColor = Color.black;
+            cdShadow.effectDistance = new Vector2(1f, -1f);
+
+            cdTextObj.SetActive(false);
+
+
+
+            
+
+
+
+            // Label (Yazı)
+
+            var txtObj = new GameObject("Label");
+
+            txtObj.transform.SetParent(inner.transform, false);
+
+            var txtRT = txtObj.AddComponent<RectTransform>();
+
+
+
+            // Sayfalama ok butonları için Unicode Arial baseline kaymasını düzeltmek için özel hizalama
+
+            if (isPageBtn)
+
+            {
+
+                txtRT.anchorMin = new Vector2(0.5f, 0.5f);
+
+                txtRT.anchorMax = new Vector2(0.5f, 0.5f);
+
+                txtRT.pivot = new Vector2(0.5f, 0.5f);
+
+                txtRT.sizeDelta = new Vector2(diameter, diameter);
+
+
+
+                // Arial fontunda ◀ ve ▶ sembolleri baselinedan dolayı biraz aşağıda ve hafif yana kaymış görünür.
+
+                // Bunları tam merkezlemek için milimetrik offset uyguluyoruz:
+
+                float nudgeX = 0f;
+
+                float nudgeY = 2.0f; // Dikeyde yukarı taşıma (Arial ok baseline telafisi)
+
+
+
+                if (label == "◀") nudgeX = 1.0f;     // Sola oku hafif sağa iterek tam görsel merkeze alma
+
+                else if (label == "▶") nudgeX = -1.0f; // Sağa oku hafif sola iterek tam görsel merkeze alma
+
+
+
+                txtRT.anchoredPosition = new Vector2(nudgeX, nudgeY);
+
+            }
+
+            else
+
+            {
+
+                txtRT.anchorMin = Vector2.zero;
+
+                txtRT.anchorMax = Vector2.one;
+
+                txtRT.offsetMin = Vector2.zero;
+
+                txtRT.offsetMax = Vector2.zero;
+
+            }
+
+
+
+            var txt = txtObj.AddComponent<Text>();
+
+            txt.text = label;
+
+            txt.fontSize = fontSize;
+
+            txt.font = Font.CreateDynamicFontFromOSFont("Arial", fontSize);
+
+            txt.alignment = TextAnchor.MiddleCenter;
+
+            txt.color = TEXT_COLOR;
+
+            txt.raycastTarget = false;
+
+
+
+            var shadow = txtObj.AddComponent<Shadow>();
+
+            shadow.effectColor = new Color(0f, 0f, 0f, 0.85f);
+
+            shadow.effectDistance = new Vector2(1f, -1f);
+
+
+
+            var btn = outer.AddComponent<Button>();
+
+            btn.targetGraphic = outerImg;
+
+            var colors = btn.colors;
+
+            colors.normalColor = Color.white;
+
+            colors.highlightedColor = new Color(0.9f, 0.9f, 0.9f, 1f);
+
+            colors.pressedColor = new Color(0.7f, 0.7f, 0.7f, 1f);
+
+            colors.fadeDuration = 0.08f;
+
+            btn.colors = colors;
+
+
+
+            return outer;
+
+        }
+
+
+
+        // ================================
+
+        // COOLDOWN TICK — Open-KO birebir: UIHotKeyDlg::Tick() cooldown render
+
+        // ================================
+
+
+
+        private Text CreateCountText(Transform parent)
+
+        {
+
+            var countObj = new GameObject("CountText");
+
+            countObj.transform.SetParent(parent, false);
+
+            var countRT = countObj.AddComponent<RectTransform>();
+
+            countRT.anchorMin = new Vector2(1, 0);
+
+            countRT.anchorMax = new Vector2(1, 0);
+
+            countRT.pivot = new Vector2(1, 0);
+
+            countRT.anchoredPosition = new Vector2(-2, 2);
+
+            countRT.sizeDelta = new Vector2(30, 12);
+
+            var countText = countObj.AddComponent<Text>();
+
+            countText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+
+            countText.fontSize = 9;
+
+            countText.color = Color.white;
+
+            countText.alignment = TextAnchor.LowerRight;
+
+            countText.raycastTarget = false;
+
+            var shadow = countObj.AddComponent<Shadow>();
+
+            shadow.effectColor = new Color(0, 0, 0, 0.9f);
+
+            shadow.effectDistance = new Vector2(1, -1);
+
+            return countText;
+
+        }
+
+
+
+        private void Update()
+        {
+            // Cancel butonunun görünürlüğünü güncelle
+            if (_customAtkCancelBtn != null)
+            {
+                var selector = EntropyOnline.World.KOTargetSelector.Instance;
+                var gm = EntropyOnline.Core.GameManager.Instance;
+                bool hasTarget = (selector != null && selector.SelectedEntity != null) || (gm != null && gm.TargetId != -1);
+                if (_customAtkCancelBtn.activeSelf != hasTarget)
+                {
+                    _customAtkCancelBtn.SetActive(hasTarget);
+                    if (hasTarget)
+                    {
+                        _customAtkCancelBtn.transform.SetAsLastSibling();
+                    }
+                }
+                else if (hasTarget)
+                {
+                    // Her karede en önde olmasını sağla (örneğin edit modundan çıkarken bozulmaması için)
+                    _customAtkCancelBtn.transform.SetAsLastSibling();
+                }
+            }
+
+            var mgr = EntropyOnline.Combat.KOMagicSkillManager.Instance;
+            if (mgr == null) return;
+
+
+
+            var inv = KOInventory.Instance;
+
+
+
+            for (int i = 0; i < _skillSlots.Count; i++)
+
+            {
+
+                var slot = _skillSlots[i];
+                EnsureCooldownText(slot);
+
+                if (slot.MagicNum <= 0)
+
+                {
+
+                    if (slot.CountText != null) slot.CountText.gameObject.SetActive(false);
+
+                    if (slot.CooldownOverlay != null) slot.CooldownOverlay.fillAmount = 0f;
+            if (slot.CooldownText != null) slot.CooldownText.gameObject.SetActive(false);
+
+                    continue;
+
+                }
+
+
+
+                float remaining = mgr.GetCooldown(slot.MagicNum);
+
+                float max = mgr.GetMaxCooldown(slot.MagicNum);
+
+
+
+                if (remaining > 0f && max > 0f)
+            {
+                if (slot.CooldownOverlay != null) slot.CooldownOverlay.fillAmount = remaining / max;
+                if (slot.CooldownText != null)
+                {
+                    slot.CooldownText.gameObject.SetActive(true);
+                    slot.CooldownText.text = remaining.ToString("F1");
+                }
+            }
+            else
+            {
+                if (slot.CooldownOverlay != null) slot.CooldownOverlay.fillAmount = 0f;
+                if (slot.CooldownText != null) slot.CooldownText.gameObject.SetActive(false);
+            }
+
+
+
+                // Count render
+
+                var pSkill = KOImport.SkillTableParser.Find(slot.MagicNum);
+
+                if (pSkill != null && pSkill.ExhaustItem > 0 && inv != null)
+
+                {
+
+                    int qty = inv.GetCountInInvByID((int)pSkill.ExhaustItem);
+
+                    if (qty > 0)
+
+                    {
+
+                        if (slot.CountText == null)
+
+                        {
+
+                            var inner = slot.Root.transform.Find("Inner");
+
+                            if (inner != null)
+
+                                slot.CountText = CreateCountText(inner);
+
+                        }
+
+                        if (slot.CountText != null)
+
+                        {
+
+                            slot.CountText.text = qty.ToString();
+
+                            slot.CountText.gameObject.SetActive(true);
+
+                        }
+
+                    }
+
+                    else
+
+                    {
+
+                        if (slot.CountText != null) slot.CountText.gameObject.SetActive(false);
+
+                    }
+
+                }
+
+                else
+
+                {
+
+                    if (slot.CountText != null) slot.CountText.gameObject.SetActive(false);
+
+                }
+
+            }
+
+        }
+
+
+
+        // ================================
+
+        // EVENTS
+
+        // ================================
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: GameProcMain.cpp satır 1239-1251
+
+        ///   KM_TOGGLE_ATTACK → m_bAttackContinous ise durdur,
+
+        ///     değilse TryStartAttack() → CommandEnableAttackContinous(true, target)
+
+        ///
+
+        /// Attack butonu paket GÖNDERMEZ.
+
+        /// PlayerController.StartAutoAttack() → AttackTick() → MsgSend_Attack(WIZ_ATTACK)
+
+        /// state machine üzerinden çalışır.
+
+        /// </summary>
+
+        private void OnAttackPressed()
+        {
+            // PlayerController'ı bul
+            var pc = FindAnyObjectByType<EntropyOnline.Character.PlayerController>();
+            if (pc == null) return;
+
+            // Open-KO birebir: satır 1242-1250 — toggle mantığı
+            if (pc.IsAutoAttacking)
+            {
+                pc.StopAutoAttack();
+                return;
+            }
+
+            var gm = EntropyOnline.Core.GameManager.Instance;
+            var selector = EntropyOnline.World.KOTargetSelector.Instance;
+
+            // Hedef yoksa veya seçili entity boşsa, ayarlardaki önceliğe göre en yakın hedefe odaklan
+            if (selector != null)
+            {
+                if (gm == null || gm.TargetId < 0 || selector.SelectedEntity == null)
+                {
+                    if (GameOptionsManager.Instance != null)
+                    {
+                        if (GameOptionsManager.Instance.PK_TargetPriorityPlayer)
+                        {
+                            selector.TargetNearestEnemy();
+                        }
+                        else if (GameOptionsManager.Instance.PK_TargetPriorityMonster)
+                        {
+                            selector.TargetNearestMonster();
+                        }
+                    }
+                }
+            }
+
+            // Hedef kontrolü
+            if (gm == null || gm.TargetId < 0)
+            {
+                return;
+            }
+
+            // Hedef KOEntity'yi bul — Open-KO: TargetPointerCheck(false)
+            var target = selector?.SelectedEntity;
+            if (target == null)
+            {
+                return;
+            }
+
+            // Open-KO birebir: TryStartAttack() → StartAutoAttack(target)
+            pc.StartAutoAttack(target);
+        }
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: UIHotKeyDlg.cpp DoOperate() satır 712-722
+
+        ///   → MsgSend_MagicProcess(iIDTarget, pSkill->pSkill)
+
+        ///
+
+        /// Artık doğrudan paket göndermez — KOMagicSkillManager'a yönlendirir.
+
+        /// KOMagicSkillManager casting state machine, cooldown ve validate kontrollerini yapar.
+
+        /// </summary>
+
+        public void OnSkillPressedDirectly(int slotIndex)
+        {
+            OnSkillPressed(slotIndex);
+        }
+
+        private void OnSkillPressed(int slotIndex)
+        {
+            if (slotIndex < 0 || slotIndex >= _skillSlots.Count) return;
+
+            int magicNum = _skillSlots[slotIndex].MagicNum;
+            if (magicNum <= 0)
+            {
+                return;
+            }
+
+            // Open-KO birebir: s_pTbl_Skill.Find(dwMagicID)
+            var pSkill = KOImport.SkillTableParser.Find(magicNum);
+            if (pSkill == null)
+            {
+                Debug.LogWarning($"[SKILL-BAR] Skill tablosunda bulunamadı: {magicNum}");
+                return;
+            }
+
+            var gm = EntropyOnline.Core.GameManager.Instance;
+            int targetId = gm != null ? (int)gm.TargetId : -1;
+
+            var mgr = EntropyOnline.Combat.KOMagicSkillManager.Instance;
+            if (mgr == null)
+            {
+                Debug.LogWarning("[SKILL-BAR] KOMagicSkillManager bulunamadı!");
+                return;
+            }
+
+            bool requiresTarget = pSkill.Target == 7;
+
+            var selector = EntropyOnline.World.KOTargetSelector.Instance;
+            if (targetId == -1 && requiresTarget && selector != null)
+            {
+                if (GameOptionsManager.Instance != null && GameOptionsManager.Instance.PK_TargetPriorityPlayer)
+                {
+                    selector.TargetNearestEnemy();
+                }
+                else
+                {
+                    selector.TargetNearestMonster();
+                }
+                targetId = gm != null ? (int)gm.TargetId : -1;
+            }
+
+            if (targetId != -1 && mgr.IsTargetSkillOutOfRange(targetId, pSkill))
+            {
+                if (KOUIManager.Instance != null)
+                {
+                    KOUIManager.Instance.AddMsgOutput("Skill Failed - Too far", KOUIManager.D3DColorToUnity(0xffffff00));
+                }
+
+                var target = selector?.SelectedEntity;
+                var pc = FindAnyObjectByType<EntropyOnline.Character.PlayerController>();
+                if (pc != null && target != null)
+                {
+                    pc.StartAutoAttack(target);
+                }
+                return;
+            }
+
+            bool success = mgr.MsgSend_MagicProcess(targetId, pSkill);
+            if (success)
+            {
+                if (GameOptionsManager.Instance != null && GameOptionsManager.Instance.PK_ComboHelper && pSkill.FirstTableType == 1)
+                {
+                    StartCoroutine(TriggerComboHelperRoutine());
+                }
+            }
+            else
+            {
+
+            }
+
+        }
+
+
+
+        // ================================
+
+        // PUBLIC API
+
+        // ================================
+
+        public void SetSkillDragEnabled(bool enabled)
+        {
+            foreach (var slot in _skillSlots)
+            {
+                if (slot != null && slot.Root != null)
+                {
+                    var dragDrop = slot.Root.GetComponent<KOSkillBarSlotDragDrop>();
+                    if (dragDrop != null)
+                    {
+                        dragDrop.enabled = enabled;
+                    }
+                }
+            }
+        }
+
+
+
+        /// <summary>
+
+        /// Slot'a skill ikonu ve magicNum ata.
+
+        /// C++ UIHotKeyDlg.cpp SetReceiveSelectedSkill() satır 594-624 birebir.
+
+        /// </summary>
+
+        public void SetSkillIcon(int slotIndex, Sprite icon, int magicNum = 0)
+
+        {
+
+            if (slotIndex < 0 || slotIndex >= _skillSlots.Count) return;
+
+
+
+            _pagedMagicNums[_currentPage, slotIndex] = magicNum;
+
+            SaveHotkeys(); // Değişikliği anında kaydet
+
+
+
+            UpdateSlotUI(slotIndex, icon, magicNum);
+
+        }
+
+
+
+        private void UpdateSlotUI(int slotIndex, Sprite icon, int magicNum)
+
+        {
+
+            _skillSlots[slotIndex].MagicNum = magicNum;
+
+            var iconImg = _skillSlots[slotIndex].Root.transform.Find("Inner/Icon")?.GetComponent<Image>();
+
+
+
+            if (iconImg != null)
+
+            {
+
+                if (icon != null)
+
+                {
+
+                    iconImg.sprite = icon;
+
+                    iconImg.color = Color.white;
+
+                }
+
+                else
+
+                {
+
+                    iconImg.sprite = null;
+
+                    iconImg.color = Color.clear;
+
+                }
+
+            }
+
+
+
+            // Label'ı her zaman gizle (sayı numaraları mobil skillbar'da gösterilmeyecek)
+
+            var label = _skillSlots[slotIndex].Root.transform.Find("Inner/Label");
+
+            if (label != null)
+
+            {
+
+                label.gameObject.SetActive(false);
+
+            }
+
+        }
+
+
+
+        public void ClearSkillSlot(int slotIndex)
+
+        {
+
+            if (slotIndex < 0 || slotIndex >= _skillSlots.Count) return;
+
+
+
+            _pagedMagicNums[_currentPage, slotIndex] = 0;
+
+            SaveHotkeys();
+
+            UpdateSlotUI(slotIndex, null, 0);
+
+
+        }
+
+
+
+        public int GetSlotMagicNum(int slotIndex)
+
+        {
+
+            if (slotIndex < 0 || slotIndex >= _skillSlots.Count) return 0;
+
+            return _pagedMagicNums[_currentPage, slotIndex];
+
+        }
+
+
+
+        public Image GetSlotIconImage(int slotIndex)
+
+        {
+
+            if (slotIndex < 0 || slotIndex >= _skillSlots.Count) return null;
+
+            return _skillSlots[slotIndex].Root.transform.Find("Inner/Icon")?.GetComponent<Image>();
+
+        }
+
+
+
+        public void SwapSkillSlots(int srcIndex, int dstIndex)
+
+        {
+
+            if (srcIndex < 0 || srcIndex >= _skillSlots.Count) return;
+
+            if (dstIndex < 0 || dstIndex >= _skillSlots.Count) return;
+
+            if (srcIndex == dstIndex) return;
+
+
+
+            int temp = _pagedMagicNums[_currentPage, srcIndex];
+
+            _pagedMagicNums[_currentPage, srcIndex] = _pagedMagicNums[_currentPage, dstIndex];
+
+            _pagedMagicNums[_currentPage, dstIndex] = temp;
+
+
+
+            SaveHotkeys();
+
+            RefreshPage();
+
+
+
+
+        }
+
+
+
+        private void CreatePageController()
+
+        {
+
+            var container = new GameObject("PageControllerContainer");
+
+            container.transform.SetParent(_buttonContainer, false);
+
+            _pageControllerContainer = container.AddComponent<RectTransform>();
+
+            _pageControllerContainer.anchorMin = new Vector2(1, 0);
+
+            _pageControllerContainer.anchorMax = new Vector2(1, 0);
+
+            _pageControllerContainer.pivot = new Vector2(0.5f, 0.5f);
+
+            _pageControllerContainer.sizeDelta = new Vector2(120f, 50f); // Büyük ok butonları için container boyutu artırıldı
+
+
+
+            // Default konumu (kullanıcı bunu sürükleyip değiştirebilir)
+
+            _pageControllerContainer.anchoredPosition = new Vector2(pgOffX, pgOffY);
+
+
+
+            float btnSize = 50f; // Boyutu 50px yaptık
+
+            float textHalfWidth = 6f; // Rakam "1" için yarı genişlik
+
+            float gap = 3f;
+
+            float btnRadius = btnSize / 2f;
+
+            float btnXOffset = textHalfWidth + gap + btnRadius; // 6 + 3 + 25 = 34f
+
+
+
+            // Sol Ok Butonu
+
+            var btnLeftObj = CreateCircleButton(container.transform, "BtnPageLeft",
+
+                -btnXOffset, 0f, btnSize, _pageFrameSprite, "◀", 15, true);
+
+            var leftRT = btnLeftObj.GetComponent<RectTransform>();
+
+            leftRT.anchorMin = new Vector2(0.5f, 0.5f);
+
+            leftRT.anchorMax = new Vector2(0.5f, 0.5f);
+
+            leftRT.anchoredPosition = new Vector2(-btnXOffset, 0f);
+
+            var btnLeft = btnLeftObj.GetComponent<Button>();
+
+            btnLeft.onClick.AddListener(PrevPage);
+
+
+
+            // Sağ Ok Butonu
+
+            var btnRightObj = CreateCircleButton(container.transform, "BtnPageRight",
+
+                btnXOffset, 0f, btnSize, _pageFrameSprite, "▶", 15, true);
+
+            var rightRT = btnRightObj.GetComponent<RectTransform>();
+
+            rightRT.anchorMin = new Vector2(0.5f, 0.5f);
+
+            rightRT.anchorMax = new Vector2(0.5f, 0.5f);
+
+            rightRT.anchoredPosition = new Vector2(btnXOffset, 0f);
+
+            var btnRight = btnRightObj.GetComponent<Button>();
+
+            btnRight.onClick.AddListener(NextPage);
+
+
+
+            // Rakamın arkasındaki hafif yatay kapsül gölgesi (Soft Fading Glow)
+
+            var glowObj = new GameObject("PageTextGlow");
+
+            glowObj.transform.SetParent(container.transform, false);
+
+            var glowRT = glowObj.AddComponent<RectTransform>();
+
+            glowRT.anchorMin = new Vector2(0.5f, 0.5f);
+
+            glowRT.anchorMax = new Vector2(0.5f, 0.5f);
+
+            glowRT.pivot = new Vector2(0.5f, 0.5f);
+
+            glowRT.sizeDelta = new Vector2(60f, 22f); // İki buton arasını kapatacak yatay genişlik
+
+            glowRT.anchoredPosition = Vector2.zero;
+
+
+
+            var glowImg = glowObj.AddComponent<Image>();
+
+            glowImg.sprite = _textGlowSprite; // Fadeout kenarlı yeni kapsül sprite
+
+            glowImg.color = Color.white;
+
+            glowImg.raycastTarget = false;
+
+
+
+            // Sayfa Numarası Yazısı (orta kısım)
+
+            var txtObj = new GameObject("PageText");
+
+            txtObj.transform.SetParent(container.transform, false);
+
+            var txtRT = txtObj.AddComponent<RectTransform>();
+
+            txtRT.anchorMin = new Vector2(0.5f, 0.5f);
+
+            txtRT.anchorMax = new Vector2(0.5f, 0.5f);
+
+            txtRT.pivot = new Vector2(0.5f, 0.5f);
+
+            txtRT.sizeDelta = new Vector2(24f, 24f);
+
+            // Dikey ortalama ayarı: +1.5f Y ekseni ötelemesi metni dikey merkezler
+
+            txtRT.anchoredPosition = new Vector2(0f, 1.5f);
+
+
+
+            _pageText = txtObj.AddComponent<Text>();
+
+            _pageText.text = (_currentPage + 1).ToString();
+
+            _pageText.fontSize = 13;
+
+            _pageText.font = Font.CreateDynamicFontFromOSFont("Arial", 13);
+
+            _pageText.alignment = TextAnchor.MiddleCenter;
+
+            _pageText.color = Color.white; // Rakam rengi beyaz
+
+            _pageText.raycastTarget = false;
+
+
+
+            var shadow = txtObj.AddComponent<Shadow>();
+
+            shadow.effectColor = new Color(0f, 0f, 0f, 0.95f);
+
+            shadow.effectDistance = new Vector2(1f, -1f);
+
+        }
+
+
+
+        public void NextPage()
+
+        {
+
+            if (_currentPage >= 5) return; // Maks 6 sayfa
+
+            _currentPage++;
+
+            RefreshPage();
+
+        }
+
+
+
+        public void PrevPage()
+
+        {
+
+            if (_currentPage <= 0) return; // Min sayfa 1
+
+            _currentPage--;
+
+            RefreshPage();
+
+        }
+
+
+
+        public void RefreshPage()
+        {
+            if (_pageText != null)
+                _pageText.text = (_currentPage + 1).ToString();
+
+            for (int i = 0; i < _skillSlots.Count; i++)
+            {
+                int magicNum = _pagedMagicNums[_currentPage, i];
+
+                // Filtre: Eğer bu 6 haneli bir skill ise (yetenek) ama öğrenilmemişse barı temizle
+                if (magicNum >= 100000 && magicNum <= 999999)
+                {
+                    bool isLearned = false;
+                    if (EntropyOnline.Core.GameManager.Instance != null && EntropyOnline.Core.GameManager.Instance.LearnedSkills != null)
+                    {
+                        for (int j = 0; j < EntropyOnline.Core.GameManager.Instance.LearnedSkills.Length; j++)
+                        {
+                            if (EntropyOnline.Core.GameManager.Instance.LearnedSkills[j] == magicNum)
+                            {
+                                isLearned = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (!isLearned && KOSkillTreeManager.Instance != null)
+                    {
+                        for (int i0 = 0; i0 < KOSkillTreeManager.MAX_SKILL_KIND_OF; i0++)
+                        {
+                            for (int j0 = 0; j0 < KOSkillTreeManager.MAX_SKILL_PAGE_NUM; j0++)
+                            {
+                                for (int k0 = 0; k0 < KOSkillTreeManager.MAX_SKILL_IN_PAGE; k0++)
+                                {
+                                    var entry = KOSkillTreeManager.Instance.SkillTree[i0, j0, k0];
+                                    if (entry != null && entry.SkillId == magicNum && entry.HasLevel)
+                                    {
+                                        isLearned = true;
+                                        break;
+                                    }
+                                }
+                                if (isLearned) break;
+                            }
+                            if (isLearned) break;
+                        }
+                    }
+                    if (!isLearned)
+                    {
+                        _pagedMagicNums[_currentPage, i] = 0;
+                        magicNum = 0;
+                    }
+                }
+
+                var icon = KOItemIconLoader.LoadSkillIcon(magicNum);
+                UpdateSlotUI(i, icon, magicNum);
+            }
+        }
+
+
+
+        /// <summary>
+        /// Skillbar verisini sunucuya gönder (WIZ_SKILLDATA sub=0x01 SAVE).
+        /// Orijinal KO'da relog sırasında kaydedilir, biz her değişiklikte anında kaydediyoruz.
+        /// </summary>
+        private void SaveHotkeys()
+        {
+            if (KONetworkManager.Instance == null) return;
+
+            // 6 sayfa × 14 slot × 4 byte (int32 magicNum) = 336 byte
+            byte[] data = new byte[336];
+            int offset = 0;
+            for (int p = 0; p < 6; p++)
+            {
+                for (int s = 0; s < 14; s++)
+                {
+                    byte[] intBytes = System.BitConverter.GetBytes(_pagedMagicNums[p, s]);
+                    System.Buffer.BlockCopy(intBytes, 0, data, offset, 4);
+                    offset += 4;
+                }
+            }
+
+            KONetworkManager.Instance.SendSkillBarData(data);
+        }
+
+
+
+        /// <summary>
+        /// Sunucudan gelen WIZ_SKILLDATA paketini işle.
+        /// Wire: [opcode:0x79][sub:0x02 LOAD][336 byte skillbar data]
+        /// </summary>
+        private void OnSkillBarPacketReceived(byte[] rawData)
+        {
+            if (rawData == null || rawData.Length < 3) return;
+
+            // rawData[0] = opcode (WIZ_SKILLDATA 0x79)
+            // rawData[1] = sub command (0x02 = LOAD)
+            byte sub = rawData[1];
+            if (sub != 0x02) return; // Sadece LOAD paketini işle
+
+            int dataStart = 2;
+            int expectedSize = 336; // 6 × 14 × 4
+            int available = rawData.Length - dataStart;
+
+            if (available < expectedSize)
+            {
+                Debug.LogWarning($"[SKILL-BAR] Sunucudan gelen skillbar verisi çok kısa: {available} byte (beklenen: {expectedSize})");
+                return;
+            }
+
+            int offset = dataStart;
+            for (int p = 0; p < 6; p++)
+            {
+                for (int s = 0; s < 14; s++)
+                {
+                    _pagedMagicNums[p, s] = System.BitConverter.ToInt32(rawData, offset);
+                    offset += 4;
+                }
+            }
+
+            _serverDataLoaded = true;
+            RefreshPage();
+        }
+
+
+
+        /// <summary>
+        /// Sunucudan skillbar verisi gelip gelmediğini kontrol eder.
+        /// GameHUD varsayılan skill yüklemesi için kullanılır.
+        /// </summary>
+        public bool HasServerData => _serverDataLoaded;
+
+
+
+        /// <summary>
+
+        /// Tüm butonları yatayda kaydır.
+
+        /// Inventory açılınca sola kaydırmak için kullanılır.
+
+        /// offsetX: negatif = sola, pozitif = sağa (referans çözünürlük piksellerinde)
+
+        /// </summary>
+
+                
+
+
+
+                        private Coroutine _offsetCoroutine;
+
+        public void SetHorizontalOffset(float offsetX)
+        {
+            if (_buttonContainer == null) return;
+            if (_offsetCoroutine != null) StopCoroutine(_offsetCoroutine);
+            _offsetCoroutine = StartCoroutine(AnimateOffset(offsetX));
+        }
+
+        public void SetHorizontalOffsetInstant(float offsetX)
+        {
+            if (_buttonContainer == null) return;
+            if (_offsetCoroutine != null)
+            {
+                StopCoroutine(_offsetCoroutine);
+                _offsetCoroutine = null;
+            }
+            _buttonContainer.offsetMin = new Vector2(offsetX, 0);
+            _buttonContainer.offsetMax = new Vector2(offsetX, 0);
+        }
+
+        private System.Collections.IEnumerator AnimateOffset(float targetX)
+        {
+            float elapsed = 0f;
+            float duration = 0.2f;
+            float startX = _buttonContainer.offsetMin.x;
+
+            while (elapsed < duration)
+            {
+                elapsed += Time.unscaledDeltaTime;
+                float t = elapsed / duration;
+                t = Mathf.Sin(t * Mathf.PI * 0.5f); // Smooth ease-out
+
+                float currentX = Mathf.Lerp(startX, targetX, t);
+                _buttonContainer.offsetMin = new Vector2(currentX, 0);
+                _buttonContainer.offsetMax = new Vector2(currentX, 0);
+                yield return null;
+            }
+
+            _buttonContainer.offsetMin = new Vector2(targetX, 0);
+            _buttonContainer.offsetMax = new Vector2(targetX, 0);
+            _offsetCoroutine = null;
+        }
+
+        public void SetVisible(bool visible)
+
+        {
+
+            if (_canvas != null)
+
+            {
+
+                _canvas.enabled = visible;
+
+            }
+
+        }
+
+
+
+        /// <summary>
+
+        /// Ekran pozisyonundaki skill slotunu bul.
+
+        /// Drop hedefi tespiti için KOSkillDragDrop tarafından çağrılır.
+
+        /// C++ birebir: UIHotKeyDlg::ReceiveIconDrop → slot hit-test (cpp:563-582)
+
+        /// </summary>
+
+        /// <returns>Slot index (0-7) veya -1 (bulunamadı)</returns>
+
+        public int GetSlotAtScreenPosition(Vector2 screenPos)
+
+        {
+
+            float bestDist = float.MaxValue;
+
+            int bestSlot = -1;
+
+
+
+            for (int i = 0; i < _skillSlots.Count; i++)
+
+            {
+
+                var slot = _skillSlots[i];
+
+                if (slot.Root == null) continue;
+
+
+
+                var rt = slot.Root.GetComponent<RectTransform>();
+
+                if (rt == null) continue;
+
+
+
+                // Slot'un ekran merkez pozisyonunu hesapla
+
+                Vector3[] corners = new Vector3[4];
+
+                rt.GetWorldCorners(corners);
+
+                Vector2 center = new Vector2(
+
+                    (corners[0].x + corners[2].x) * 0.5f,
+
+                    (corners[0].y + corners[2].y) * 0.5f);
+
+
+
+                float dist = Vector2.Distance(screenPos, center);
+
+                float slotRadius = (corners[2].x - corners[0].x) * 0.5f;
+
+
+
+                // Slot alanı içinde mi? (radius * 1.3 tolerans)
+
+                if (dist <= slotRadius * 1.3f && dist < bestDist)
+
+                {
+
+                    bestDist = dist;
+
+                    bestSlot = i;
+
+                }
+
+            }
+
+
+
+            return bestSlot;
+
+        }
+
+
+
+        // ================================
+        // EDITOR HELPER (ContextMenu)
+        // ================================
+
+        [ContextMenu("Export Positions to C# Code")]
+        public void ExportPositionsToConsole()
+        {
+            if (_attackButton?.Root == null)
+            {
+                Debug.LogWarning("[SKILL-BAR] Atak butonu henüz oluşturulmamış.");
+                return;
+            }
+
+            var atkRT = _attackButton.Root.GetComponent<RectTransform>();
+            if (atkRT == null) return;
+
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("==================================================");
+            sb.AppendLine("// Kopyalayın ve MobileSkillBar.cs içerisindeki koordinatlarla değiştirin:");
+            sb.AppendLine($"            float atkOffX = {atkRT.anchoredPosition.x:F1}f;");
+            sb.AppendLine($"            float atkOffY = {-atkRT.anchoredPosition.y:F1}f;");
+            if (_pageControllerContainer != null)
+            {
+                sb.AppendLine($"            pgOffX = {_pageControllerContainer.anchoredPosition.x:F1}f;");
+                sb.AppendLine($"            pgOffY = {_pageControllerContainer.anchoredPosition.y:F1}f;");
+            }
+            if (_customAtkSubBtnRight != null)
+            {
+                var subRightRT = _customAtkSubBtnRight.GetComponent<RectTransform>();
+                sb.AppendLine($"            subBtnRightX = {subRightRT.anchoredPosition.x:F1}f;");
+                sb.AppendLine($"            subBtnRightY = {-subRightRT.anchoredPosition.y:F1}f;");
+            }
+            if (_customAtkSubBtnLeft != null)
+            {
+                var subLeftRT = _customAtkSubBtnLeft.GetComponent<RectTransform>();
+                sb.AppendLine($"            subBtnLeftX = {subLeftRT.anchoredPosition.x:F1}f;");
+                sb.AppendLine($"            subBtnLeftY = {-subLeftRT.anchoredPosition.y:F1}f;");
+            }
+            if (_customAtkCancelBtn != null)
+            {
+                var cancelRT = _customAtkCancelBtn.GetComponent<RectTransform>();
+                sb.AppendLine($"            cancelBtnX = {cancelRT.anchoredPosition.x:F1}f;");
+                sb.AppendLine($"            cancelBtnY = {-cancelRT.anchoredPosition.y:F1}f;");
+            }
+            sb.AppendLine();
+            sb.AppendLine("            var positions = new (float x, float y)[]");
+            sb.AppendLine("            {");
+            for (int i = 0; i < _skillSlots.Count; i++)
+            {
+                var slot = _skillSlots[i];
+                if (slot.Root != null)
+                {
+                    var rt = slot.Root.GetComponent<RectTransform>();
+                    sb.AppendLine($"                ({rt.anchoredPosition.x:F1}f, {-rt.anchoredPosition.y:F1}f), // S{i + 1}");
+                }
+                else
+                {
+                    sb.AppendLine($"                (0f, 0f), // S{i + 1} (Eksik/Oluşturulamadı)");
+                }
+            }
+            sb.AppendLine("            };");
+            sb.AppendLine("==================================================");
+
+        }
+
+
+
+        
+        // ====================================================================
+        #region RECONSTRUCTED EDIT MODE AND PK ZONE METHODS (RECOVERED FROM DLL)
+
+        private void EnsureCooldownText(SkillSlot slot)
+        {
+            if (slot == null || slot.Root == null) return;
+            if (slot.CooldownText != null) return;
+
+            // Find "Inner" container if it exists, otherwise use Root
+            Transform parent = slot.Root.transform.Find("Inner") ?? slot.Root.transform;
+
+            // Find or create CooldownText GameObject
+            Transform cdTextTrans = parent.Find("CooldownText");
+            GameObject cdTextObj = null;
+            if (cdTextTrans != null)
+            {
+                cdTextObj = cdTextTrans.gameObject;
+            }
+            else
+            {
+                cdTextObj = new GameObject("CooldownText");
+                cdTextObj.transform.SetParent(parent, false);
+                
+                // Position it to fill the button space
+                RectTransform rt = cdTextObj.AddComponent<RectTransform>();
+                rt.anchorMin = Vector2.zero;
+                rt.anchorMax = Vector2.one;
+                rt.offsetMin = Vector2.zero;
+                rt.offsetMax = Vector2.zero;
+            }
+
+            Text txt = cdTextObj.GetComponent<Text>();
+            if (txt == null)
+            {
+                txt = cdTextObj.AddComponent<Text>();
+                txt.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+                txt.fontStyle = FontStyle.Bold;
+                txt.alignment = TextAnchor.MiddleCenter;
+                txt.color = new Color(1f, 0.85f, 0.4f, 1f);
+                txt.resizeTextForBestFit = true;
+                txt.resizeTextMinSize = 6;
+                txt.resizeTextMaxSize = 17;
+                
+                // Add outline with 50% opacity and 2px size to expand shadow in all directions
+                Outline outline = cdTextObj.AddComponent<Outline>();
+                outline.effectColor = new Color(0f, 0f, 0f, 0.5f);
+                outline.effectDistance = new Vector2(2f, 2f);
+            }
+
+            slot.CooldownText = txt;
+        }
+
+        private void CaptureDefaultPositions()
+        {
+            _defaultSlotPositions = new Vector2[_skillSlots.Count];
+            for (int i = 0; i < _skillSlots.Count; i++)
+            {
+                if (_skillSlots[i]?.Root != null)
+                {
+                    var rt = _skillSlots[i].Root.GetComponent<RectTransform>();
+                    if (rt != null)
+                    {
+                        _defaultSlotPositions[i] = rt.anchoredPosition;
+                    }
+                }
+            }
+
+            if (_attackButton?.Root != null)
+            {
+                var rt = _attackButton.Root.GetComponent<RectTransform>();
+                if (rt != null)
+                {
+                    _defaultAttackPosition = rt.anchoredPosition;
+                    _defaultAttackSize = rt.sizeDelta;
+                }
+            }
+
+            if (_customAtkSubBtnLeft != null)
+            {
+                var rt = _customAtkSubBtnLeft.GetComponent<RectTransform>();
+                if (rt != null)
+                {
+                    _defaultSubLeftPosition = rt.anchoredPosition;
+                    _defaultSubLeftSize = rt.sizeDelta;
+                }
+            }
+
+            if (_customAtkSubBtnRight != null)
+            {
+                var rt = _customAtkSubBtnRight.GetComponent<RectTransform>();
+                if (rt != null)
+                {
+                    _defaultSubRightPosition = rt.anchoredPosition;
+                }
+            }
+
+            if (_customAtkCancelBtn != null)
+            {
+                var rt = _customAtkCancelBtn.GetComponent<RectTransform>();
+                if (rt != null)
+                {
+                    _defaultCancelPosition = rt.anchoredPosition;
+                }
+            }
+
+            if (_pageControllerContainer != null)
+            {
+                _defaultPageControllerPosition = _pageControllerContainer.anchoredPosition;
+            }
+        }
+
+        private void LoadElementPosition(GameObject go, string name)
+        {
+            if (go == null) return;
+            var rt = go.GetComponent<RectTransform>();
+            if (rt == null) return;
+
+            string keyX = "SkillBar_" + name + "_X";
+            string keyY = "SkillBar_" + name + "_Y";
+            if (PlayerPrefs.HasKey(keyX))
+            {
+                rt.anchoredPosition = new Vector2(PlayerPrefs.GetFloat(keyX), PlayerPrefs.GetFloat(keyY));
+            }
+        }
+
+        public void LoadSavedPositions()
+        {
+            for (int i = 0; i < _skillSlots.Count; i++)
+            {
+                var slot = _skillSlots[i];
+                if (slot?.Root != null)
+                {
+                    var rt = slot.Root.GetComponent<RectTransform>();
+                    if (rt != null)
+                    {
+                        string keyX = string.Format("SkillBar_Slot_{0}_X", i);
+                        string keyY = string.Format("SkillBar_Slot_{0}_Y", i);
+                        if (PlayerPrefs.HasKey(keyX))
+                        {
+                            rt.anchoredPosition = new Vector2(PlayerPrefs.GetFloat(keyX), PlayerPrefs.GetFloat(keyY));
+                        }
+                    }
+                }
+            }
+
+            LoadElementPosition(_attackButton?.Root, "AttackButton");
+            LoadElementPosition(_customAtkSubBtnLeft, "SubBtnLeft");
+            LoadElementPosition(_customAtkSubBtnRight, "SubBtnRight");
+            LoadElementPosition(_customAtkCancelBtn, "CancelBtn");
+            if (_pageControllerContainer != null)
+            {
+                LoadElementPosition(_pageControllerContainer.gameObject, "PageController");
+            }
+        }
+
+        private void CreateExtraSlotsForPrefab()
+        {
+            if (_skillSlots.Count >= 14) return;
+
+            var extraPositions = new (float x, float y)[]
+            {
+                (-320f, -115f),
+                (-320f, -180f),
+                (-280f, -240f),
+                (-230f, -290f),
+                (-385f, -125f),
+                (-385f, -190f)
+            };
+
+            for (int i = 0; i < 6; i++)
+            {
+                int slotIndex = 8 + i;
+                int slotNum = 9 + i;
+                string btnName = string.Format("Skill_{0}", slotNum);
+                float x = extraPositions[i].x;
+                float y = extraPositions[i].y;
+
+                var obj = CreateCircleButton(_buttonContainer, btnName, x, y, SKILL_SIZE, _slotFrameSprite, "", 15);
+                var slot = new SkillSlot
+                {
+                    SlotIndex = slotIndex,
+                    Root = obj,
+                    Button = obj.GetComponent<Button>(),
+                    CooldownOverlay = obj.transform.Find("Inner/CooldownOverlay")?.GetComponent<Image>(),
+                    CooldownText = obj.transform.Find("Inner/CooldownText")?.GetComponent<Text>(),
+                    CountText = obj.transform.Find("Inner/Count")?.GetComponent<Text>()
+                };
+
+                if (slot.Button != null)
+                {
+                    slot.Button.onClick.RemoveAllListeners();
+                }
+                var aimHandler = obj.GetComponent<KOSkillAimHandler>() ?? obj.AddComponent<KOSkillAimHandler>();
+                aimHandler.SlotIndex = slotIndex;
+
+                if (slot.CooldownOverlay != null)
+                {
+                    slot.CooldownOverlay.sprite = _circleSprite;
+                    slot.CooldownOverlay.color = new Color(0f, 0f, 0f, 0.65f);
+                    slot.CooldownOverlay.fillAmount = 0f;
+                }
+
+                var dragDrop = obj.GetComponent<KOSkillBarSlotDragDrop>() ?? obj.AddComponent<KOSkillBarSlotDragDrop>();
+                dragDrop.SlotIndex = slotIndex;
+
+                _skillSlots.Add(slot);
+            }
+        }
+
+        private System.Collections.IEnumerator TriggerComboHelperRoutine()
+        {
+            yield return new WaitForSeconds(0.2f);
+            OnAttackPressed();
+            yield return new WaitForSeconds(0.2f);
+            OnAttackPressed();
+        }
+
+        private void RestoreDefaultPositions()
+        {
+            if (_defaultSlotPositions != null)
+            {
+                for (int i = 0; i < _skillSlots.Count; i++)
+                {
+                    if (i < _defaultSlotPositions.Length)
+                    {
+                        if (_skillSlots[i]?.Root != null)
+                        {
+                            var rt = _skillSlots[i].Root.GetComponent<RectTransform>();
+                            if (rt != null)
+                            {
+                                rt.anchoredPosition = _defaultSlotPositions[i];
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (_attackButton?.Root != null)
+            {
+                var rt = _attackButton.Root.GetComponent<RectTransform>();
+                if (rt != null)
+                {
+                    rt.anchoredPosition = _defaultAttackPosition;
+                }
+            }
+
+            if (_customAtkSubBtnLeft != null)
+            {
+                var rt = _customAtkSubBtnLeft.GetComponent<RectTransform>();
+                if (rt != null)
+                {
+                    rt.anchoredPosition = _defaultSubLeftPosition;
+                }
+            }
+
+            if (_customAtkSubBtnRight != null)
+            {
+                var rt = _customAtkSubBtnRight.GetComponent<RectTransform>();
+                if (rt != null)
+                {
+                    rt.anchoredPosition = _defaultSubRightPosition;
+                }
+            }
+
+            if (_customAtkCancelBtn != null)
+            {
+                var rt = _customAtkCancelBtn.GetComponent<RectTransform>();
+                if (rt != null)
+                {
+                    rt.anchoredPosition = _defaultCancelPosition;
+                }
+            }
+
+            if (_pageControllerContainer != null)
+            {
+                _pageControllerContainer.anchoredPosition = _defaultPageControllerPosition;
+            }
+
+            ApplyZAndRLayout();
+        }
+    
+        public void SaveSavedPositions()
+        {
+            for (int i = 0; i < _skillSlots.Count; i++)
+            {
+                var slot = _skillSlots[i];
+                if (slot?.Root != null)
+                {
+                    var rt = slot.Root.GetComponent<RectTransform>();
+                    if (rt != null)
+                    {
+                        PlayerPrefs.SetFloat(string.Format("SkillBar_Slot_{0}_X", i), rt.anchoredPosition.x);
+                        PlayerPrefs.SetFloat(string.Format("SkillBar_Slot_{0}_Y", i), rt.anchoredPosition.y);
+                    }
+                }
+            }
+
+            SaveElementPosition(_attackButton?.Root, "AttackButton");
+            SaveElementPosition(_customAtkSubBtnLeft, "SubBtnLeft");
+            SaveElementPosition(_customAtkSubBtnRight, "SubBtnRight");
+            SaveElementPosition(_customAtkCancelBtn, "CancelBtn");
+            SaveElementPosition(_pageControllerContainer?.gameObject, "PageController");
+
+            PlayerPrefs.Save();
+        }
+
+        public void ResetPositions()
+        {
+            for (int i = 0; i < 14; i++)
+            {
+                PlayerPrefs.DeleteKey(string.Format("SkillBar_Slot_{0}_X", i));
+                PlayerPrefs.DeleteKey(string.Format("SkillBar_Slot_{0}_Y", i));
+            }
+
+            PlayerPrefs.DeleteKey("SkillBar_AttackButton_X");
+            PlayerPrefs.DeleteKey("SkillBar_AttackButton_Y");
+            PlayerPrefs.DeleteKey("SkillBar_SubBtnLeft_X");
+            PlayerPrefs.DeleteKey("SkillBar_SubBtnLeft_Y");
+            PlayerPrefs.DeleteKey("SkillBar_SubBtnRight_X");
+            PlayerPrefs.DeleteKey("SkillBar_SubBtnRight_Y");
+            PlayerPrefs.DeleteKey("SkillBar_CancelBtn_X");
+            PlayerPrefs.DeleteKey("SkillBar_CancelBtn_Y");
+            PlayerPrefs.DeleteKey("SkillBar_PageController_X");
+            PlayerPrefs.DeleteKey("SkillBar_PageController_Y");
+
+            PlayerPrefs.Save();
+            RestoreDefaultPositions();
+        }
+
+        private void SaveElementPosition(GameObject go, string name)
+        {
+            if (go == null) return;
+            var rt = go.GetComponent<RectTransform>();
+            if (rt == null) return;
+
+            PlayerPrefs.SetFloat("SkillBar_" + name + "_X", rt.anchoredPosition.x);
+            PlayerPrefs.SetFloat("SkillBar_" + name + "_Y", rt.anchoredPosition.y);
+        }
+    
+        private void AddMoveHandler(GameObject go)
+        {
+            if (go == null) return;
+            if (go.GetComponent<KOSkillBarMoveHandler>() == null)
+            {
+                go.AddComponent<KOSkillBarMoveHandler>();
+            }
+        }
+                // ====================================================================
+
+        public bool IsEditMode { get; set; }
+
+        public void SetEditMode(bool active)
+        {
+            IsEditMode = active;
+            ToggleMoveIndicator(_attackButton?.Root, active);
+            ToggleMoveIndicator(_customAtkSubBtnLeft, active);
+            ToggleMoveIndicator(_customAtkSubBtnRight, active);
+            ToggleMoveIndicator(_customAtkCancelBtn, active);
+            ToggleMoveIndicator(_pageControllerContainer?.gameObject, active);
+            
+            for (int i = 0; i < _skillSlots.Count; i++)
+            {
+                ToggleMoveIndicator(_skillSlots[i]?.Root, active);
+            }
+            
+            if (active)
+            {
+                AddMoveHandler(_attackButton?.Root);
+                AddMoveHandler(_customAtkSubBtnLeft);
+                AddMoveHandler(_customAtkSubBtnRight);
+                AddMoveHandler(_customAtkCancelBtn);
+                AddMoveHandler(_pageControllerContainer?.gameObject);
+            }
+        }
+
+        public void ApplyExtraSkillsActiveState()
+        {
+            if (_skillSlots == null) return;
+
+            int extraSkillCount = GameOptionsManager.Instance != null ? GameOptionsManager.Instance.PK_ExtraSkillCount : 0;
+
+            for (int i = 0; i < _skillSlots.Count; i++)
+            {
+                if (_skillSlots[i]?.Root == null) continue;
+
+                if (i < 8)
+                {
+                    _skillSlots[i].Root.SetActive(true);
+                }
+                else
+                {
+                    bool active = (i - 8) < extraSkillCount;
+                    _skillSlots[i].Root.SetActive(active);
+                }
+            }
+        }
+
+        public void ApplyZButtonScale()
+        {
+            if (_customAtkSubBtnLeft == null) return;
+            
+            float zScale = 1.0f;
+            if (GameOptionsManager.Instance != null)
+            {
+                zScale = Mathf.Lerp(0.7f, 1.5f, GameOptionsManager.Instance.Graphic2_ZButtonSize);
+            }
+            
+            bool changeZAndR = GameOptionsManager.Instance != null && GameOptionsManager.Instance.PK_ChangeZAndR;
+            if (changeZAndR)
+            {
+                _customAtkSubBtnLeft.transform.localScale = Vector3.one;
+                if (_attackButton?.Root != null)
+                {
+                    _attackButton.Root.transform.localScale = new Vector3(zScale, zScale, 1f);
+                }
+            }
+            else
+            {
+                _customAtkSubBtnLeft.transform.localScale = new Vector3(zScale, zScale, 1f);
+                if (_attackButton?.Root != null)
+                {
+                    _attackButton.Root.transform.localScale = Vector3.one;
+                }
+            }
+        }
+
+        public void ApplyZAndRLayout()
+        {
+            if (_attackButton?.Root == null || _customAtkSubBtnLeft == null) return;
+
+            var r0 = _attackButton.Root.GetComponent<RectTransform>();
+            var r1 = _customAtkSubBtnLeft.GetComponent<RectTransform>();
+            if (r0 == null || r1 == null) return;
+
+            bool changeZAndR = GameOptionsManager.Instance != null && GameOptionsManager.Instance.PK_ChangeZAndR;
+
+            Vector2 attackTargetPos = changeZAndR ? _defaultSubLeftPosition : _defaultAttackPosition;
+            Vector2 attackTargetSize = changeZAndR ? _defaultSubLeftSize : _defaultAttackSize;
+            Vector2 subLeftTargetPos = changeZAndR ? _defaultAttackPosition : _defaultSubLeftPosition;
+            Vector2 subLeftTargetSize = changeZAndR ? _defaultAttackSize : _defaultSubLeftSize;
+
+            if (attackTargetPos == Vector2.zero && attackTargetSize == Vector2.zero)
+            {
+                if (changeZAndR)
+                {
+                    attackTargetPos = new Vector2(subBtnLeftX, subBtnLeftY);
+                    attackTargetSize = new Vector2(60f, 60f);
+                }
+                else
+                {
+                    attackTargetPos = new Vector2(-109.8f, -125.4f);
+                    attackTargetSize = new Vector2(105f, 105f);
+                }
+            }
+
+            if (subLeftTargetPos == Vector2.zero && subLeftTargetSize == Vector2.zero)
+            {
+                if (changeZAndR)
+                {
+                    subLeftTargetPos = new Vector2(-109.8f, -125.4f);
+                    subLeftTargetSize = new Vector2(105f, 105f);
+                }
+                else
+                {
+                    subLeftTargetPos = new Vector2(subBtnLeftX, subBtnLeftY);
+                    subLeftTargetSize = new Vector2(60f, 60f);
+                }
+            }
+
+            r0.anchoredPosition = attackTargetPos;
+            r0.sizeDelta = attackTargetSize;
+            r1.anchoredPosition = subLeftTargetPos;
+            r1.sizeDelta = subLeftTargetSize;
+
+            var inner0 = r0.Find("Inner") as RectTransform;
+            var inner1 = r1.Find("Inner") as RectTransform;
+            if (inner0 != null)
+            {
+                float size = attackTargetSize.x * 0.81f;
+                inner0.sizeDelta = new Vector2(size, size);
+            }
+            if (inner1 != null)
+            {
+                float size = subLeftTargetSize.x * 0.81f;
+                inner1.sizeDelta = new Vector2(size, size);
+            }
+
+            if (changeZAndR)
+            {
+                r0.SetAsLastSibling();
+            }
+            else
+            {
+                r1.SetAsLastSibling();
+            }
+
+            if (_customAtkCancelBtn != null && _customAtkCancelBtn.activeSelf)
+            {
+                _customAtkCancelBtn.transform.SetAsLastSibling();
+            }
+
+            ApplyZButtonScale();
+        }
+
+        public void ClearAllSkills()
+        {
+            for (int page = 0; page < 6; page++)
+            {
+                for (int slot = 0; slot < 14; slot++)
+                {
+                    _pagedMagicNums[page, slot] = 0;
+                    if (slot >= 8)
+                    {
+                        PlayerPrefs.DeleteKey($"ExtraHotkeys_Page_{page}_Slot_{slot}");
+                    }
+                }
+            }
+            PlayerPrefs.Save();
+            SaveHotkeys();
+            for (int i = 0; i < _skillSlots.Count; i++)
+            {
+                UpdateSlotUI(i, null, 0);
+            }
+        }
+
+        public void ApplyExpandMargins()
+        {
+            if (_marginContainer == null) return;
+            _marginContainer.offsetMin = Vector2.zero;
+            _marginContainer.offsetMax = Vector2.zero;
+        }
+
+        private void ToggleMoveIndicator(GameObject go, bool active)
+        {
+            if (go == null) return;
+            Transform indicator = go.transform.Find("MoveIndicator");
+            if (indicator != null)
+            {
+                indicator.gameObject.SetActive(active);
+                return;
+            }
+
+            if (!active) return;
+
+            EnsureCircularGradientSprite();
+            GameObject indicatorObj = new GameObject("MoveIndicator");
+            indicatorObj.transform.SetParent(go.transform, false);
+            RectTransform rt = indicatorObj.AddComponent<RectTransform>();
+            rt.anchorMin = Vector2.zero;
+            rt.anchorMax = Vector2.one;
+            rt.offsetMin = Vector2.zero;
+            rt.offsetMax = Vector2.zero;
+
+            Image img = indicatorObj.AddComponent<Image>();
+            img.sprite = _circularGradientSprite;
+            img.color = new Color(0f, 0f, 0f, 0.5f);
+            img.raycastTarget = true;
+
+            GameObject textObj = new GameObject("Text");
+            textObj.transform.SetParent(indicatorObj.transform, false);
+            RectTransform textRT = textObj.AddComponent<RectTransform>();
+            textRT.anchorMin = new Vector2(0.15f, 0.15f);
+            textRT.anchorMax = new Vector2(0.85f, 0.85f);
+            textRT.offsetMin = Vector2.zero;
+            textRT.offsetMax = Vector2.zero;
+
+            Text txt = textObj.AddComponent<Text>();
+            txt.text = "✖";
+            txt.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            txt.fontStyle = FontStyle.Bold;
+            txt.alignment = TextAnchor.MiddleCenter;
+            txt.color = new Color(0.95f, 0.85f, 0.35f, 1f);
+            txt.resizeTextForBestFit = true;
+            txt.resizeTextMinSize = 10;
+            txt.resizeTextMaxSize = 80;
+
+            Shadow shadow = textObj.AddComponent<Shadow>();
+            shadow.effectColor = Color.black;
+            shadow.effectDistance = new Vector2(1.5f, -1.5f);
+
+            indicatorObj.SetActive(true);
+        }
+
+        private static Sprite _circularGradientSprite;
+        private static void EnsureCircularGradientSprite()
+        {
+            if (_circularGradientSprite != null) return;
+            Texture2D tex = new Texture2D(64, 64, TextureFormat.RGBA32, false);
+            for (int y = 0; y < 64; y++)
+            {
+                for (int x = 0; x < 64; x++)
+                {
+                    float dx = x - 31.5f;
+                    float dy = y - 31.5f;
+                    float dist = Mathf.Sqrt(dx*dx + dy*dy) / 32f;
+                    float alpha = Mathf.Clamp01(1f - dist);
+                    tex.SetPixel(x, y, new Color(1f, 1f, 1f, alpha));
+                }
+            }
+            tex.Apply();
+            _circularGradientSprite = Sprite.Create(tex, new Rect(0, 0, 64, 64), new Vector2(0.5f, 0.5f));
+        }
+        #endregion
+
+
+        private class SkillSlot
+
+        {
+
+            public int SlotIndex;
+
+            public int MagicNum; // C++ __IconItemSkill->pSkill->dwID
+
+            public GameObject Root;
+
+            public Button Button;
+
+            public Image CooldownOverlay; // Yarı saydam siyah radial fill
+
+                        public Text CooldownText;
+
+public Text CountText;
+
+        }
+
+    }
+}
+

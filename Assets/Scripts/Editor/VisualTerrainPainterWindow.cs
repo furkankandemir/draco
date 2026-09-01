@@ -1,0 +1,356 @@
+using UnityEditor;
+using UnityEngine;
+using System.IO;
+using System.Collections.Generic;
+using EntropyOnline.Import;
+
+namespace EntropyOnline.Editor
+{
+    public class VisualTerrainPainterWindow : EditorWindow
+    {
+        private short selectedZoneId = 2; // Default El Morad Castle
+        private List<string> gttSources = new List<string>();
+        private Dictionary<int, TerrainLayer> gttMappings = new Dictionary<int, TerrainLayer>();
+        private Dictionary<int, Texture2D> gttPreviews = new Dictionary<int, Texture2D>();
+        private Vector2 scrollPosition = Vector2.zero;
+        private bool analyzed = false;
+
+        [MenuItem("Entropy Online/Visual Terrain Painter", false, 32)]
+        public static void ShowWindow()
+        {
+            GetWindow<VisualTerrainPainterWindow>("Visual Terrain Painter");
+        }
+
+        private void OnGUI()
+        {
+            GUILayout.Label("Visual Terrain Painter (Grouped Mode)", EditorStyles.boldLabel);
+            EditorGUILayout.Space();
+
+            // Zone Selection
+            var zones = KOZoneMapper.GetAllZones();
+            var zoneOptions = new List<string>();
+            var zoneIds = new List<short>();
+
+            foreach (var kvp in zones)
+            {
+                zoneOptions.Add($"Zone {kvp.Key}: {kvp.Value.ZoneName}");
+                zoneIds.Add(kvp.Key);
+            }
+
+            int selectedIndex = zoneIds.IndexOf(selectedZoneId);
+            if (selectedIndex < 0) selectedIndex = 0;
+
+            EditorGUI.BeginChangeCheck();
+            selectedIndex = EditorGUILayout.Popup("Select Zone", selectedIndex, zoneOptions.ToArray());
+            if (EditorGUI.EndChangeCheck())
+            {
+                selectedZoneId = zoneIds[selectedIndex];
+                analyzed = false;
+                gttSources.Clear();
+                gttMappings.Clear();
+                gttPreviews.Clear();
+            }
+
+            EditorGUILayout.Space();
+
+            if (GUILayout.Button("Analyze Map Terrain Packages", GUILayout.Height(35)))
+            {
+                AnalyzeTerrainPackages();
+            }
+
+            EditorGUILayout.Space();
+
+            if (analyzed)
+            {
+                GUILayout.Label($"Found {gttSources.Count} main texture packages used in this map:", EditorStyles.miniBoldLabel);
+                EditorGUILayout.HelpBox("Map your new custom TerrainLayers to the original packages below.", MessageType.Info);
+                EditorGUILayout.Space();
+
+                scrollPosition = EditorGUILayout.BeginScrollView(scrollPosition);
+
+                for (int s = 0; s < gttSources.Count; s++)
+                {
+                    string gttPath = gttSources[s];
+                    string gttFileName = Path.GetFileName(gttPath);
+
+                    EditorGUILayout.BeginHorizontal(GUI.skin.box);
+                    
+                    // Show Thumbnail Preview for this GTT package
+                    Texture2D preview = null;
+                    gttPreviews.TryGetValue(s, out preview);
+
+                    if (preview != null)
+                    {
+                        GUILayout.Label(preview, GUILayout.Width(64), GUILayout.Height(64));
+                    }
+                    else
+                    {
+                        GUILayout.Box("No Image", GUILayout.Width(64), GUILayout.Height(64));
+                    }
+
+                    EditorGUILayout.BeginVertical();
+                    GUILayout.Label(gttFileName, EditorStyles.boldLabel);
+                    GUILayout.Label($"Source: {gttPath}", EditorStyles.miniLabel);
+                    
+                    // Layer Selection
+                    TerrainLayer currentLayer = null;
+                    gttMappings.TryGetValue(s, out currentLayer);
+                    
+                    EditorGUI.BeginChangeCheck();
+                    currentLayer = (TerrainLayer)EditorGUILayout.ObjectField("New Terrain Layer", currentLayer, typeof(TerrainLayer), false);
+                    if (EditorGUI.EndChangeCheck())
+                    {
+                        gttMappings[s] = currentLayer;
+                    }
+                    EditorGUILayout.EndVertical();
+
+                    EditorGUILayout.EndHorizontal();
+                    EditorGUILayout.Space();
+                }
+
+                EditorGUILayout.EndScrollView();
+
+                EditorGUILayout.Space();
+
+                if (GUILayout.Button("Paint Terrain Automatically", GUILayout.Height(45)))
+                {
+                    PaintTerrain();
+                }
+            }
+        }
+
+        private void AnalyzeTerrainPackages()
+        {
+            string gtdPath = KOZoneMapper.GetGtdPath(selectedZoneId);
+            if (string.IsNullOrEmpty(gtdPath) || !KOBinaryProvider.Exists(gtdPath))
+            {
+                EditorUtility.DisplayDialog("Error", $"GTD File not found at: {gtdPath}", "OK");
+                return;
+            }
+
+            Debug.Log($"[PAINTER] Analyzing GTD for Packages: {gtdPath}...");
+            var gtdData = GtdTerrainImporter.Parse(gtdPath);
+            if (gtdData == null)
+            {
+                EditorUtility.DisplayDialog("Error", "Failed to parse GTD terrain data.", "OK");
+                return;
+            }
+
+            gttSources.Clear();
+            gttMappings.Clear();
+            gttPreviews.Clear();
+
+            // Load GTT sources
+            foreach (var src in gtdData.TileTexSources)
+            {
+                gttSources.Add(src);
+            }
+
+            int newlyExtracted = 0;
+            string terrainAssetsDir = "Assets/Resources/TerrainAssets";
+            if (!Directory.Exists(terrainAssetsDir))
+            {
+                Directory.CreateDirectory(terrainAssetsDir);
+            }
+
+            // Extract a preview tile for each unique GTT source
+            for (int s = 0; s < gttSources.Count; s++)
+            {
+                // Find the first tile index in TileTextures belonging to this source
+                int firstTileIdxInGtd = -1;
+                int gtdTileIdx = -1;
+
+                for (int i = 0; i < gtdData.TileTextures.Count; i++)
+                {
+                    if (gtdData.TileTextures[i].SrcIdx == s)
+                    {
+                        firstTileIdxInGtd = i;
+                        gtdTileIdx = gtdData.TileTextures[i].TileIdx;
+                        break;
+                    }
+                }
+
+                if (firstTileIdxInGtd >= 0)
+                {
+                    string texPath = $"{terrainAssetsDir}/Zone_{selectedZoneId}_Tile_{firstTileIdxInGtd}.png";
+                    Texture2D tex = AssetDatabase.LoadAssetAtPath<Texture2D>(texPath);
+
+                    if (tex == null)
+                    {
+                        // Dynamically extract the representative tile
+                        string gttRel = gttSources[s];
+                        string gttFull = Path.Combine("Zones", gttRel);
+
+                        Texture2D extractedTex = GttTextureImporter.LoadTile(gttFull, gtdTileIdx);
+                        if (extractedTex != null)
+                        {
+                            byte[] pngBytes = extractedTex.EncodeToPNG();
+                            File.WriteAllBytes(texPath, pngBytes);
+                            AssetDatabase.ImportAsset(texPath);
+
+                            tex = AssetDatabase.LoadAssetAtPath<Texture2D>(texPath);
+                            newlyExtracted++;
+                        }
+                    }
+
+                    if (tex != null)
+                    {
+                        gttPreviews[s] = tex;
+                    }
+                }
+            }
+
+            if (newlyExtracted > 0)
+            {
+                AssetDatabase.Refresh();
+            }
+
+            analyzed = true;
+            Debug.Log($"[PAINTER] Analysis completed. Source GTTs: {gttSources.Count} (Representative Tiles Extracted: {newlyExtracted})");
+        }
+
+        private void PaintTerrain()
+        {
+            // Find active Terrain in scene
+            Terrain terrain = FindAnyObjectByType<Terrain>();
+            if (terrain == null)
+            {
+                EditorUtility.DisplayDialog("Error", "No Terrain found in the active scene! Please open your map scene (e.g. human-castle) first.", "OK");
+                return;
+            }
+
+            TerrainData terrainData = terrain.terrainData;
+            if (terrainData == null)
+            {
+                EditorUtility.DisplayDialog("Error", "Terrain does not have a TerrainData assigned!", "OK");
+                return;
+            }
+
+            string gtdPath = KOZoneMapper.GetGtdPath(selectedZoneId);
+            var gtdData = GtdTerrainImporter.Parse(gtdPath);
+            if (gtdData == null) return;
+
+            // 1. Gather all assigned TerrainLayers
+            List<TerrainLayer> newLayerList = new List<TerrainLayer>();
+
+            // Preserve the composite reference map at Index 0 (reference map)
+            if (terrainData.terrainLayers.Length > 0 && terrainData.terrainLayers[0] != null)
+            {
+                newLayerList.Add(terrainData.terrainLayers[0]);
+            }
+            else
+            {
+                string compPath = $"Assets/Resources/TerrainAssets/Zone_{selectedZoneId}_Composite.terrainlayer";
+                TerrainLayer compLayer = AssetDatabase.LoadAssetAtPath<TerrainLayer>(compPath);
+                if (compLayer != null) newLayerList.Add(compLayer);
+            }
+
+            // Map each GTT source index to its new index in the terrainLayers list
+            Dictionary<int, int> gttIndexToLayerIndex = new Dictionary<int, int>();
+
+            for (int s = 0; s < gttSources.Count; s++)
+            {
+                TerrainLayer userLayer;
+                if (gttMappings.TryGetValue(s, out userLayer) && userLayer != null)
+                {
+                    int layerIdx = newLayerList.IndexOf(userLayer);
+                    if (layerIdx < 0)
+                    {
+                        newLayerList.Add(userLayer);
+                        layerIdx = newLayerList.Count - 1;
+                    }
+                    gttIndexToLayerIndex[s] = layerIdx;
+                }
+            }
+
+            if (gttIndexToLayerIndex.Count == 0)
+            {
+                EditorUtility.DisplayDialog("Warning", "Please assign at least one new Terrain Layer to paint!", "OK");
+                return;
+            }
+
+            // Update Terrain Layers
+            Undo.RecordObject(terrainData, "Auto Paint Terrain Layers");
+            terrainData.terrainLayers = newLayerList.ToArray();
+
+            // 2. Generate Splatmaps
+            int splatW = terrainData.alphamapWidth;
+            int splatH = terrainData.alphamapHeight;
+            int layerCount = newLayerList.Count;
+
+            float[,,] alphamaps = new float[splatW, splatH, layerCount];
+
+            for (int y = 0; y < splatH; y++)
+            {
+                for (int x = 0; x < splatW; x++)
+                {
+                    int gtdX = Mathf.Clamp((int)((float)x / splatW * (gtdData.MapSize - 1)), 0, gtdData.MapSize - 1);
+                    int gtdZ = Mathf.Clamp((int)((float)y / splatH * (gtdData.MapSize - 1)), 0, gtdData.MapSize - 1);
+
+                    int origTileIdx = gtdData.CellData[gtdX, gtdZ].Tex1Idx;
+
+                    int targetLayerIdx = 0; // Default to index 0 (composite reference map)
+                    
+                    if (origTileIdx >= 0 && origTileIdx < gtdData.TileTextures.Count)
+                    {
+                        int srcIdx = gtdData.TileTextures[origTileIdx].SrcIdx;
+                        if (gttIndexToLayerIndex.TryGetValue(srcIdx, out int assignedIdx))
+                        {
+                            targetLayerIdx = assignedIdx;
+                        }
+                    }
+
+                    // Set weights
+                    for (int l = 0; l < layerCount; l++)
+                    {
+                        alphamaps[x, y, l] = (l == targetLayerIdx) ? 1.0f : 0.0f;
+                    }
+                }
+            }
+
+            terrainData.SetAlphamaps(0, 0, alphamaps);
+            EditorUtility.SetDirty(terrainData);
+            AssetDatabase.SaveAssets();
+
+            // Update the terrain material template on disk with the layers count and texture references!
+            string terrainMatPath = $"Assets/Resources/TerrainAssets/Zone_{selectedZoneId}_Terrain_Mat.mat";
+            Material terrainMat = AssetDatabase.LoadAssetAtPath<Material>(terrainMatPath);
+            if (terrainMat != null)
+            {
+                Undo.RecordObject(terrainMat, "Update Terrain Material Layers");
+                layerCount = newLayerList.Count;
+                terrainMat.SetFloat("_NumLayersCount", layerCount);
+                
+                // Zero out all texture slots first to clean up old references
+                for (int i = 0; i < 8; i++)
+                {
+                    terrainMat.SetTexture($"_Splat{i}", null);
+                    terrainMat.SetTexture($"_Normal{i}", null);
+                }
+                
+                // Bind active terrain layers to material properties
+                for (int i = 0; i < layerCount; i++)
+                {
+                    var layer = newLayerList[i];
+                    if (layer != null)
+                    {
+                        if (layer.diffuseTexture != null)
+                        {
+                            terrainMat.SetTexture($"_Splat{i}", layer.diffuseTexture);
+                        }
+                        if (layer.normalMapTexture != null)
+                        {
+                            terrainMat.SetTexture($"_Normal{i}", layer.normalMapTexture);
+                        }
+                    }
+                }
+                EditorUtility.SetDirty(terrainMat);
+                AssetDatabase.SaveAssets();
+                Debug.Log($"[PAINTER] Updated terrain material template on disk: {terrainMatPath} (Layers: {layerCount})");
+            }
+
+            Debug.Log($"[PAINTER] Group-painted terrain for Zone {selectedZoneId} successfully!");
+            EditorUtility.DisplayDialog("Success", $"Successfully painted the terrain automatically using your visual group mapping!", "OK");
+        }
+    }
+}

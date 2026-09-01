@@ -1,0 +1,3424 @@
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.UI;
+using UnityEngine.Rendering;
+using EntropyOnline.Core;
+using EntropyOnline.Import;
+using EntropyOnline.Character;
+
+namespace EntropyOnline.World
+{
+    /// <summary>
+    /// Entropy Online — Runtime Dünya Oluşturucu
+    /// 
+    /// Open-KO v1.298 asset'lerinden gerçek terrain yükler:
+    /// 1. .gtd dosyasından heightmap (GtdTerrainImporter)
+    /// 2. Zone ID → dosya eşleme (KOZoneMapper)
+    /// 3. Skybox, Fog, Lighting
+    /// 
+    /// Fallback olarak prosedürel terrain oluşturur.
+    /// </summary>
+    public class WorldBuilder : MonoBehaviour
+    {
+        public static WorldBuilder Instance { get; private set; }
+
+        [Header("KO Assets")]
+
+        [Header("Zone")]
+        [Tooltip("Yüklenecek zone ID. 0 = GameManager'dan al. Inspector'dan değiştirerek test edebilirsiniz.")]
+        [SerializeField] private short inspectorZoneId = 0; // 0 = GameManager'dan oku, >0 = test override
+
+        [Header("Fallback")]
+        [SerializeField] private int fallbackTerrainSize = 512;
+        [SerializeField] private int fallbackTerrainHeight = 40;
+
+        private Terrain _terrain;
+        /// <summary>Unity Terrain component — C++ birebir: ACT_WORLD->m_Terrain</summary>
+        public Terrain Terrain => _terrain;
+        private Light _sun;
+        private GameObject _objectsParent;
+        private short _currentZoneId;
+        private float _terrainWorldSize;
+        private KOZoneAsset _currentZoneAsset; // Convert edilmiş zone verisi (varsa)
+        private int _meshLoaded = 0;
+        private int _meshFailed = 0;
+        private int _texLoaded = 0;
+        private string _shapeDumpPath;
+        private Transform _playerTransform; // LateUpdate'te her frame FindGameObject yerine cache
+        private KOPvsManager _pvsManager;
+
+        // Monster model cache — WorldBuilder spawn sırasında doldurulur,
+        // EntityManager S2C_SPAWN_MONSTER gelince kullanır
+        private Dictionary<int, KOImport.NpcLooksTblParser.NpcLooksEntry> _monsterLooksCache = new();
+        private Dictionary<int, NpcDefData> _monsterDefCache = new();
+
+        // NPC_Looks.tbl tam tablo cache — dosya sadece 1 kez diskten okunur
+        private Dictionary<uint, KOImport.NpcLooksTblParser.NpcLooksEntry> _npcLooksTableFull;
+
+        /// <summary>
+        /// NPC_Looks.tbl'yi diskten yükle (ilk çağrıda) veya cache'ten döndür.
+        /// C++ birebir: s_pTbl_NPC_Looks uygulama başında bir kez yüklenir.
+        /// </summary>
+        private Dictionary<uint, KOImport.NpcLooksTblParser.NpcLooksEntry> GetNpcLooksTable()
+        {
+            if (_npcLooksTableFull == null)
+            {
+                string tblPath = System.IO.Path.Combine("", "Data", "NPC_Looks.tbl");
+                _npcLooksTableFull = KOImport.NpcLooksTblParser.Load(tblPath);
+            }
+            return _npcLooksTableFull;
+        }
+
+        // Open-KO birebir sabitler:
+        // WarFareMain.cpp:94-98 — s_Options.iViewDist = 512 (min=256, max=512)
+        // GameDef.h:1278-1279 — SOUND_RANGE_TO_SET=10, SOUND_RANGE_TO_RELEASE=20
+        private const float KO_VIEW_DIST = 512f;
+        private const float KO_NAME_SHOW_DIST = 10f;    // SOUND_RANGE_TO_SET (GameDef.h:1278)
+        private const float KO_NAME_HIDE_DIST = 20f;    // SOUND_RANGE_TO_RELEASE (GameDef.h:1279)
+
+        /// <summary>
+        /// S2C_SPAWN_MONSTER geldiğinde EntityManager bu metodu çağırır.
+        /// Open-KO birebir: WIZ_NPC_INOUT → client entity oluşturur.
+        /// </summary>
+        public GameObject BuildMonsterModel(int defId, out string monsterName, out int monsterSize)
+        {
+            monsterName = "Unknown";
+            monsterSize = 100;
+
+            if (!_monsterDefCache.TryGetValue(defId, out var defData))
+            {
+                // Cache henüz dolmamışsa, K_MONSTER'dan yükle
+                if (_monsterDefCache.Count == 0)
+                {
+                    _monsterDefCache = LoadMonsterPidMap();
+                }
+                if (!_monsterDefCache.TryGetValue(defId, out defData))
+                    return null;
+            }
+
+            monsterName = defData.Name;
+            monsterSize = defData.Size;
+
+            if (!_monsterLooksCache.TryGetValue(defId, out var looks))
+            {
+                // Looks cache'te yoksa tam tablodan ara (tablo sadece 1 kez diskten okunur)
+                var allLooks = GetNpcLooksTable();
+                if (allLooks.TryGetValue((uint)defData.Pid, out var entry))
+                {
+                    _monsterLooksCache[defId] = entry;
+                    looks = entry;
+                }
+                else
+                    return null;
+            }
+
+            return Import.N3CharBuilder.BuildFromLooks(looks);
+        }
+
+        /// <summary>
+        /// C++ birebir: GameProcMain.cpp:2921 — s_pTbl_NPC_Looks.Find(iIDResrc)
+        /// Sunucu paketindeki resourceId (iIDResrc) doğrudan NPC_Looks.tbl ID'sidir.
+        /// K_MONSTER tablosuna gerek yok — doğrudan NPC_Looks'tan model yükle.
+        /// </summary>
+        public GameObject BuildMonsterModelByResourceId(int resourceId, out int monsterSize)
+        {
+            monsterSize = 100;
+
+            if (!_monsterLooksCache.TryGetValue(resourceId, out var looks))
+            {
+                var allLooks = GetNpcLooksTable();
+                if (allLooks.TryGetValue((uint)resourceId, out var entry))
+                {
+                    _monsterLooksCache[resourceId] = entry;
+                    looks = entry;
+                }
+                else
+                {
+                    Debug.LogWarning($"[WORLD] NPC_Looks.tbl'de resourceId={resourceId} bulunamadı");
+                    return null;
+                }
+            }
+
+            return Import.N3CharBuilder.BuildFromLooks(looks);
+        }
+
+        private void Awake()
+        {
+            if (Instance != null && Instance != this) { Destroy(gameObject); return; }
+            Instance = this;
+        }
+
+        private void Start()
+        {
+            // Zone ID: GameManager'dan al (karakter seçiminde set edilir)
+            // Inspector override sadece GameManager yoksa veya 0 ise kullanılır
+            _currentZoneId = 0;
+            if (GameManager.Instance != null && GameManager.Instance.CurrentZoneId > 0)
+            {
+                _currentZoneId = GameManager.Instance.CurrentZoneId;
+            }
+            else if (inspectorZoneId > 0)
+            {
+                _currentZoneId = inspectorZoneId;
+            }
+            if (_currentZoneId == 0) _currentZoneId = 21; // Son fallback: Moradon
+            
+            Debug.Log($"[WORLD] Zone ID belirlendi: {_currentZoneId} (GM={GameManager.Instance?.CurrentZoneId}, Inspector={inspectorZoneId})");
+
+            CreateSun();
+
+            // Convert edilmiş zone asset'i dene — yoksa eski runtime parse
+            _currentZoneAsset = Resources.Load<KOZoneAsset>($"KOZones/zone_{_currentZoneId}");
+            if (_currentZoneAsset != null)
+            {
+                Debug.Log($"[WORLD] ✅ Convert edilmiş zone asset bulundu: zone_{_currentZoneId}");
+                LoadConvertedZone(_currentZoneAsset);
+            }
+            else
+            {
+                Debug.Log($"[WORLD] Convert edilmiş asset yok, runtime parse kullanılıyor (zone={_currentZoneId})");
+                LoadTerrain();
+                LoadObjects();
+                // LoadZoneLights(); — kullanıcı ek Unity ışığı istemiyor
+                CreateSkyAndFog();
+            }
+
+            // GameSceneSetup placeholder objelerini gizle
+            HidePlaceholders();
+
+            // Oyuncuyu terrain üzerine yerleştir
+            RepositionPlayer();
+
+            // Open-KO birebir: CGameBase::Init() → Item_Org + Item_Ext tablo yükleme
+            // GameBase.cpp:59-79 — s_pTbl_Items_Basic + s_pTbl_Items_Exts[MAX_ITEM_EXTENSION]
+            string koDataDir = System.IO.Path.Combine("", "Data");
+            KOImport.ItemDataManager.LoadAll(koDataDir);
+
+            // Open-KO birebir: NPC'ler lokal dosyadan spawn EDİLMEZ.
+            // C++ client sadece sunucudan gelen MsgRecv_NPCIn (WIZ_NPC_INOUT) ile entity oluşturur.
+            // Burada sadece monster model cache'ini dolduruyoruz — EntityManager.HandleSpawnMonster kullanacak.
+            CacheMonsterData();
+
+            // Target selection sistemi — tap ile entity seçme
+            gameObject.AddComponent<KOTargetSelector>();
+
+            // Open-KO birebir: camera far plane = iViewDist (WarFareMain.cpp:94)
+            // GameEng.cpp:251 — fFP = s_Options.iViewDist * m_fFPDeltaCur
+            // WarFareMain.cpp:94-98 — iViewDist = ini.GetInt("ViewPort", "Distance", 512); min=256, max=512
+            var mainCam = UnityEngine.Camera.main;
+            if (mainCam != null)
+            {
+                mainCam.farClipPlane = KO_VIEW_DIST;
+            }
+
+            LoadZoneEventFile(_currentZoneId);
+
+            Debug.Log($"[WORLD] Dünya oluşturuldu — Zone {_currentZoneId}");
+        }
+
+        /// <summary>
+        /// Open-KO birebir: CN3Chr::Tick() satır 1452-1457
+        /// Kameradan uzak entity'leri gizle (LOD -1 → render edilmez).
+        /// PlayerOtherMgr::Tick() — SOUND_RANGE_TO_SET/RELEASE ile isim gösterim kontrolü.
+        /// </summary>
+        private void LateUpdate()
+        {
+            var cam = UnityEngine.Camera.main;
+            if (cam == null) return;
+
+            Vector3 camPos = cam.transform.position;
+
+            // Open-KO birebir: PlayerOtherMgr::Tick(vPosPlayer) satır 76
+            // FloatingName mesafesi OYUNCU pozisyonundan hesaplanır, kameradan değil.
+            // CN3Chr::Tick entity culling için kamera mesafesi kullanır — bu ayrı.
+            Vector3 playerPos = camPos; // fallback
+            if (_playerTransform != null)
+                playerPos = _playerTransform.position;
+            else
+            {
+                // Cache'i yenilemeyi dene
+                var player = GameObject.FindGameObjectWithTag("Player");
+                if (player == null) player = GameObject.Find("Player");
+                if (player != null)
+                {
+                    _playerTransform = player.transform;
+                    playerPos = _playerTransform.position;
+                }
+            }
+
+            // Tick PVS Manager if active
+            if (_pvsManager != null)
+            {
+                _pvsManager.Tick(playerPos);
+            }
+
+            // Tüm KOEntity'leri bul ve mesafeye göre gizle/göster
+            var entities = FindObjectsByType<KOEntity>(FindObjectsInactive.Exclude);
+            foreach (var entity in entities)
+            {
+                if (entity == null) continue;
+
+                // CN3Chr::Tick() satır 1452-1457:
+                // if (fDist > s_CameraData.fFP + m_fRadius * 2.0f) { m_nLOD = -1; return; }
+                // Entity render on/off — kamera mesafesi
+                float camDist = Vector3.Distance(camPos, entity.transform.position);
+                bool shouldRender = camDist <= KO_VIEW_DIST;
+
+                // Renderer'ları aç/kapat (GameObject'i deaktif etmek yerine — collider raycast için kalmalı)
+                var renderers = entity.GetComponentsInChildren<Renderer>();
+                foreach (var r in renderers)
+                    r.enabled = shouldRender;
+
+                // FloatingName kontrolü — SOUND_RANGE_TO_SET/RELEASE
+                // Open-KO birebir: PlayerOtherMgr::Tick() satır 77-80, 108-111
+                // Mesafe oyuncu pozisyonundan hesaplanır (vPosPlayer)
+                float playerDist = Vector3.Distance(playerPos, entity.transform.position);
+                var floatingName = entity.GetComponent<FloatingName>();
+                if (floatingName != null)
+                {
+                    // Hysteresis: 10 birimde göster, 20 birimde gizle
+                    if (playerDist < KO_NAME_SHOW_DIST)
+                        floatingName.SetVisible(true);
+                    else if (playerDist > KO_NAME_HIDE_DIST)
+                        floatingName.SetVisible(false);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Zone'a ait GLO (Game Light Object) dosyasından ışıkları yükler.
+        /// Open-KO: N3TerrainManager::InitWorld → LightMgr::LoadZoneLight
+        /// 
+        /// D3D Point Light → Unity Point Light dönüşümü:
+        /// - Position: D3D (X,Y,Z) → Unity (X,Y,Z) — aynı (KO coordinate convention)
+        /// - Range: D3D Range/4 (InitPoint'ta ×4 olarak kaydedilir)
+        /// - Color: Diffuse rengi
+        /// - Intensity: Ambient/Diffuse oranından hesaplanır
+        /// </summary>
+        private void LoadZoneLights()
+        {
+            var zoneInfo = KOZoneMapper.GetZoneInfo(_currentZoneId);
+            if (zoneInfo == null || string.IsNullOrEmpty(zoneInfo.GloFile))
+            {
+                Debug.Log("[GLO] Zone için GLO dosyası tanımlı değil — atlanıyor");
+                return;
+            }
+
+            string gloPath = System.IO.Path.Combine("", "Zones", zoneInfo.GloFile);
+            var lights = GloLightImporter.Load(gloPath);
+
+            if (lights.Count == 0)
+                return;
+
+            // Işıklar için parent obje
+            var lightsParent = new GameObject("ZoneLights");
+            lightsParent.transform.SetParent(transform, false);
+
+            int created = 0;
+            foreach (var ld in lights)
+            {
+                // Orijinal KO'da zone ışıkları bOn=FALSE ile yüklenir ve
+                // CLightMgr::Tick() içinde mesafeye göre aktif edilir.
+                // Unity'de D3D ışık slot yönetimi gerekmediğinden hepsini oluşturuyoruz.
+
+                var lightObj = new GameObject($"ZoneLight_{ld.Number}_{ld.Name}");
+                lightObj.transform.SetParent(lightsParent.transform, false);
+
+                // CN3Light::Tick → m_Data.Position = m_vPos
+                // Transform pozisyonu = ışık pozisyonu
+                lightObj.transform.localPosition = ld.Position;
+
+                var uLight = lightObj.AddComponent<Light>();
+
+                // D3DLIGHTTYPE: 1=Point, 2=Spot, 3=Directional
+                switch (ld.Type)
+                {
+                    case 1: // D3DLIGHT_POINT
+                        uLight.type = LightType.Point;
+                        // D3D Range = fRange * 4.0f (InitPoint'ta) — Unity PBR'de daha geniş range gerekli
+                        uLight.range = ld.Range > 0 ? ld.Range / 2.0f : 10f;
+                        break;
+                    case 2: // D3DLIGHT_SPOT
+                        uLight.type = LightType.Spot;
+                        uLight.range = ld.Range > 0 ? ld.Range : 10f;
+                        uLight.spotAngle = ld.Phi * Mathf.Rad2Deg;
+                        uLight.innerSpotAngle = ld.Theta * Mathf.Rad2Deg;
+                        lightObj.transform.forward = ld.Direction.normalized;
+                        break;
+                    case 3: // D3DLIGHT_DIRECTIONAL
+                        uLight.type = LightType.Directional;
+                        lightObj.transform.forward = ld.Direction.normalized;
+                        break;
+                    default:
+                        uLight.type = LightType.Point;
+                        uLight.range = 10f;
+                        break;
+                }
+
+                uLight.color = new Color(ld.Diffuse.r, ld.Diffuse.g, ld.Diffuse.b, 1f);
+
+                // D3D ışık yoğunluğu: Diffuse renk değerlerinden hesapla
+                // KO'daki ışıklar genelde 0-1 arası diffuse ile çalışır
+                float maxChannel = Mathf.Max(ld.Diffuse.r, Mathf.Max(ld.Diffuse.g, ld.Diffuse.b));
+                uLight.intensity = Mathf.Clamp(maxChannel * 2f, 0.5f, 5f);
+
+                // Mobil performans: gölge kapalı (zone point light'lar için)
+                uLight.shadows = LightShadows.None;
+
+                // Render mode: önemli değil (mobilde otomatik seçilir)
+                uLight.renderMode = LightRenderMode.Auto;
+
+                created++;
+            }
+
+            Debug.Log($"[GLO] ✅ {created} zone ışığı oluşturuldu ({lights.Count} toplam, zone={zoneInfo.GloFile})");
+        }
+
+        /// <summary>
+        /// GameSceneSetup'tan kalan placeholder objeleri (küp binalar, silindir NPC'ler) gizler.
+        /// </summary>
+        private void HidePlaceholders()
+        {
+            string[] placeholderNames = {
+                "WallNorth", "WallSouth", "WallEast", "WallWest",
+                "Building_Inn", "Building_Shop", "Building_Blacksmith", "Building_Tower",
+                "NPC_Sunrise", "NPC_Blacksmith", "NPC_Sundries",
+                "Ground",
+                // GameSceneSetup placeholder UI + test objeleri
+                "CharNameLabel",
+                "Monster_Bultura_0", "Monster_Bultura_1",
+                "Monster_Isi_2", "Monster_Isi_3", "Monster_Lycan_4",
+                // Sahne içi varsayılan ışık — kullanıcı ek Unity ışığı istemiyor
+                "Directional Light"
+            };
+
+            int hidden = 0;
+            foreach (string name in placeholderNames)
+            {
+                var obj = GameObject.Find(name);
+                if (obj != null)
+                {
+                    Destroy(obj);
+                    hidden++;
+                }
+            }
+
+            if (hidden > 0)
+                Debug.Log($"[WORLD] {hidden} placeholder gizlendi");
+        }
+
+        /// <summary>
+        /// Oyuncuyu terrain'in default spawn noktasına yerleştirir.
+        /// </summary>
+        private void RepositionPlayer()
+        {
+            var player = GameObject.FindGameObjectWithTag("Player");
+            if (player == null)
+            {
+                player = GameObject.Find("Player");
+                if (player == null)
+                {
+                    Debug.LogWarning("[WORLD] Player bulunamadı (tag veya isimle)!");
+                    return;
+                }
+                Debug.Log("[WORLD] Player tag ile bulunamadı, isimle bulundu");
+            }
+            _playerTransform = player.transform; // LateUpdate'te kullanılmak üzere cache'le
+
+            var zoneInfo = KOZoneMapper.GetZoneInfo(_currentZoneId);
+            Vector3 spawnPos = zoneInfo != null ? zoneInfo.DefaultSpawn : Vector3.zero;
+
+            // DefaultSpawn == Vector3.zero → doğrulanmış spawn verisi yok
+            // Harita merkezini kullan (GTD WorldSize / 2)
+            if (spawnPos.sqrMagnitude < 0.001f)
+            {
+                float center = _terrainWorldSize * 0.5f;
+                spawnPos = new Vector3(center, 0, center);
+                Debug.Log($"[WORLD] Spawn verisi yok, harita merkezi kullanılıyor: ({center:F0}, {center:F0})");
+            }
+
+            // Terrain yüksekliğini örnekle — sadece terrain, OPD collision hariç
+            // (HandleMyInfo gelince C++ birebir InitPlayerPosition mantığıyla override edilecek)
+            float terrainY = 0f;
+            if (_terrain != null)
+                terrainY = _terrain.transform.position.y + _terrain.SampleHeight(new Vector3(spawnPos.x, 0, spawnPos.z));
+            spawnPos.y = terrainY + 0.1f; // Minimal buffer (yere gömülmesin)
+
+            // CharacterController varsa, position set etmeden önce disable et
+            // (aktifken transform.position değişikliği ignore edilebilir)
+            var cc = player.GetComponent<CharacterController>();
+            if (cc != null) cc.enabled = false;
+
+            player.transform.position = spawnPos;
+
+            if (cc != null) cc.enabled = true;
+
+            Debug.Log($"[WORLD] Oyuncu yerleştirildi: ({spawnPos.x:F0}, {spawnPos.y:F1}, {spawnPos.z:F0}) terrainY={terrainY:F1}");
+
+            // Kamerayı oyuncuya bağla
+            var mainCam = UnityEngine.Camera.main;
+            if (mainCam != null)
+            {
+                var camCtrl = mainCam.GetComponent<EntropyOnline.Camera.CameraController>();
+                if (camCtrl != null)
+                {
+                    camCtrl.SetTarget(player.transform);
+                    Debug.Log("[WORLD] Kamera → Player bağlandı");
+                }
+                else
+                {
+                    Debug.LogWarning("[WORLD] CameraController bileşeni bulunamadı!");
+                }
+
+                mainCam.transform.position = spawnPos + new Vector3(0, 3f, -5f);
+                mainCam.transform.LookAt(player.transform);
+            }
+            else
+            {
+                Debug.LogWarning("[WORLD] MainCamera bulunamadı!");
+            }
+
+            // C++ birebir: MsgRecv_MyInfo_All (GameProcMain.cpp:1856-1868)
+            // Karakter modeli sunucu verisi (race) gelmeden OLUŞTURULMAZ.
+            // HandleMyInfo → BuildPlayerModel() çağrısıyla oluşturulacak.
+            // Burada sadece Capsule placeholder bileşenlerini temizliyoruz.
+            CleanupPlayerPlaceholder(player);
+        }
+
+        /// <summary>
+        /// Open-KO birebir: CPlayerBase::InitChr (PlayerBase.cpp:2025-2055)
+        /// + GameProcMain.cpp:1856-1868 (MsgRecv_MyInfo_All → InitChr akışı)
+        /// + GameProcMain.cpp:2144-2155 (default part giydirme)
+        ///
+        /// Akış:
+        ///   1. eRace → s_pTbl_UPC_Looks.Find(eRace) → pLooks
+        ///   2. pLooks->szChrFN → LoadFromFile (skeleton + body)
+        ///   3. pLooks->szPartFNs[0..5] → default kıyafet
+        ///   4. InitFace() / InitHair() — yüz ve saç
+        /// </summary>
+        /// <summary>
+        /// Capsule placeholder bileşenlerini kaldırır.
+        /// Model oluşturma BuildPlayerModel() ile yapılır — sunucu verisi gerektirir.
+        /// </summary>
+        private void CleanupPlayerPlaceholder(GameObject player)
+        {
+            var rootMR = player.GetComponent<MeshRenderer>();
+            if (rootMR != null) DestroyImmediate(rootMR);
+            var rootMF = player.GetComponent<MeshFilter>();
+            if (rootMF != null) DestroyImmediate(rootMF);
+            var rootCC = player.GetComponent<CapsuleCollider>();
+            if (rootCC != null) DestroyImmediate(rootCC);
+        }
+
+        /// <summary>
+        /// Open-KO birebir: MsgRecv_MyInfo_All (GameProcMain.cpp:1856-1868)
+        ///   eRace = pkt.read<uint8_t>();
+        ///   pLooks = s_pTbl_UPC_Looks.Find(eRace);
+        ///   s_pPlayer->InitChr(pLooks);
+        ///
+        /// HandleMyInfo'dan çağrılır — race sunucudan geldikten sonra.
+        /// </summary>
+        public void BuildPlayerModel(byte eRace)
+        {
+            var player = GameObject.FindGameObjectWithTag("Player");
+            if (player == null) player = GameObject.Find("Player");
+            if (player == null) { Debug.LogError("[WORLD] BuildPlayerModel: Player bulunamadı!"); return; }
+
+            // Mevcut karakter modelini kaldır
+            for (int i = player.transform.childCount - 1; i >= 0; i--)
+            {
+                var child = player.transform.GetChild(i);
+                DestroyImmediate(child.gameObject);
+            }
+
+            // Bind pose cache'ini temizle — yeni model yeni rest pose ile hesaplanacak
+            Import.N3CharBuilder.ClearBindPoseCache();
+
+            // UPC_DefaultLooks.tbl yükle (KOEquipmentVisualizer ile paylaşılan static cache)
+            if (KOEquipmentVisualizer.s_pTbl_UPC_Looks == null)
+            {
+                string looksPath = System.IO.Path.Combine("", "Data", "UPC_DefaultLooks.tbl");
+                KOEquipmentVisualizer.s_pTbl_UPC_Looks = KOTableReader.LoadUpcLooksTable(looksPath);
+            }
+
+            if (KOEquipmentVisualizer.s_pTbl_UPC_Looks == null ||
+                !KOEquipmentVisualizer.s_pTbl_UPC_Looks.TryGetValue(eRace, out var pLooks))
+            {
+                Debug.LogError($"[WORLD] UPC_DefaultLooks.tbl'de race={eRace} bulunamadı!");
+                return;
+            }
+
+            Debug.Log($"[WORLD] InitChr: race={eRace}, szChrFN='{pLooks.szChrFN}', " +
+                      $"szJointFN='{pLooks.szJointFN}', szAniFN='{pLooks.szAniFN}'");
+
+            // ============================================================
+            // Open-KO birebir: CPlayerBase::InitChr (PlayerBase.cpp:2025-2055)
+            //   if (!pTbl->szChrFN.empty())
+            //       m_Chr.LoadFromFile(pTbl->szChrFN);
+            //   else
+            //       m_Chr.JointSet(pTbl->szJointFN);
+            //       m_Chr.AniCtrlSet(pTbl->szAniFN);
+            //
+            // szChrFN varsa → .n3chr (skeleton + built-in parts)
+            // szChrFN boşsa → ayrı joint + anim dosyaları
+            // ============================================================
+            // Open-KO birebir: CPlayerBase::InitChr (PlayerBase.cpp:2035)
+            // C++: m_Chr.LoadFromFile(pLooks->szChrFN) — SADECE skeleton yüklenir.
+            // Part'lar InitChr sonrası PartSet ile eklenir (GameProcMain.cpp:2144-2155).
+            //
+            // Unity'de BuildWithExternalParts'a boş dizi geçerek sadece skeleton oluşturuyoruz.
+            // Sonra C++ akışını birebir takip ederek PartSet ile default part'ları ekliyoruz.
+            // Bu sayede tüm part'lar PART_{index}_ prefix'li oluşur ve çift model sorunu olmaz.
+            // ============================================================
+
+            // Skeleton (.n3chr) dosya yolunu belirle
+            string chrPath = null;
+            if (!string.IsNullOrEmpty(pLooks.szChrFN))
+            {
+                chrPath = Import.N3CharBuilder.FindAssetFile(pLooks.szChrFN);
+            }
+
+            GameObject charModel = null;
+            if (chrPath != null && KOBinaryProvider.Exists(chrPath))
+            {
+                // C++ birebir: m_Chr.LoadFromFile(pTbl->szChrFN)
+                charModel = Import.N3CharBuilder.BuildWithExternalParts(
+                    chrPath, new string[0]);
+            }
+            else if (!string.IsNullOrEmpty(pLooks.szJointFN))
+            {
+                // C++ birebir: PlayerBase.cpp:2040-2055 — else dalı
+                //   m_Chr.JointSet(pTbl->szJointFN);
+                //   m_Chr.AniCtrlSet(pTbl->szAniFN);
+                Debug.Log($"[WORLD] szChrFN boş — JointSet+AniCtrlSet ile deneniyor: " +
+                          $"'{pLooks.szJointFN}', '{pLooks.szAniFN}'");
+                string jointPath = Import.N3CharBuilder.FindAssetFile(pLooks.szJointFN);
+                charModel = Import.N3CharBuilder.BuildWithJointAndAnim(
+                    jointPath, pLooks.szAniFN);
+            }
+
+            if (charModel == null)
+            {
+                Debug.LogWarning($"[WORLD] Karakter modeli yüklenemedi (race={eRace})");
+                return;
+            }
+
+            charModel.transform.SetParent(player.transform);
+            charModel.transform.localPosition = Vector3.zero;
+            charModel.transform.localRotation = Quaternion.identity;
+            charModel.transform.localScale = Vector3.one;
+
+            // ============================================================
+            // Open-KO birebir: MsgRecv_MyInfo_All (GameProcMain.cpp:1838-2196)
+            // C++ akış sırası:
+            //   1. InitChr(pLooks) → skeleton  (satır 1868)
+            //   2. Inventory slot'ları → PartSet ile item giydirme (satır 2016-2099)
+            //   3. Boş kalan slot'lar → default part (satır 2144-2155)
+            //   4. InitFace() + InitHair() (satır 2152-2155)
+            //
+            // C++'da hepsi tek senkron fonksiyon. Unity'de inventory event async
+            // olduğundan KOEquipmentVisualizer henüz attach olmadan event kaçırılabiliyor.
+            // Bu yüzden adım 3-4'ü burada senkron olarak uyguluyoruz.
+            // Tüm part'lar PartSet ile PART_{index}_ prefix'li oluşturulur.
+            // KOEquipmentVisualizer geldiğinde PartRemove + PartSet ile temiz üzerine yazar.
+            // ============================================================
+
+            // C++ satır 2144-2151: boş slot'lar → default part
+            // UPPER, LOWER, HANDS, FEET — FACE ve HAIR özel işlenecek
+            for (int i = 0; i < Import.N3CharBuilder.PART_POS_COUNT && i < pLooks.szPartFNs.Length; i++)
+            {
+                if (i == Import.N3CharBuilder.PART_POS_FACE) continue;
+                if (i == Import.N3CharBuilder.PART_POS_HAIR_HELMET) continue;
+
+                if (!string.IsNullOrEmpty(pLooks.szPartFNs[i]))
+                {
+                    Import.N3CharBuilder.PartSet(charModel, i, pLooks.szPartFNs[i]);
+                }
+            }
+
+            // C++ satır 2152-2153: InitFace()
+            byte iFace = GameManager.Instance?.PlayerFace ?? 0;
+            Import.N3CharBuilder.InitFace(charModel, pLooks, iFace);
+
+            // C++ satır 2154-2155: InitHair()
+            byte iHair = GameManager.Instance?.PlayerHairColor ?? 0;
+            Import.N3CharBuilder.InitHair(charModel, pLooks, iHair);
+
+            // 1. Modelin mesh sınırlarını hesapla (özellikle en alt noktasını bul)
+            // Parçalar (part) ve yüz/saç yüklendikten sonra renderer bounds'ları mevcuttur.
+            var renderers = charModel.GetComponentsInChildren<Renderer>();
+            float bottomOffsetY = 0f;
+            if (renderers.Length > 0)
+            {
+                Bounds worldBounds = renderers[0].bounds;
+                for (int ri = 1; ri < renderers.Length; ri++)
+                    worldBounds.Encapsulate(renderers[ri].bounds);
+
+                // Modelin en alt noktasının charModel pivotuna olan mesafesi
+                bottomOffsetY = worldBounds.min.y - charModel.transform.position.y;
+            }
+
+            // Emniyet kontrolü: Eğer hesaplanan değer mantıksızsa (örneğin model yüklenirken hatalı bounds aldıysa) 0 kabul et
+            if (bottomOffsetY < -2f || bottomOffsetY > 2f)
+                bottomOffsetY = 0f;
+
+            // 2. Unity CharacterController skinWidth telafisi:
+            // CharacterController zemine skinWidth (0.08) kadar havada kalacak şekilde basar.
+            // Karakter ayaklarının zeminle tam buluşması için hem pivot kaymasını hem de skinWidth'i telafi ediyoruz.
+            var cc = player.GetComponent<CharacterController>();
+            float ccSkin = (cc != null) ? cc.skinWidth : 0.08f;
+
+            // 3. Kalibrasyon payı:
+            // Animasyonlar (nefes alma, koşma) sırasında hip/kemik hareketleri karakteri yukarı kaldırabilir.
+            // Ayrıca Unity fizik toleransları nedeniyle ayakların yere tam basmasını sağlamak için küçük bir ek kalibrasyon uyguluyoruz.
+            // (Ayakların yere hafifçe basması/gömülmesi, havada kalmasından çok daha doğal durur).
+            float calibrationOffset = 0.05f; // 5 cm ek aşağı kaydırma
+
+            float finalYOffset = -bottomOffsetY - ccSkin - calibrationOffset;
+            charModel.transform.localPosition = new Vector3(0f, finalYOffset, 0f);
+
+            Debug.Log($"[WORLD] Local player model bounds calculation - bottomOffsetY: {bottomOffsetY:F4}, ccSkin: {ccSkin:F4}, calibrationOffset: {calibrationOffset:F4}, finalYOffset: {finalYOffset:F4}");
+
+            if (GameManager.Instance != null && GameManager.Instance.CapeId > 0)
+            {
+                int jointCloak = pLooks.iJointCloak;
+                Import.N3CharBuilder.PlugSet(charModel, $"Item\\cloak_{GameManager.Instance.CapeId:D3}.n3cplug", jointCloak, "PLUG_BACK");
+            }
+
+            // Animasyonu başlat + diagnostic
+            var anim = charModel.GetComponent<Animation>();
+            if (anim == null)
+            {
+                Debug.LogError("[WORLD] ❌ Animation component bulunamadı! T-pose olacak.");
+            }
+            else if (anim.clip == null)
+            {
+                Debug.LogError("[WORLD] ❌ Animation clip atanmamış! T-pose olacak.");
+                // Tüm clip'leri listele
+                int clipCount = 0;
+                foreach (AnimationState st in anim)
+                {
+                    Debug.Log($"[WORLD-ANIM] Mevcut clip: '{st.name}' length={st.length:F2}s");
+                    clipCount++;
+                    if (clipCount == 1 && anim.clip == null)
+                    {
+                        // İlk clip'i default olarak ata
+                        anim.clip = st.clip;
+                        anim.clip.wrapMode = WrapMode.Loop;
+                        anim.Play(st.name);
+                        Debug.Log($"[WORLD] Fallback: ilk clip '{st.name}' default olarak atandı");
+                    }
+                }
+                Debug.Log($"[WORLD-ANIM] Toplam clip: {clipCount}");
+            }
+            else
+            {
+                anim.clip.wrapMode = WrapMode.Loop;
+                anim.Play();
+                Debug.Log($"[WORLD] ✅ Animasyon başlatıldı: '{anim.clip.name}' " +
+                    $"isPlaying={anim.isPlaying} legacy={anim.clip.legacy}");
+                
+                // Bone match kontrolü — ilk skeleton bone'un hierarchy'de var olduğunu doğrula
+                if (charModel.transform.childCount > 0)
+                {
+                    var firstChild = charModel.transform.GetChild(0);
+                    bool isBone = firstChild.GetComponent<SkinnedMeshRenderer>() == null 
+                               && firstChild.GetComponent<MeshRenderer>() == null;
+                    Debug.Log($"[WORLD-ANIM] İlk child: '{firstChild.name}' isBone={isBone} " +
+                        $"childCount={firstChild.childCount}");
+                    
+                    // Hierarchy dump (ilk 3 seviye)
+                    for (int ci = 0; ci < charModel.transform.childCount && ci < 5; ci++)
+                    {
+                        var ch = charModel.transform.GetChild(ci);
+                        bool chIsBone = ch.GetComponent<SkinnedMeshRenderer>() == null 
+                                     && ch.GetComponent<MeshRenderer>() == null;
+                        Debug.Log($"[WORLD-ANIM]   [{ci}] '{ch.name}' (bone={chIsBone})");
+                    }
+                }
+            }
+
+            Debug.Log($"[WORLD] ✅ KO karakter modeli yüklendi (race={eRace}, chr='{pLooks.szChrFN}' face={iFace} hair={iHair})");
+
+            // ============================================================
+            // DEBUG: Player hierarchy dump — çift model ve T-pose teşhisi
+            // ============================================================
+            Debug.Log($"[WORLD-DIAG] Player hierarchy dump (childCount={player.transform.childCount}):");
+            DumpHierarchy(player.transform, "  ", 4);
+
+            // Model yeniden oluşturulduğunda PlayerController'ın eski Animation cache'i geçersiz olur
+            var pc = player.GetComponent<EntropyOnline.Character.PlayerController>();
+            if (pc != null)
+            {
+                // PlayerAnimClips null ise, Animation component'taki clip'leri kaydet
+                // BuildWithExternalParts normalde set eder ama suffix kaldırma
+                // veya dosya bulunamama durumunda null kalabilir
+                var gm2 = GameManager.Instance;
+                if (gm2 != null && (gm2.PlayerAnimClips == null || gm2.PlayerAnimClips.Count == 0))
+                {
+                    if (anim != null)
+                    {
+                        // szAniFN doğrudan anim dosya yolunu içerir (ör: "Chr\upc_el_rm.n3Anim")
+                        string animFileName = pLooks.szAniFN;
+                        if (string.IsNullOrEmpty(animFileName))
+                        {
+                            // Fallback: szChrFN veya szJointFN'den türet
+                            string baseSrc = !string.IsNullOrEmpty(pLooks.szChrFN) ? pLooks.szChrFN : pLooks.szJointFN;
+                            if (!string.IsNullOrEmpty(baseSrc))
+                            {
+                                string baseName = System.IO.Path.GetFileNameWithoutExtension(baseSrc);
+                                string[] clsSuffixes = { "_wa", "_rog", "_pri", "_wiz", "_ma" };
+                                foreach (string sfx in clsSuffixes)
+                                {
+                                    if (baseName.EndsWith(sfx))
+                                    {
+                                        baseName = baseName.Substring(0, baseName.Length - sfx.Length);
+                                        break;
+                                    }
+                                }
+                                animFileName = "Chr\\" + baseName + ".n3anim";
+                            }
+                        }
+
+                        if (!string.IsNullOrEmpty(animFileName))
+                        {
+                            string chrAnimPath = Import.N3CharBuilder.FindAssetFile(animFileName);
+                            if (chrAnimPath != null && KOBinaryProvider.Exists(chrAnimPath))
+                            {
+                                var animCtrl = Import.N3CPartImporter.LoadAnimControl(chrAnimPath);
+                                if (animCtrl != null && animCtrl.Animations.Count > 0)
+                                {
+                                    var chrData = gm2.PlayerChrData;
+                                    if (chrData?.RootJoint != null)
+                                    {
+                                        var jointPaths = Import.N3AnimBuilder.BuildJointPaths(chrData.RootJoint);
+                                        var rebuiltClips = Import.N3AnimBuilder.BuildClips(chrData, animCtrl, jointPaths);
+                                        if (rebuiltClips.Count > 0)
+                                        {
+                                            gm2.PlayerAnimClips = rebuiltClips;
+                                            Debug.Log($"[WORLD] PlayerAnimClips yeniden oluşturuldu: {rebuiltClips.Count} clip ({chrAnimPath})");
+                                        }
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                Debug.LogWarning($"[WORLD] Chr anim dosyası bulunamadı: {animFileName} (resolved={chrAnimPath})");
+                            }
+                        }
+                    }
+                }
+                
+                pc.InvalidateAnimCache();
+                // Open-KO birebir: CPlayerBase::InitChr sonrası → AniCurSet(ANI_BREATH)
+                // Model rebuild sonrası idle animasyonunu başlat — T-pose önleme
+                pc.StartCoroutine(ForceIdleAnimNextFrame(pc));
+            }
+
+            // Open-KO birebir: CPlayerBase::InitChr sonrası isim gösterimi
+            // C++ SetSoundAndInitFont() → font oluştur/göster
+            // Oyuncu karakterinin üzerinde isim göster
+            var existingFloat = player.GetComponent<FloatingName>();
+            if (existingFloat != null) DestroyImmediate(existingFloat);
+            // Eski NameCanvas'ı da temizle
+            var oldCanvas = player.transform.Find("NameCanvas");
+            if (oldCanvas != null) DestroyImmediate(oldCanvas.gameObject);
+
+            string playerName = GameManager.Instance?.CharacterName ?? "Player";
+            var floatingName = player.AddComponent<FloatingName>();
+            // Oyuncu modeli için yükseklik — Open-KO birebir: başın hemen üstünde
+            float nameHeight = 2.3f;
+            floatingName.Initialize(playerName, false, nameHeight);
+            // Oyuncu ismi beyaz renk olmalı (NPC sarı, Monster kırmızı, Player beyaz)
+            // FloatingName.Initialize NPC/Monster renk ayarlar — oyuncu için override
+            var nameText = floatingName.GetComponentInChildren<UnityEngine.UI.Text>();
+            if (nameText != null)
+                nameText.color = Color.white;
+            
+            // Open-KO birebir: CPlayerMySelf::SetSoundAndInitFont() — PlayerMySelf.cpp:1021-1043
+            // m_pClanFont->SetText(m_InfoExt.szKnights) + SetFontColor(KNIGHTS_FONT_COLOR)
+            string clanName = GameManager.Instance?.ClanName;
+            if (!string.IsNullOrEmpty(clanName))
+                floatingName.SetClanName(clanName);
+
+            // Eğer aktif olarak parti arıyorsa kafasının üstündeki yeşil bilgi metni doğrudan oluşturulur
+            if (GameManager.Instance != null && GameManager.Instance.RecruitParty)
+            {
+                int level = GameManager.Instance.Level;
+                int iLMin = Mathf.Min(level - 8, (int)(level / 1.5f));
+                if (iLMin < 1) iLMin = 1;
+                int iLMax = Mathf.Max(level + 8, (int)(level * 1.5f));
+                if (iLMax > 80) iLMax = 80;
+                string szMsg = $"Seeking Party : Level {iLMin} ~ {iLMax}";
+                floatingName.SetInfoText(szMsg, new Color(0f, 1f, 0f, 1f));
+            }
+            
+            // Open-KO birebir: CPlayerMySelf::KnightsInfoSet() — runtime clan değişikliği
+            // Clan oluşturma/katılma/ayrılma anında nameplate güncellenir
+            if (UI.KOKnightsManager.Instance != null)
+            {
+                UI.KOKnightsManager.Instance.OnKnightsInfoChanged -= OnPlayerClanChanged;
+                UI.KOKnightsManager.Instance.OnKnightsInfoChanged += OnPlayerClanChanged;
+            }
+            
+            Debug.Log($"[WORLD] ✅ Oyuncu ismi eklendi: '{playerName}' clan='{clanName}'");
+        }
+
+        /// <summary>
+        /// Open-KO birebir: CPlayerMySelf::KnightsInfoSet() callback
+        /// Clan oluşturma/katılma/ayrılma anında oyuncu nameplate'ini günceller.
+        /// </summary>
+        private void OnPlayerClanChanged()
+        {
+            var player = GameObject.FindGameObjectWithTag("Player");
+            if (player == null) player = GameObject.Find("Player");
+            if (player == null) return;
+            
+            var fn = player.GetComponent<FloatingName>();
+            if (fn != null)
+            {
+                string clanName = UI.KOKnightsManager.Instance?.ClanName ?? "";
+                fn.SetClanName(clanName);
+                Debug.Log($"[WORLD] Clan nameplate güncellendi: '{clanName}'");
+            }
+
+            var charModel = player.transform.childCount > 0 ? player.transform.GetChild(0).gameObject : null;
+            if (charModel != null && GameManager.Instance != null)
+            {
+                short capeId = UI.KOKnightsManager.Instance != null ? UI.KOKnightsManager.Instance.CapeId : (short)0;
+                if (capeId > 0)
+                {
+                    byte eRace = GameManager.Instance.Race;
+                    if (KOEquipmentVisualizer.s_pTbl_UPC_Looks != null &&
+                        KOEquipmentVisualizer.s_pTbl_UPC_Looks.TryGetValue(eRace, out var pLooks))
+                    {
+                        int jointCloak = pLooks.iJointCloak;
+                        Import.N3CharBuilder.PlugSet(charModel, $"Item\\cloak_{capeId:D3}.n3cplug", jointCloak, "PLUG_BACK");
+                    }
+                }
+                else
+                {
+                    Import.N3CharBuilder.PlugRemove(charModel, "PLUG_BACK");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Open-KO birebir: CPlayerBase::InitChr sonrası ANI_BREATH başlatma.
+        /// Model rebuild sonrası yeni Animation component'ı hazır olana kadar
+        /// bir frame bekleyip idle animasyonu başlatır — T-pose önleme.
+        /// </summary>
+        private static System.Collections.IEnumerator ForceIdleAnimNextFrame(
+            EntropyOnline.Character.PlayerController pc)
+        {
+            // Yeni model child'ları bu frame sonunda hazır olur
+            yield return null;
+            // İkinci frame — Animation component kesinlikle erişilebilir
+            yield return null;
+
+            if (pc == null) yield break;
+
+            // Cache'i tekrar sıfırla (yeni Animation component'ı bulsun)
+            pc.InvalidateAnimCache();
+
+            // Open-KO: AniCurSet(ANI_BREATH, false) — idle animasyonu
+            pc.ForcePlayIdle();
+            Debug.Log("[WORLD] ✅ Model rebuild sonrası idle animasyon başlatıldı (T-pose fix)");
+        }
+
+        /// <summary>
+        /// Open-KO birebir: CPlayerOther::InitFace/InitHair (PlayerOther.cpp:172-201)
+        ///
+        /// C++ akışı:
+        ///   _splitpath(pItem->szPartFNs[FACE].c_str(), nullptr, szDir, szFName, szExt);
+        ///   szFN = fmt::format("{}{}{:02}{}", szDir, szFName, iFace, szExt);
+        ///
+        /// Yani: directory + filename + index(2 haneli) + extension
+        /// Örn: "Item\upc_el_rm_face" + ".n3cpart" → "Item\upc_el_rm_face00.n3cpart"
+        /// </summary>
+        private string ApplyFaceHairIndex(string partFileName, int index)
+        {
+            if (string.IsNullOrEmpty(partFileName)) return partFileName;
+
+            // C++ _splitpath birebir: directory, filename, extension ayır
+            string dir = System.IO.Path.GetDirectoryName(partFileName);
+            string fileName = System.IO.Path.GetFileNameWithoutExtension(partFileName);
+            string ext = System.IO.Path.GetExtension(partFileName);
+
+            // C++ birebir: fmt::format("{}{}{:02}{}", szDir, szFName, index, szExt)
+            // _splitpath dir sonunda separator var, Path.Combine ile aynı etkiyi sağlıyoruz
+            string result;
+            if (!string.IsNullOrEmpty(dir))
+                result = dir + System.IO.Path.DirectorySeparatorChar + fileName + index.ToString("D2") + ext;
+            else
+                result = fileName + index.ToString("D2") + ext;
+
+            return result;
+        }
+
+        /// <summary>
+        /// Open-KO birebir: NPC/Monster modeli yüklerken kullanılacak cache'i doldurur.
+        /// C++ client'ta NPC entity'leri asla lokal veriden oluşturulmaz.
+        /// Sadece sunucudan gelen MsgRecv_NPCIn (WIZ_NPC_INOUT / WIZ_REQ_NPCIN) ile entity yaratılır.
+        /// 
+        /// Bu metod K_NPCPOS + K_MONSTER + K_NPC + NPC_Looks.tbl verilerini okuyup
+        /// _monsterDefCache ve _monsterLooksCache'i doldurur.
+        /// EntityManager.HandleSpawnMonster → BuildMonsterModelByResourceId bu cache'i kullanır.
+        /// </summary>
+        private void CacheMonsterData()
+        {
+            // 1. NPC_Looks.tbl yükle — PID→.n3chr eşlemesi (cache'li, sadece 1 kez diskten okunur)
+            var npcLooks = GetNpcLooksTable();
+            if (npcLooks.Count == 0)
+            {
+                Debug.LogWarning("[WORLD] NPC_Looks.tbl yüklenemedi");
+                return;
+            }
+
+            // 2. K_NPCPOS verilerini SQL dosyasından oku (zone filtrelemeli)
+            var npcPositions = LoadNpcPositionsFromSql(_currentZoneId);
+            if (npcPositions.Count == 0)
+            {
+                Debug.Log($"[WORLD] Zone {_currentZoneId} için K_NPCPOS verisi yok");
+                return;
+            }
+
+            // 3. Monster tablolarını yükle — NPC tablosu da yükle (EntityManager NPC byType bilgisi için)
+            var monPidMap = LoadMonsterPidMap();     // K_MONSTER → SID→(Name, PID, Size)
+            var npcPidMap = LoadNpcPidMap();         // K_NPC → SID→(Name, PID, Size, ByType)
+
+            int cachedMon = 0, cachedNpc = 0;
+
+            foreach (var npcPos in npcPositions)
+            {
+                // Open-KO birebir: actType < 100 → K_MONSTER, actType >= 100 → K_NPC
+                bool isNpc = npcPos.ActType >= 100;
+
+                if (!isNpc)
+                {
+                    // Monster model cache — EntityManager.HandleSpawnMonster kullanacak
+                    if (monPidMap.TryGetValue(npcPos.NpcId, out var monInfo))
+                    {
+                        _monsterDefCache[npcPos.NpcId] = monInfo;
+                        if (npcLooks.TryGetValue((uint)monInfo.Pid, out var monLooks))
+                            _monsterLooksCache[npcPos.NpcId] = monLooks;
+                        cachedMon++;
+                    }
+                }
+                else
+                {
+                    // NPC model cache — resourceId üzerinden NPC_Looks erişimi için
+                    if (npcPidMap.TryGetValue(npcPos.NpcId, out var npcInfo))
+                    {
+                        _monsterDefCache[npcPos.NpcId] = npcInfo;
+                        if (npcLooks.TryGetValue((uint)npcInfo.Pid, out var npcLookEntry))
+                            _monsterLooksCache[npcPos.NpcId] = npcLookEntry;
+                        cachedNpc++;
+                    }
+                }
+            }
+
+            Debug.Log($"[WORLD] Cache tamamlandı — NPC: {cachedNpc}, Monster: {cachedMon} (zone {_currentZoneId})");
+        }
+
+        /// <summary>
+        /// K_NPCPOS SQL dosyasından belirtilen zone'un NPC pozisyonlarını okur.
+        /// Open-KO birebir: AIServerApp::LoadNpcPosTable()
+        /// </summary>
+        private struct PathPoint
+        {
+            public int x, z;
+        }
+
+        private struct NpcPosData
+        {
+            public int NpcId;
+            public int ActType;
+            public int LeftX, TopZ, RightX, BottomZ;
+            public int NumNPC;
+            public int Direction;
+            public int DotCnt;
+            public PathPoint[] PathPoints;
+        }
+
+        private List<NpcPosData> LoadNpcPositionsFromSql(short zoneId)
+        {
+            var results = new List<NpcPosData>();
+            string sqlPath = System.IO.Path.Combine(
+                System.IO.Path.GetDirectoryName(Application.dataPath),
+                "..", "openko-db", "ManualSetup", "6_InsertData_K_NPCPOS.sql");
+
+            if (!KOBinaryProvider.Exists(sqlPath))
+            {
+                Debug.LogWarning($"[WORLD] K_NPCPOS SQL bulunamadı: {sqlPath}");
+                return results;
+            }
+
+            string zonePrefix = $"({zoneId},";
+            foreach (string line in System.IO.File.ReadLines(sqlPath))
+            {
+                string trimmed = line.Trim();
+                if (!trimmed.StartsWith(zonePrefix)) continue;
+
+                string clean = trimmed.TrimEnd(',', ')').TrimStart('(');
+                int nIdx = clean.IndexOf(", N'");
+                if (nIdx > 0) clean = clean.Substring(0, nIdx);
+                int nullIdx = clean.IndexOf(", NULL");
+                if (nullIdx > 0) clean = clean.Substring(0, nullIdx);
+
+                string[] parts = clean.Split(',');
+                if (parts.Length < 11) continue;
+
+                if (!int.TryParse(parts[1].Trim(), out int npcId)) continue;
+                if (!int.TryParse(parts[2].Trim(), out int actType)) continue;
+                if (!int.TryParse(parts[7].Trim(), out int leftX)) continue;
+                if (!int.TryParse(parts[8].Trim(), out int topZ)) continue;
+                if (!int.TryParse(parts[9].Trim(), out int rightX)) continue;
+                if (!int.TryParse(parts[10].Trim(), out int bottomZ)) continue;
+
+                int numNpc = 1;
+                if (parts.Length > 15)
+                    int.TryParse(parts[15].Trim(), out numNpc);
+                if (numNpc < 1) numNpc = 1;
+
+                int direction = 0, dotCnt = 0;
+                if (parts.Length > 17)
+                    int.TryParse(parts[17].Trim(), out direction);
+                if (parts.Length > 18)
+                    int.TryParse(parts[18].Trim(), out dotCnt);
+
+                // Path string parse — Open-KO birebir: "%04d%04d" per point
+                PathPoint[] pathPoints = null;
+                if (dotCnt > 0)
+                {
+                    int pathStart = trimmed.IndexOf("N'");
+                    if (pathStart >= 0)
+                    {
+                        int pathQuoteStart = trimmed.IndexOf("'", pathStart) + 1;
+                        int pathQuoteEnd = trimmed.IndexOf("'", pathQuoteStart);
+                        if (pathQuoteEnd > pathQuoteStart)
+                        {
+                            string pathStr = trimmed.Substring(pathQuoteStart, pathQuoteEnd - pathQuoteStart);
+                            int pointCount = Mathf.Min(dotCnt, pathStr.Length / 8);
+                            if (pointCount > 0)
+                            {
+                                pathPoints = new PathPoint[pointCount];
+                                for (int p = 0; p < pointCount; p++)
+                                {
+                                    int offset = p * 8;
+                                    if (offset + 8 <= pathStr.Length)
+                                    {
+                                        int.TryParse(pathStr.Substring(offset, 4), out pathPoints[p].x);
+                                        int.TryParse(pathStr.Substring(offset + 4, 4), out pathPoints[p].z);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                results.Add(new NpcPosData
+                {
+                    NpcId = npcId,
+                    ActType = actType,
+                    LeftX = leftX, TopZ = topZ,
+                    RightX = rightX, BottomZ = bottomZ,
+                    NumNPC = numNpc,
+                    Direction = direction,
+                    DotCnt = dotCnt,
+                    PathPoints = pathPoints
+                });
+            }
+
+            return results;
+        }
+
+        /// <summary>
+        /// K_NPC SQL dosyasından NPC ID→(Name, PID, Size) eşlemesini okur.
+        /// Open-KO birebir: AIServerApp::GetNpcTableData()
+        /// </summary>
+        private struct NpcDefData
+        {
+            public string Name;
+            public int Pid;
+            public int Size;
+            public int HP;      // K_MONSTER.iHpPoint (NPC için 0)
+            public int ByType;  // K_NPC.byType — Open-KO globals.h e_NpcType (21=Merchant, 28=TeleportGate, 31=Warehouse vb.)
+        }
+
+        private Dictionary<int, NpcDefData> LoadNpcPidMap()
+        {
+            var map = new Dictionary<int, NpcDefData>();
+            string sqlPath = System.IO.Path.Combine(
+                System.IO.Path.GetDirectoryName(Application.dataPath),
+                "..", "openko-db", "ManualSetup", "6_InsertData_K_NPC.sql");
+
+            if (!KOBinaryProvider.Exists(sqlPath))
+            {
+                Debug.LogWarning($"[WORLD] K_NPC SQL bulunamadı: {sqlPath}");
+                return map;
+            }
+
+            foreach (string line in System.IO.File.ReadLines(sqlPath))
+            {
+                string trimmed = line.Trim();
+                if (!trimmed.StartsWith("(")) continue;
+
+                string clean = trimmed.TrimEnd(',', ')').TrimStart('(');
+                int firstComma = clean.IndexOf(',');
+                if (firstComma < 0) continue;
+                string sidStr = clean.Substring(0, firstComma).Trim();
+                if (!int.TryParse(sidStr, out int sid)) continue;
+
+                int nameStart = clean.IndexOf("N'", firstComma);
+                if (nameStart < 0) nameStart = clean.IndexOf("'", firstComma);
+                if (nameStart < 0) continue;
+                int quoteStart = clean.IndexOf("'", nameStart) + 1;
+                int quoteEnd = clean.IndexOf("'", quoteStart);
+                if (quoteEnd < 0) continue;
+                string name = clean.Substring(quoteStart, quoteEnd - quoteStart);
+
+                string afterName = clean.Substring(quoteEnd + 1);
+                string[] afterParts = afterName.Split(',');
+                if (afterParts.Length < 3) continue;
+                if (!int.TryParse(afterParts[1].Trim(), out int pid)) continue;
+                int.TryParse(afterParts[2].Trim(), out int size);
+                if (size <= 0) size = 100;
+
+                // K_NPC SQL sütun sırası (isimden sonra): sPid(1), sSize(2), iWeapon1(3), iWeapon2(4),
+                // byGroup(5), byActType(6), byType(7), ...
+                // afterParts[7] = byType = Open-KO globals.h e_NpcType enum
+                int byType = 0;
+                if (afterParts.Length > 7)
+                    int.TryParse(afterParts[7].Trim(), out byType);
+
+                map[sid] = new NpcDefData { Name = name, Pid = pid, Size = size, ByType = byType };
+            }
+
+            Debug.Log($"[WORLD] K_NPC: {map.Count} NPC tanımı yüklendi");
+            return map;
+        }
+
+        /// <summary>
+        /// K_MONSTER SQL dosyasından Monster ID→(Name, PID, Size) eşlemesini okur.
+        /// Open-KO birebir: AIServerApp::GetMonsterTableData()
+        /// </summary>
+        private Dictionary<int, NpcDefData> LoadMonsterPidMap()
+        {
+            var map = new Dictionary<int, NpcDefData>();
+            string sqlPath = System.IO.Path.Combine(
+                System.IO.Path.GetDirectoryName(Application.dataPath),
+                "..", "openko-db", "ManualSetup", "6_InsertData_K_MONSTER.sql");
+
+            if (!KOBinaryProvider.Exists(sqlPath))
+            {
+                Debug.LogWarning($"[WORLD] K_MONSTER SQL bulunamadı: {sqlPath}");
+                return map;
+            }
+
+            foreach (string line in System.IO.File.ReadLines(sqlPath))
+            {
+                string trimmed = line.Trim();
+                if (!trimmed.StartsWith("(")) continue;
+
+                string clean = trimmed.TrimEnd(',', ')').TrimStart('(');
+                int firstComma = clean.IndexOf(',');
+                if (firstComma < 0) continue;
+                string sidStr = clean.Substring(0, firstComma).Trim();
+                if (!int.TryParse(sidStr, out int sid)) continue;
+
+                int nameStart = clean.IndexOf("N'", firstComma);
+                if (nameStart < 0) nameStart = clean.IndexOf("'", firstComma);
+                if (nameStart < 0) continue;
+                int quoteStart = clean.IndexOf("'", nameStart) + 1;
+                int quoteEnd = clean.IndexOf("'", quoteStart);
+                if (quoteEnd < 0) continue;
+                string name = clean.Substring(quoteStart, quoteEnd - quoteStart);
+
+                string afterName = clean.Substring(quoteEnd + 1);
+                string[] afterParts = afterName.Split(',');
+                if (afterParts.Length < 3) continue;
+                if (!int.TryParse(afterParts[1].Trim(), out int pid)) continue;
+                int.TryParse(afterParts[2].Trim(), out int size);
+                if (size <= 0) size = 100;
+
+                // iHpPoint: afterParts[15] (sütun sırası: sPid,sSize,iW1,iW2,byGrp,byAct,byType,byFam,byRank,byTitle,iSelGrp,sLvl,iExp,iLoy,iHpPoint)
+                int hp = 0;
+                if (afterParts.Length > 15)
+                    int.TryParse(afterParts[15].Trim(), out hp);
+
+                map[sid] = new NpcDefData { Name = name, Pid = pid, Size = size, HP = hp };
+            }
+
+            Debug.Log($"[WORLD] K_MONSTER: {map.Count} monster tanımı yüklendi");
+            return map;
+        }
+
+        /// <summary>C++ m_bIndoor — Zindan veya kapalı alan mı?</summary>
+        public bool IsIndoor { get; private set; }
+
+        public static bool IsIndoorZone(int zoneId)
+        {
+            // C++ birebir: N3WorldManager.cpp:39-52 — Sadece Zone 51 CDungeonManager (Indoor) olarak yüklenir
+            return zoneId == 51;
+        }
+
+        /// <summary>
+        /// Zone değiştiğinde çağrılır — mevcut terrain'i yıkıp yenisini yükler.
+        /// </summary>
+        public void ChangeZone(short newZoneId)
+        {
+            _currentZoneId = newZoneId;
+            IsIndoor = IsIndoorZone(newZoneId);
+
+            // Mevcut terrain'i kaldır
+            if (_terrain != null)
+            {
+                Destroy(_terrain.gameObject);
+                _terrain = null;
+            }
+
+            // Mevcut objeleri kaldır
+            if (_objectsParent != null)
+                Destroy(_objectsParent);
+
+            // Mevcut zone ışıklarını kaldır
+            var oldLights = transform.Find("ZoneLights");
+            if (oldLights != null)
+                Destroy(oldLights.gameObject);
+
+            // Mevcut su sistemini kaldır — zone değişiminde eski zone'un suyu kalıyordu
+            var oldWater = transform.Find("WaterSystem");
+            if (oldWater != null)
+                Destroy(oldWater.gameObject);
+
+            // Mevcut collision manager'ı kaldır
+            var oldCollision = transform.Find("KOCollisionManager");
+            if (oldCollision != null)
+                Destroy(oldCollision.gameObject);
+
+            // Mesh cache temizle
+            N3PMeshImporter.ClearCache();
+
+            // Convert edilmiş zone asset'i dene
+            _currentZoneAsset = Resources.Load<KOZoneAsset>($"KOZones/zone_{newZoneId}");
+            if (_currentZoneAsset != null)
+            {
+                Debug.Log($"[WORLD] ✅ Convert edilmiş zone asset bulundu: zone_{newZoneId}");
+                LoadConvertedZone(_currentZoneAsset);
+            }
+            else
+            {
+                Debug.Log($"[WORLD] Convert edilmiş asset yok, runtime parse kullanılıyor (zone={newZoneId})");
+                if (!IsIndoor)
+                {
+                    LoadTerrain();
+                }
+                else
+                {
+                    Debug.Log($"[WORLD] Dungeon zone (indoor) tespit edildi, terrain yüklemesi atlanıyor.");
+                }
+                LoadObjects();
+                LoadZoneLights();
+                CreateSkyAndFog();
+            }
+
+            LoadZoneEventFile(newZoneId);
+
+            Debug.Log($"[WORLD] Zone değiştirildi → {newZoneId} (Indoor={IsIndoor})");
+        }
+
+        private void LoadZoneEventFile(short zoneId)
+        {
+            if (KOEventManager.Instance == null)
+            {
+                var evtObj = new GameObject("KOEventManager");
+                evtObj.transform.SetParent(transform, false);
+                evtObj.AddComponent<KOEventManager>();
+            }
+
+            var zoneInfo = KOZoneMapper.GetZoneInfo(zoneId);
+            if (zoneInfo == null)
+            {
+                KOEventManager.Instance.Release();
+                return;
+            }
+
+            string gtdFile = zoneInfo.GtdFile;
+            if (string.IsNullOrEmpty(gtdFile))
+            {
+                KOEventManager.Instance.Release();
+                return;
+            }
+
+            string baseName = System.IO.Path.GetFileNameWithoutExtension(gtdFile);
+            string gevFileName = $"Zones/{baseName}.gev";
+
+            KOEventManager.Instance.LoadFromFile(gevFileName);
+        }
+
+        // ============================
+        // CONVERT EDİLMİŞ ZONE YÜKLEME
+        // ============================
+
+        /// <summary>
+        /// Convert edilmiş KOZoneAsset'ten zone'u yükler.
+        /// Runtime parse yapmaz — tüm asset'ler önceden bake edilmiştir.
+        /// </summary>
+        private void LoadConvertedZone(KOZoneAsset za)
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+
+            if (!IsIndoor)
+            {
+                LoadConvertedTerrain(za);
+            }
+            else
+            {
+                Debug.Log($"[WORLD] Dungeon zone (indoor) tespit edildi, convert edilmiş terrain yüklemesi atlanıyor.");
+            }
+            LoadConvertedObjects(za);
+            LoadConvertedCollision(za);
+            LoadConvertedWater(za);
+            LoadConvertedLights(za);
+
+            // Sky/Fog
+            if (za.skyboxMaterial != null)
+                RenderSettings.skybox = za.skyboxMaterial;
+            else
+                CreateSkyAndFog();
+
+            sw.Stop();
+            Debug.Log($"[WORLD] ✅ Convert edilmiş zone yüklendi — {sw.ElapsedMilliseconds}ms (zone={_currentZoneId})");
+        }
+
+        /// <summary>
+        /// Convert edilmiş TerrainData'dan terrain oluştur.
+        /// </summary>
+        private void LoadConvertedTerrain(KOZoneAsset za)
+        {
+            if (za.terrainData == null)
+            {
+                Debug.LogWarning("[WORLD] Convert edilmiş terrainData null, fallback kullanılıyor.");
+                LoadTerrain();
+                return;
+            }
+
+            var terrainObj = Terrain.CreateTerrainGameObject(za.terrainData);
+            terrainObj.name = $"KOTerrain_{_currentZoneId}";
+            _terrain = terrainObj.GetComponent<Terrain>();
+            _terrainWorldSize = za.worldSize;
+
+            // Terrain rendering ayarları
+            _terrain.basemapDistance = 100000f;
+            _terrain.drawInstanced = true;
+            _terrain.heightmapPixelError = 5f;
+            _terrain.reflectionProbeUsage = UnityEngine.Rendering.ReflectionProbeUsage.Off;
+            terrainObj.transform.position = new Vector3(0, za.terrainBaseY, 0);
+
+            var collider = terrainObj.GetComponent<TerrainCollider>();
+            if (collider != null) collider.terrainData = za.terrainData;
+
+            RenderSettings.fog = false;
+
+            Debug.Log($"[WORLD] ✅ Convert edilmiş terrain yüklendi (worldSize={za.worldSize:F0})");
+        }
+
+        /// <summary>
+        /// Convert edilmiş shape'lerden obje oluştur.
+        /// Mesh ve Material zaten Unity asset — sadece instantiate.
+        /// </summary>
+        private void LoadConvertedObjects(KOZoneAsset za)
+        {
+            if (za.shapes == null || za.shapes.Length == 0)
+            {
+                Debug.LogWarning("[WORLD] Convert edilmiş shape verisi yok, fallback kullanılıyor.");
+                LoadObjects();
+                return;
+            }
+
+            _objectsParent = new GameObject("KOObjects");
+            int placed = 0;
+
+            foreach (var shape in za.shapes)
+            {
+                if (shape.position.sqrMagnitude < 0.001f) continue;
+
+                var shapeObj = new GameObject(string.IsNullOrEmpty(shape.name) ? $"Shape_{placed}" : shape.name);
+                shapeObj.transform.SetParent(_objectsParent.transform);
+                shapeObj.transform.position = shape.position;
+                if (shape.rotation.w != 0 || shape.rotation.x != 0 ||
+                    shape.rotation.y != 0 || shape.rotation.z != 0)
+                    shapeObj.transform.rotation = shape.rotation;
+                shapeObj.transform.localScale = shape.scale;
+
+                // Part'ları oluştur
+                if (shape.parts != null && shape.parts.Length > 0)
+                {
+                    foreach (var part in shape.parts)
+                    {
+                        if (part.mesh == null) continue;
+
+                        var partObj = new GameObject(part.mesh.name ?? "Part");
+                        partObj.transform.SetParent(shapeObj.transform);
+                        partObj.transform.localPosition = part.pivot;
+                        partObj.transform.localRotation = Quaternion.identity;
+                        partObj.transform.localScale = Vector3.one;
+
+                        var mf = partObj.AddComponent<MeshFilter>();
+                        mf.sharedMesh = part.mesh;
+
+                        var mr = partObj.AddComponent<MeshRenderer>();
+
+                        // Material instance oluştur ve render flag'leri runtime'da uygula
+                        // (birebir CreateMeshMaterial ile aynı — URP serialize sorunu yok)
+                        var mat = part.material != null
+                            ? new Material(part.material)
+                            : new Material(Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard"));
+
+                        uint rf = part.renderFlags;
+                        uint srcBlend = part.srcBlend;
+                        uint destBlend = part.destBlend;
+
+                        bool hasAlphaBlend = (rf & 0x1) != 0;
+                        bool hasDiffuseAlpha = (rf & 0x80) != 0;
+
+                        bool isAdditiveBlend = hasAlphaBlend && (
+                            (srcBlend == 2 && destBlend == 2) ||
+                            (srcBlend == 5 && destBlend == 2) ||
+                            (srcBlend == 2 && destBlend == 6));
+
+                        if (isAdditiveBlend)
+                        {
+                            mat.SetFloat("_Surface", 1);
+                            mat.SetOverrideTag("RenderType", "Transparent");
+                            mat.renderQueue = (int)UnityEngine.Rendering.RenderQueue.Transparent;
+                            mat.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.One);
+                            mat.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.One);
+                            mat.SetFloat("_ZWrite", 0);
+                            mat.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+                            mat.DisableKeyword("_ALPHATEST_ON");
+                            if (mat.HasProperty("_AlphaClip"))
+                                mat.SetFloat("_AlphaClip", 0);
+                            if (mat.HasProperty("_Cull"))
+                                mat.SetFloat("_Cull", 0);
+                        }
+                        else if (hasAlphaBlend || hasDiffuseAlpha)
+                        {
+                            mat.SetFloat("_Surface", 1);
+                            mat.SetOverrideTag("RenderType", "Transparent");
+                            mat.renderQueue = (int)UnityEngine.Rendering.RenderQueue.Transparent;
+                            mat.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+                            mat.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+                            mat.SetFloat("_ZWrite", 0);
+                            mat.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+                            if (mat.HasProperty("_Cull"))
+                                mat.SetFloat("_Cull", 0);
+                        }
+                        else
+                        {
+                            // Alpha cutout — texture alpha varsa
+                            var tex = mat.HasProperty("_BaseMap") 
+                                ? mat.GetTexture("_BaseMap") as Texture2D : null;
+                            if (tex != null && HasTransparentPixels(tex) && mat.HasProperty("_AlphaClip"))
+                            {
+                                mat.SetFloat("_AlphaClip", 1);
+                                mat.SetFloat("_Cutoff", 0.53f);
+                                mat.SetOverrideTag("RenderType", "TransparentCutout");
+                                mat.renderQueue = (int)UnityEngine.Rendering.RenderQueue.AlphaTest;
+                                mat.EnableKeyword("_ALPHATEST_ON");
+                            }
+                        }
+
+                        if ((rf & 0x100) != 0 || (rf & 0x400) != 0)
+                            mat.SetFloat("_ZWrite", 0);
+
+                        if ((rf & 0x1) != 0 || (rf & 0x8) != 0 || (rf & 0x4) != 0)
+                        {
+                            if (mat.HasProperty("_Cull"))
+                                mat.SetFloat("_Cull", 0);
+                        }
+
+                        mr.material = mat;
+
+                        // RenderFlags-based components
+                        if ((rf & 0x8) != 0) // RF_BOARD_Y
+                            partObj.AddComponent<BillboardY>();
+                        if ((rf & 0x20) != 0) // RF_WINDY
+                            partObj.AddComponent<WindyPart>();
+                        if (part.animTextures != null && part.animTextures.Length > 1)
+                        {
+                            var anim = partObj.AddComponent<TextureAnimPart>();
+                            anim.Initialize(part.animTextures, part.texFPS > 0 ? part.texFPS : 10f);
+                        }
+                    }
+                }
+
+                // Event shape
+                if (shape.eventID != 0)
+                {
+                    var worldEvent = shapeObj.AddComponent<KOWorldEvent>();
+                    worldEvent.EventID = shape.eventID;
+                    worldEvent.EventType = shape.eventType;
+                    worldEvent.NPC_ID = shape.npcID;
+
+                    var meshFilters = shapeObj.GetComponentsInChildren<MeshFilter>();
+                    foreach (var mfEvt in meshFilters)
+                    {
+                        if (mfEvt.sharedMesh != null)
+                        {
+                            var mc = mfEvt.gameObject.AddComponent<MeshCollider>();
+                            mc.sharedMesh = mfEvt.sharedMesh;
+                            mc.convex = false;
+                        }
+                    }
+                }
+
+                placed++;
+            }
+
+            Debug.Log($"[WORLD] ✅ {placed} convert edilmiş shape yerleştirildi");
+        }
+
+        /// <summary>
+        /// Convert edilmiş collision mesh'i yükle.
+        /// </summary>
+        private void LoadConvertedCollision(KOZoneAsset za)
+        {
+            if (za.collisionMesh == null) return;
+
+            var collisionObj = new GameObject("KOCollisionManager");
+            collisionObj.transform.SetParent(transform, false);
+
+            var child = new GameObject("OPD_Collision");
+            child.transform.SetParent(collisionObj.transform, false);
+
+            var mf = child.AddComponent<MeshFilter>();
+            mf.sharedMesh = za.collisionMesh;
+
+            var mc = child.AddComponent<MeshCollider>();
+            mc.sharedMesh = za.collisionMesh;
+            mc.cookingOptions = MeshColliderCookingOptions.CookForFasterSimulation
+                              | MeshColliderCookingOptions.WeldColocatedVertices;
+
+            // KOCollisionManager component de ekle — GetHeight vb. için
+            var collisionMgr = collisionObj.AddComponent<KOCollisionManager>();
+            collisionMgr.InitializeFromConvertedMesh(za.collisionMesh, za.mapWidth, za.mapLength);
+
+            Debug.Log($"[WORLD] ✅ Convert edilmiş collision mesh yüklendi ({za.collisionMesh.vertexCount} vertices)");
+        }
+
+        /// <summary>
+        /// Convert edilmiş su mesh'lerini yükle.
+        /// </summary>
+        private void LoadConvertedWater(KOZoneAsset za)
+        {
+            bool hasWater = (za.rivers != null && za.rivers.Length > 0) ||
+                            (za.ponds != null && za.ponds.Length > 0);
+            if (!hasWater) return;
+
+            var waterObj = new GameObject("WaterSystem");
+            waterObj.transform.SetParent(transform, false);
+
+            // River'lar
+            if (za.rivers != null)
+            {
+                foreach (var river in za.rivers)
+                {
+                    if (river.mesh == null) continue;
+                    var rObj = new GameObject("River");
+                    rObj.transform.SetParent(waterObj.transform, false);
+                    var mf = rObj.AddComponent<MeshFilter>();
+                    mf.sharedMesh = river.mesh;
+                    var mr = rObj.AddComponent<MeshRenderer>();
+                    mr.sharedMaterial = river.material;
+                }
+            }
+
+            // Pond'lar
+            if (za.ponds != null)
+            {
+                foreach (var pond in za.ponds)
+                {
+                    if (pond.mesh == null) continue;
+                    var pObj = new GameObject("Pond");
+                    pObj.transform.SetParent(waterObj.transform, false);
+                    var mf = pObj.AddComponent<MeshFilter>();
+                    mf.sharedMesh = pond.mesh;
+                    var mr = pObj.AddComponent<MeshRenderer>();
+                    mr.sharedMaterial = pond.material;
+                }
+            }
+
+            // WaterRenderer'ı da ekle — caustic animasyon ve UV scroll için
+            var wr = waterObj.AddComponent<WaterRenderer>();
+            wr.InitializeFromConverted(za);
+
+            Debug.Log($"[WORLD] ✅ Convert edilmiş su sistemi yüklendi (rivers={za.rivers?.Length ?? 0}, ponds={za.ponds?.Length ?? 0})");
+        }
+
+        /// <summary>
+        /// Convert edilmiş ışıkları yükle.
+        /// </summary>
+        private void LoadConvertedLights(KOZoneAsset za)
+        {
+            if (za.lights == null || za.lights.Length == 0) return;
+
+            var lightsParent = new GameObject("ZoneLights");
+            lightsParent.transform.SetParent(transform, false);
+
+            foreach (var ld in za.lights)
+            {
+                if (!ld.isOn) continue;
+
+                var lightObj = new GameObject($"ZoneLight_{ld.name}");
+                lightObj.transform.SetParent(lightsParent.transform);
+                lightObj.transform.position = ld.position;
+                lightObj.transform.rotation = ld.rotation;
+
+                var light = lightObj.AddComponent<Light>();
+                light.color = ld.diffuse;
+
+                switch (ld.type)
+                {
+                    case 1: // Point
+                        light.type = LightType.Point;
+                        light.range = ld.range / 2f;
+                        break;
+                    case 2: // Spot
+                        light.type = LightType.Spot;
+                        light.range = ld.range;
+                        light.spotAngle = ld.phi * Mathf.Rad2Deg;
+                        break;
+                    case 3: // Directional
+                        light.type = LightType.Directional;
+                        break;
+                }
+
+                light.intensity = 0.5f;
+                light.shadows = LightShadows.None;
+            }
+        }
+
+        // ============================
+        // GÜNEŞ (Directional Light)
+        // ============================
+
+        private void CreateSun()
+        {
+            // Kullanıcı ek Unity ışıklandırması istemiyor — Sun minimal tutulur
+            var sunObj = new GameObject("Sun");
+            _sun = sunObj.AddComponent<Light>();
+            _sun.type = LightType.Directional;
+            _sun.color = Color.white;
+            _sun.intensity = 0f; // Ek ışık yok — texture renkleri olduğu gibi görünsün
+            _sun.shadows = LightShadows.None;
+
+            sunObj.transform.rotation = Quaternion.Euler(50f, -30f, 0f);
+
+            // Ambient: Tam beyaz — texture'lar olduğu gibi görünsün (Unity Lit shader'da gerekli)
+            RenderSettings.ambientMode = AmbientMode.Flat;
+            RenderSettings.ambientLight = Color.white;
+            // Environment reflection'ı kapat — terrain üzerinde parlak yansıma oluşturuyordu
+            RenderSettings.defaultReflectionMode = UnityEngine.Rendering.DefaultReflectionMode.Custom;
+            RenderSettings.defaultReflectionResolution = 16;
+            RenderSettings.reflectionIntensity = 0f;
+        }
+
+        // ============================
+        // TERRAIN YÜKLEME
+        // ============================
+
+        private void LoadTerrain()
+        {
+            // 1. KO asset'inden gerçek terrain dene
+            string gtdPath = KOZoneMapper.GetGtdPath(_currentZoneId);
+
+            if (gtdPath != null && KOBinaryProvider.Exists(gtdPath))
+            {
+                LoadKOTerrain(gtdPath);
+            }
+            else
+            {
+                Debug.LogWarning($"[WORLD] GTD bulunamadı (zone={_currentZoneId}), " +
+                    $"prosedürel terrain kullanılıyor. Path: {gtdPath}");
+                CreateFallbackTerrain();
+            }
+        }
+
+        private void LoadKOTerrain(string gtdPath)
+        {
+            Debug.Log($"[WORLD] KO terrain yükleniyor: {gtdPath}");
+
+            var gtdData = GtdTerrainImporter.Parse(gtdPath);
+            if (gtdData == null)
+            {
+                Debug.LogError("[WORLD] GTD parse başarısız, fallback kullanılıyor.");
+                CreateFallbackTerrain();
+                return;
+            }
+
+            var terrainData = GtdTerrainImporter.CreateTerrainData(gtdData);
+            if (terrainData == null)
+            {
+                CreateFallbackTerrain();
+                return;
+            }
+
+            // Terrain GameObject oluştur
+            var terrainObj = Terrain.CreateTerrainGameObject(terrainData);
+            terrainObj.name = $"KOTerrain_{_currentZoneId}";
+            _terrain = terrainObj.GetComponent<Terrain>();
+            _terrainWorldSize = gtdData.WorldSize;
+
+            // Terrain rendering ayarları
+            _terrain.basemapDistance = 100000f; // Basemap'e hiç geçiş yapma (siyah patch önleme)
+            _terrain.drawInstanced = true;
+            _terrain.heightmapPixelError = 5f; // LOD kalitesi
+            _terrain.reflectionProbeUsage = UnityEngine.Rendering.ReflectionProbeUsage.Off; // Yansıma kapat
+            // KO koordinat sistemi: terrain.position.y = minHeight - 1
+            // Bu sayede world Y = KO Y (objeler ve terrain aynı koordinat uzayında)
+            terrainObj.transform.position = new Vector3(0, GtdTerrainImporter.LastTerrainBaseY, 0);
+
+            // TerrainCollider
+            var collider = terrainObj.GetComponent<TerrainCollider>();
+            if (collider != null) collider.terrainData = terrainData;
+
+            // Fog kapalı — terrain üzerinde yarı saydam kaplama oluşturuyordu
+            RenderSettings.fog = false;
+
+            // ============================================
+            // TILE TEXTURE SİSTEMİ
+            // ============================================
+            // KO terrain rendering: per-cell tile texture + colormap modulate
+            // Unity port: tile texture'ları TerrainLayer olarak ekle, splatmap paint et
+            ApplyTileTextures(terrainData, gtdData);
+
+            Debug.Log($"[WORLD] ✅ KO terrain yüklendi: {gtdData.MapName} " +
+                      $"({gtdData.MapSize}x{gtdData.MapSize}, {_terrainWorldSize:F0}m)");
+
+            // River/Pond su render sistemi
+            if (gtdData.Rivers.Count > 0 || gtdData.Ponds.Count > 0)
+            {
+                var waterObj = new GameObject("WaterSystem");
+                waterObj.transform.SetParent(transform, false);
+                var waterRenderer = waterObj.AddComponent<WaterRenderer>();
+                waterRenderer.Initialize(gtdData);
+            }
+        }
+
+        /// <summary>
+        /// KO tile texture'larını tek bir composite texture'a bake eder.
+        /// Her hücrenin Tex1Idx'ine göre ilgili tile texture'dan sample alınır
+        /// ve büyük bir terrain texture'ına yazılır. Sonuç: 1 TerrainLayer.
+        /// </summary>
+        private void ApplyTileTextures(TerrainData terrainData, GtdTerrainImporter.GtdData gtdData)
+        {
+            Debug.Log($"[TILE-DIAG] ApplyTileTextures ENTERED — " +
+                      $"TileTextures={(gtdData.TileTextures?.Count ?? -1)}, " +
+                      $"TileTexSources={(gtdData.TileTexSources?.Count ?? -1)}, " +
+                      $"CellData={(gtdData.CellData != null ? "YES" : "NULL")}");
+
+            bool hasTileData = gtdData.TileTextures != null && gtdData.TileTextures.Count > 0
+                            && gtdData.TileTexSources != null && gtdData.TileTexSources.Count > 0
+                            && gtdData.CellData != null;
+
+            if (!hasTileData)
+            {
+                Debug.LogWarning("[TILE] Tile texture verisi yok, colormap fallback kullanılıyor");
+                ApplyColormapFallback(terrainData, gtdData);
+                return;
+            }
+
+            int mapSize = gtdData.MapSize;       // e.g. 1025
+            int maxTileIdx = gtdData.TileTextures.Count;
+            int cellCount = mapSize - 1;         // e.g. 1024
+
+            // ============================================
+            // STEP 1: Colormap'i base layer olarak yükle
+            // Open-KO birebir: N3TerrainPatch.cpp:251-254
+            //   if (Tex1Idx >= TileTextureCount || !bIsTileFull)
+            //       → colormap kullanılır
+            // ============================================
+            Texture2D colormapTex = null;
+            var zoneInfo = KOZoneMapper.GetZoneInfo(_currentZoneId);
+            if (zoneInfo != null && !string.IsNullOrEmpty(zoneInfo.DxtFile))
+            {
+                string dxtPath = System.IO.Path.Combine("", "Zones", zoneInfo.DxtFile);
+                colormapTex = KOTextureProvider.Load(dxtPath);
+            }
+
+            // ============================================
+            // STEP 2: Kullanılan unique tile texture'ları GTT'den yükle
+            // Open-KO birebir: CN3Terrain::LoadTileInfo (N3Terrain.cpp:524-596)
+            // ============================================
+            var tileCache = new System.Collections.Generic.Dictionary<int, Texture2D>();
+
+            for (int x = 0; x < mapSize; x++)
+                for (int z = 0; z < mapSize; z++)
+                {
+                    var cell = gtdData.CellData[x, z];
+                    // Open-KO birebir: sadece IsTileFull=true VE valid Tex1Idx olan cell'ler tile kullanır
+                    if (!cell.IsTileFull) continue;
+                    int idx = cell.Tex1Idx;
+                    if (idx < 0 || idx >= maxTileIdx) continue;
+                    if (tileCache.ContainsKey(idx)) continue;
+
+                    var info = gtdData.TileTextures[idx];
+                    if (info.SrcIdx >= 0 && info.SrcIdx < gtdData.TileTexSources.Count)
+                    {
+                        string gttRel = gtdData.TileTexSources[info.SrcIdx]
+                            .Replace('/', System.IO.Path.DirectorySeparatorChar)
+                            .Replace('\\', System.IO.Path.DirectorySeparatorChar);
+                        string gttFull = System.IO.Path.Combine("", gttRel);
+                        Texture2D tex = GttTextureImporter.LoadTile(gttFull, info.TileIdx);
+                        tileCache[idx] = tex;
+                    }
+
+                    // C++ birebir: Tex2 tile texture'ı da yükle
+                    int idx2 = cell.Tex2Idx;
+                    if (idx2 >= 0 && idx2 < maxTileIdx && !tileCache.ContainsKey(idx2))
+                    {
+                        var info2 = gtdData.TileTextures[idx2];
+                        if (info2.SrcIdx >= 0 && info2.SrcIdx < gtdData.TileTexSources.Count)
+                        {
+                            string gttRel2 = gtdData.TileTexSources[info2.SrcIdx]
+                                .Replace('/', System.IO.Path.DirectorySeparatorChar)
+                                .Replace('\\', System.IO.Path.DirectorySeparatorChar);
+                            string gttFull2 = System.IO.Path.Combine("", gttRel2);
+                            Texture2D tex2 = GttTextureImporter.LoadTile(gttFull2, info2.TileIdx);
+                            tileCache[idx2] = tex2;
+                        }
+                    }
+                }
+
+            // DIAGNOSTIC: Tile texture boyutlarını ve dir dağılımını logla
+            int[] dirCounts = new int[8];
+            int tileFull = 0, tileNotFull = 0, tileNoIdx = 0;
+            foreach (var kv in tileCache)
+            {
+                if (kv.Value != null)
+                    Debug.Log($"[TILE-DIAG] TileCache[{kv.Key}] = {kv.Value.width}x{kv.Value.height}");
+            }
+            for (int dx = 0; dx < cellCount; dx++)
+                for (int dz = 0; dz < cellCount; dz++)
+                {
+                    var dc = gtdData.CellData[dx, dz];
+                    if (dc.IsTileFull && dc.Tex1Idx >= 0 && dc.Tex1Idx < maxTileIdx)
+                    {
+                        tileFull++;
+                        int d = dc.Tex1Dir;
+                        if (d >= 0 && d < 8) dirCounts[d]++;
+                    }
+                    else if (!dc.IsTileFull) tileNotFull++;
+                    else tileNoIdx++;
+                }
+            Debug.Log($"[TILE-DIAG] Cells: tileFull={tileFull}, notFull={tileNotFull}, noIdx={tileNoIdx}");
+            Debug.Log($"[TILE-DIAG] Tex1Dir distribution: " +
+                      $"0={dirCounts[0]} 1={dirCounts[1]} 2={dirCounts[2]} 3={dirCounts[3]} " +
+                      $"4={dirCounts[4]} 5={dirCounts[5]} 6={dirCounts[6]} 7={dirCounts[7]}");
+
+            Debug.Log($"[TILE] {tileCache.Count} benzersiz tile texture yüklendi " +
+                      $"(toplam {maxTileIdx} tanımlı, {gtdData.TileTexSources.Count} GTT kaynak), " +
+                      $"colormap={(colormapTex != null ? $"{colormapTex.width}x{colormapTex.height}" : "yok")}");
+
+            // ============================================
+            // STEP 3: Composite texture oluştur
+            // ============================================
+            // GPU'nun desteklediği max texture boyutunu kullan (çoğu modern GPU: 16384)
+            int maxTexSize = Mathf.Min(16384, SystemInfo.maxTextureSize);
+            int pixPerCell = Mathf.Max(1, maxTexSize / cellCount);
+            int compositeSize = cellCount * pixPerCell;
+            if (compositeSize > maxTexSize) { compositeSize = maxTexSize; pixPerCell = compositeSize / cellCount; }
+            if (pixPerCell < 1) pixPerCell = 1;
+            compositeSize = cellCount * pixPerCell;
+
+            Debug.Log($"[TILE] Composite texture: {compositeSize}x{compositeSize} ({pixPerCell}px/cell), GPU max: {SystemInfo.maxTextureSize}");
+
+            var composite = new Texture2D(compositeSize, compositeSize, TextureFormat.RGBA32, true); // mipmap=true
+            var pixels = new Color32[compositeSize * compositeSize];
+
+            // Base: colormap'ten doldur (varsa)
+            Color32[] cmPixels = null;
+            int cmW = 0, cmH = 0;
+            if (colormapTex != null)
+            {
+                cmPixels = colormapTex.GetPixels32();
+                cmW = colormapTex.width;
+                cmH = colormapTex.height;
+            }
+            var fallbackColor = new Color32(80, 100, 60, 255);
+
+            // Tüm pixel'leri colormap'ten sample al
+            for (int py = 0; py < compositeSize; py++)
+            {
+                for (int px = 0; px < compositeSize; px++)
+                {
+                    if (cmPixels != null)
+                    {
+                        float u = (float)px / compositeSize;
+                        float v = (float)py / compositeSize;
+                        int cx2 = Mathf.Clamp((int)(u * cmW), 0, cmW - 1);
+                        int cy2 = Mathf.Clamp((int)(v * cmH), 0, cmH - 1);
+                        var c = cmPixels[cy2 * cmW + cx2];
+                        c.a = 255;
+                        pixels[py * compositeSize + px] = c;
+                    }
+                    else
+                    {
+                        pixels[py * compositeSize + px] = fallbackColor;
+                    }
+                }
+            }
+
+            // ============================================
+            // STEP 4: Open-KO birebir TileDirU/TileDirV tablosu
+            // LyTerrain.cpp:118-157 — _KNIGHT variant
+            // 8 yön × 4 köşe [LT, RT, LB, RB]
+            // ============================================
+            float[,] tileDirU = new float[8, 4]
+            {
+                { 0f, 1f, 0f, 1f },  // 0: up
+                { 0f, 0f, 1f, 1f },  // 1: right (90° CW)
+                { 1f, 0f, 1f, 0f },  // 2: bottom (180°)
+                { 1f, 1f, 0f, 0f },  // 3: left (270° CW)
+                { 1f, 0f, 1f, 0f },  // 4: up_mirror
+                { 0f, 0f, 1f, 1f },  // 5: right_mirror
+                { 0f, 1f, 0f, 1f },  // 6: bottom_mirror
+                { 1f, 1f, 0f, 0f },  // 7: left_mirror
+            };
+            float[,] tileDirV = new float[8, 4]
+            {
+                { 0f, 0f, 1f, 1f },  // 0: up
+                { 1f, 0f, 1f, 0f },  // 1: right
+                { 1f, 1f, 0f, 0f },  // 2: bottom
+                { 0f, 1f, 0f, 1f },  // 3: left
+                { 0f, 0f, 1f, 1f },  // 4: up_mirror
+                { 0f, 1f, 0f, 1f },  // 5: right_mirror
+                { 1f, 1f, 0f, 0f },  // 6: bottom_mirror
+                { 1f, 0f, 1f, 0f },  // 7: left_mirror
+            };
+
+            // ============================================
+            // STEP 5: Tile texture'ları colormap üzerine overlay et
+            // ============================================
+            int tileOverlayCount = 0;
+            for (int cx = 0; cx < cellCount; cx++)
+            {
+                for (int cz = 0; cz < cellCount; cz++)
+                {
+                    var cell = gtdData.CellData[cx, cz];
+                    if (!cell.IsTileFull) continue;
+                    int tex1Idx = cell.Tex1Idx;
+                    if (tex1Idx < 0 || tex1Idx >= maxTileIdx) continue;
+
+                    Texture2D tileTex = null;
+                    tileCache.TryGetValue(tex1Idx, out tileTex);
+                    if (tileTex == null) continue;
+
+                    int tex1Dir = cell.Tex1Dir;
+                    if (tex1Dir < 0 || tex1Dir > 7) tex1Dir = 0;
+
+                    int tw = tileTex.width;
+                    int th = tileTex.height;
+                    var tilePixels = tileTex.GetPixels32();
+
+                    int startX = cx * pixPerCell;
+                    int startY = cz * pixPerCell;
+
+                    float uLB = tileDirU[tex1Dir, 2], uRB = tileDirU[tex1Dir, 3];
+                    float uLT = tileDirU[tex1Dir, 0], uRT = tileDirU[tex1Dir, 1];
+                    float vLB = tileDirV[tex1Dir, 2], vRB = tileDirV[tex1Dir, 3];
+                    float vLT = tileDirV[tex1Dir, 0], vRT = tileDirV[tex1Dir, 1];
+
+                    // Tex2 ADD blending
+                    int tex2Idx = cell.Tex2Idx;
+                    int tex2Dir = cell.Tex2Dir;
+                    Texture2D tileTex2 = null;
+                    Color32[] tilePixels2 = null;
+                    int tw2 = 0, th2 = 0;
+                    bool hasTex2 = (tex2Idx >= 0 && tex2Idx < maxTileIdx);
+                    if (hasTex2)
+                    {
+                        tileCache.TryGetValue(tex2Idx, out tileTex2);
+                        if (tileTex2 != null)
+                        {
+                            tw2 = tileTex2.width;
+                            th2 = tileTex2.height;
+                            tilePixels2 = tileTex2.GetPixels32();
+                            if (tex2Dir < 0 || tex2Dir > 7) tex2Dir = 0;
+                        }
+                        else hasTex2 = false;
+                    }
+
+                    float u2LB = 0, u2RB = 0, u2LT = 0, u2RT = 0;
+                    float v2LB = 0, v2RB = 0, v2LT = 0, v2RT = 0;
+                    if (hasTex2)
+                    {
+                        u2LB = tileDirU[tex2Dir, 2]; u2RB = tileDirU[tex2Dir, 3];
+                        u2LT = tileDirU[tex2Dir, 0]; u2RT = tileDirU[tex2Dir, 1];
+                        v2LB = tileDirV[tex2Dir, 2]; v2RB = tileDirV[tex2Dir, 3];
+                        v2LT = tileDirV[tex2Dir, 0]; v2RT = tileDirV[tex2Dir, 1];
+                    }
+
+                    for (int py = 0; py < pixPerCell; py++)
+                    {
+                        float t = (float)py / pixPerCell;
+                        for (int px = 0; px < pixPerCell; px++)
+                        {
+                            float s = (float)px / pixPerCell;
+
+                            float u = (1f - s) * (1f - t) * uLB + s * (1f - t) * uRB
+                                    + (1f - s) * t * uLT + s * t * uRT;
+                            float v = (1f - s) * (1f - t) * vLB + s * (1f - t) * vRB
+                                    + (1f - s) * t * vLT + s * t * vRT;
+
+                            int txS = Mathf.Clamp((int)(u * tw), 0, tw - 1);
+                            int tyS = Mathf.Clamp((int)(v * th), 0, th - 1);
+
+                            int compIdx = (startY + py) * compositeSize + (startX + px);
+                            int tileIdx1 = tyS * tw + txS;
+                            if (compIdx < pixels.Length && tileIdx1 < tilePixels.Length)
+                            {
+                                var c1 = tilePixels[tileIdx1];
+
+                                if (hasTex2)
+                                {
+                                    float u2 = (1f - s) * (1f - t) * u2LB + s * (1f - t) * u2RB
+                                             + (1f - s) * t * u2LT + s * t * u2RT;
+                                    float v2 = (1f - s) * (1f - t) * v2LB + s * (1f - t) * v2RB
+                                             + (1f - s) * t * v2LT + s * t * v2RT;
+                                    int tx2S = Mathf.Clamp((int)(u2 * tw2), 0, tw2 - 1);
+                                    int ty2S = Mathf.Clamp((int)(v2 * th2), 0, th2 - 1);
+                                    int tileIdx2 = ty2S * tw2 + tx2S;
+                                    if (tileIdx2 < tilePixels2.Length)
+                                    {
+                                        var c2 = tilePixels2[tileIdx2];
+                                        byte r = (byte)Mathf.Min(c1.r + c2.r, 255);
+                                        byte g = (byte)Mathf.Min(c1.g + c2.g, 255);
+                                        byte b = (byte)Mathf.Min(c1.b + c2.b, 255);
+                                        pixels[compIdx] = new Color32(r, g, b, 255);
+                                    }
+                                    else if (c1.a > 0)
+                                    {
+                                        c1.a = 255;
+                                        pixels[compIdx] = c1;
+                                    }
+                                }
+                                else
+                                {
+                                    if (c1.a > 0)
+                                    {
+                                        c1.a = 255;
+                                        pixels[compIdx] = c1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    tileOverlayCount++;
+                }
+            }
+
+            composite.SetPixels32(pixels);
+            composite.Apply(true, false);  // mipmap generate
+            composite.Compress(true);  // DXT sıkıştırma — VRAM tasarrufu (~4x küçültme)
+            composite.Apply(true, true);  // mipmap yeniden oluştur + CPU kopyasını serbest bırak
+            composite.wrapMode = TextureWrapMode.Clamp;
+            composite.filterMode = FilterMode.Trilinear;
+            composite.anisoLevel = 8;
+
+            // Tek TerrainLayer olarak uygula
+            var layers = new TerrainLayer[1];
+            layers[0] = new TerrainLayer();
+            layers[0].diffuseTexture = composite;
+            layers[0].tileSize = new Vector2(gtdData.WorldSize, gtdData.WorldSize);
+            layers[0].smoothness = 0f;
+            layers[0].metallic = 0f;
+            terrainData.terrainLayers = layers;
+
+            // Resolution'ları ayarla
+            terrainData.alphamapResolution = 512;
+            terrainData.baseMapResolution = 4096;
+            int alphaRes = terrainData.alphamapResolution;
+            float[,,] alphamap = new float[alphaRes, alphaRes, 1];
+            for (int ay = 0; ay < alphaRes; ay++)
+                for (int ax = 0; ax < alphaRes; ax++)
+                    alphamap[ay, ax, 0] = 1f;
+            terrainData.SetAlphamaps(0, 0, alphamap);
+
+            // Tile texture cache temizle
+            foreach (var kv in tileCache)
+                if (kv.Value != null) DestroyImmediate(kv.Value, true);
+            tileCache.Clear();
+            if (colormapTex != null) DestroyImmediate(colormapTex, true);
+
+            Debug.Log($"[TILE] ✅ Composite terrain texture uygulandı: {compositeSize}x{compositeSize}, " +
+                      $"{pixPerCell}px/cell, tile overlay: {tileOverlayCount}/{cellCount * cellCount} cells");
+        }
+
+        /// <summary>
+        /// Tile texture verisi yoksa DXT colormap ile fallback.
+        /// </summary>
+        private void ApplyColormapFallback(TerrainData terrainData, GtdTerrainImporter.GtdData gtdData)
+        {
+            var zoneInfo = KOZoneMapper.GetZoneInfo(_currentZoneId);
+            if (zoneInfo == null || string.IsNullOrEmpty(zoneInfo.DxtFile))
+                return;
+
+            string dxtPath = System.IO.Path.Combine("", "Zones", zoneInfo.DxtFile);
+            var colormap = KOTextureProvider.Load(dxtPath);
+            if (colormap == null) return;
+
+            var layers = new TerrainLayer[1];
+            layers[0] = new TerrainLayer();
+            layers[0].diffuseTexture = colormap;
+            layers[0].tileSize = new Vector2(gtdData.WorldSize, gtdData.WorldSize);
+            layers[0].smoothness = 0f;
+            layers[0].metallic = 0f;
+            terrainData.terrainLayers = layers;
+
+            int alphaRes = terrainData.alphamapResolution;
+            float[,,] alphamap = new float[alphaRes, alphaRes, 1];
+            for (int ay = 0; ay < alphaRes; ay++)
+                for (int ax = 0; ax < alphaRes; ax++)
+                    alphamap[ay, ax, 0] = 1f;
+            terrainData.SetAlphamaps(0, 0, alphamap);
+
+            Debug.Log($"[TILE] Colormap fallback uygulandı: {zoneInfo.DxtFile}");
+        }
+
+        private void CreateFallbackTerrain()
+        {
+            var terrainData = new TerrainData();
+            terrainData.heightmapResolution = 257;
+            terrainData.size = new Vector3(fallbackTerrainSize, fallbackTerrainHeight, fallbackTerrainSize);
+
+            float[,] heights = new float[257, 257];
+            for (int y = 0; y < 257; y++)
+            {
+                for (int x = 0; x < 257; x++)
+                {
+                    float nx = (float)x / 257;
+                    float ny = (float)y / 257;
+                    float h = Mathf.PerlinNoise(nx * 3f + 0.5f, ny * 3f + 0.5f) * 0.3f;
+                    h += Mathf.PerlinNoise(nx * 8f + 1.3f, ny * 8f + 2.7f) * 0.1f;
+
+                    float distToCenter = Vector2.Distance(new Vector2(nx, ny), new Vector2(0.5f, 0.5f));
+                    h *= Mathf.Clamp01(distToCenter * 3f - 0.3f);
+                    heights[y, x] = Mathf.Clamp01(h);
+                }
+            }
+            terrainData.SetHeights(0, 0, heights);
+
+            var layers = new TerrainLayer[1];
+            layers[0] = new TerrainLayer();
+            layers[0].diffuseTexture = CreateGrassTexture();
+            layers[0].tileSize = new Vector2(8, 8);
+            terrainData.terrainLayers = layers;
+
+            var terrainObj = Terrain.CreateTerrainGameObject(terrainData);
+            terrainObj.name = "FallbackTerrain";
+            _terrain = terrainObj.GetComponent<Terrain>();
+            _terrainWorldSize = fallbackTerrainSize;
+
+            var collider = terrainObj.GetComponent<TerrainCollider>();
+            if (collider != null) collider.terrainData = terrainData;
+        }
+
+        // ============================
+        // OPD OBJE YERLEŞİMİ
+        // ============================
+
+        private void LoadObjects()
+        {
+            var zoneInfo = KOZoneMapper.GetZoneInfo(_currentZoneId);
+            if (zoneInfo == null)
+            {
+                Debug.LogError($"[WORLD] ZoneInfo bulunamadı (zone={_currentZoneId})!");
+                return;
+            }
+
+            string opdPath = System.IO.Path.Combine("", "Zones", zoneInfo.OpdFile);
+            Debug.Log($"[WORLD] OPD yükleniyor: {opdPath} (exists={KOBinaryProvider.Exists(opdPath)})");
+
+            if (!KOBinaryProvider.Exists(opdPath))
+            {
+                Debug.LogError($"[WORLD] OPD bulunamadı: {opdPath}");
+                return;
+            }
+
+            // Tam N3Shape parse (collision + tüm shape'ler)
+            N3ShapeParser.OpdFullData opdFull = null;
+            try
+            {
+                opdFull = N3ShapeParser.ParseFull(opdPath);
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError($"[WORLD] OPD parse exception: {ex.Message}\n{ex.StackTrace}");
+            }
+
+            if (opdFull == null || opdFull.Shapes.Count == 0)
+            {
+                Debug.LogWarning($"[WORLD] OPD parse başarısız veya shape yok (opdFull={opdFull != null}, shapes={opdFull?.Shapes?.Count ?? 0}), fallback kullanılıyor.");
+                LoadObjectsFallback(opdPath);
+                return;
+            }
+
+            // Try loading PVS for indoor zone
+            string pvsPath = System.IO.Path.Combine("", "Zones", System.IO.Path.GetFileNameWithoutExtension(zoneInfo.GtdFile) + ".pvs");
+            bool usePvs = false;
+            if (KOBinaryProvider.Exists(pvsPath))
+            {
+                Debug.Log($"[WORLD] PVS dosyası bulundu: {pvsPath}, yükleniyor...");
+                _pvsManager = new KOPvsManager();
+                try
+                {
+                    using (var pvsReader = KOBinaryProvider.OpenReader(pvsPath))
+                    {
+                        if (pvsReader != null)
+                        {
+                            usePvs = _pvsManager.Load(pvsReader);
+                        }
+                    }
+                }
+                catch (System.Exception ex)
+                {
+                    Debug.LogError($"[WORLD] PVS parse exception: {ex.Message}\n{ex.StackTrace}");
+                    _pvsManager = null;
+                    usePvs = false;
+                }
+            }
+
+            _objectsParent = new GameObject("KOObjects");
+            int placed = 0;
+
+            _meshLoaded = 0; _meshFailed = 0; _texLoaded = 0;
+
+            if (usePvs)
+            {
+                // Instantiate shapes using PVS global shape list
+                foreach (var pSI in KOPvsManager.s_plShapeInfoList)
+                {
+                    string shapePath = pSI.ShapeFile;
+                    shapePath = shapePath.Replace('\\', '/');
+
+                    N3ShapeParser.N3ShapeData shapeData = null;
+                    try
+                    {
+                        shapeData = N3ShapeParser.ParseShapeFile(shapePath);
+                    }
+                    catch (System.Exception ex)
+                    {
+                        Debug.LogError($"[WORLD] PVS Shape parse exception: {ex.Message} for file: {shapePath}");
+                    }
+
+                    if (shapeData == null)
+                    {
+                        Debug.LogWarning($"[WORLD] PVS Shape parse failed: {shapePath}, skipping.");
+                        continue;
+                    }
+
+                    var shapeObj = new GameObject(string.IsNullOrEmpty(pSI.Name) ? $"Shape_{placed}" : pSI.Name);
+                    shapeObj.transform.SetParent(_objectsParent.transform);
+                    shapeObj.transform.position = pSI.Position;
+                    shapeObj.transform.rotation = pSI.Rotation;
+                    shapeObj.transform.localScale = pSI.Scale;
+
+                    if (shapeData.Parts != null && shapeData.Parts.Count > 0)
+                    {
+                        foreach (var part in shapeData.Parts)
+                        {
+                            CreatePartObject(shapeObj.transform, part, placed);
+                        }
+                    }
+                    else
+                    {
+                        var cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                        cube.name = "NoPartPlaceholder";
+                        cube.transform.SetParent(shapeObj.transform);
+                        cube.transform.localPosition = Vector3.zero;
+                        cube.transform.localScale = Vector3.one * 2f;
+                        cube.GetComponent<Renderer>().material = CreateMaterial(new Color(0.5f, 0.45f, 0.4f));
+                    }
+
+                    // Populate SpawnedGameObjects in pSI
+                    pSI.SpawnedGameObjects.Clear();
+                    if (shapeData.Parts != null)
+                    {
+                        for (int p = 0; p < shapeData.Parts.Count; p++)
+                        {
+                            if (p < shapeObj.transform.childCount)
+                            {
+                                var childGo = shapeObj.transform.GetChild(p).gameObject;
+                                pSI.SpawnedGameObjects.Add(childGo);
+                                _pvsManager.RegisterSpawnedObject(childGo);
+                            }
+                        }
+                    }
+
+                    if (pSI.EventID != 0)
+                    {
+                        var worldEvent = shapeObj.AddComponent<KOWorldEvent>();
+                        worldEvent.EventID = pSI.EventID;
+                        worldEvent.EventType = pSI.EventType;
+                        worldEvent.NPC_ID = pSI.NPC_ID;
+
+                        var meshFilters = shapeObj.GetComponentsInChildren<MeshFilter>();
+                        foreach (var mfEvt in meshFilters)
+                        {
+                            if (mfEvt.sharedMesh != null)
+                            {
+                                var mc = mfEvt.gameObject.AddComponent<MeshCollider>();
+                                mc.sharedMesh = mfEvt.sharedMesh;
+                                mc.convex = false;
+                            }
+                        }
+                    }
+
+                    placed++;
+                }
+
+                var player = GameObject.FindGameObjectWithTag("Player") ?? GameObject.Find("Player");
+                if (player != null)
+                {
+                    _pvsManager.Tick(player.transform.position, true);
+                }
+
+                Debug.Log($"[WORLD] ✅ {placed} shapes yerleştirildi (PVS ile)");
+            }
+            else
+            {
+                // Standard OPD shape loading
+                foreach (var shape in opdFull.Shapes)
+                {
+                    var t = shape.Transform;
+                    if (t == null) continue;
+
+                    // Sıfır pozisyonlu shape'leri atla
+                    if (t.Position.sqrMagnitude < 0.001f) continue;
+
+                    // Shape GameObject oluştur
+                    var shapeObj = new GameObject(
+                        string.IsNullOrEmpty(t.Name) ? $"Shape_{placed}" : t.Name);
+                    shapeObj.transform.SetParent(_objectsParent.transform);
+
+                    // KO koordinat sistemi birebir — terrain de aynı uzayda
+                    shapeObj.transform.position = t.Position;
+
+                    // KO quaternion → Unity quaternion
+                    if (t.Rotation.w != 0 || t.Rotation.x != 0 ||
+                        t.Rotation.y != 0 || t.Rotation.z != 0)
+                    {
+                        shapeObj.transform.rotation = t.Rotation;
+                    }
+
+                    shapeObj.transform.localScale = t.Scale;
+
+                    // 🔍 SHAPE DUMP: Tüm shape verilerini CSV dosyasına yaz (ilk 100)
+                    if (placed == 0)
+                    {
+                        float tBaseY = _terrain != null ? _terrain.transform.position.y : float.NaN;
+                        Debug.Log($"[DIAG] TerrainBaseY={tBaseY.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)} " +
+                                  $"TerrainSize={(_terrain != null ? _terrain.terrainData.size.ToString() : "N/A")}");
+                        _shapeDumpPath = System.IO.Path.Combine(Application.persistentDataPath, "shape_dump.csv");
+                        try
+                        {
+                            System.IO.File.WriteAllText(_shapeDumpPath,
+                                "idx|name|px|py|pz|qx|qy|qz|qw|sx|sy|sz|terrainY|diffY|parts\n");
+                            Debug.Log($"[DIAG] Shape dump dosyası: {_shapeDumpPath}");
+                        }
+                        catch { _shapeDumpPath = null; }
+                    }
+                    if (_shapeDumpPath != null && placed < 3000)
+                    {
+                        var ci = System.Globalization.CultureInfo.InvariantCulture;
+                        float tw = _terrain != null
+                            ? _terrain.SampleHeight(t.Position) + _terrain.transform.position.y : 0f;
+                        float dy = t.Position.y - tw;
+                        string line = string.Format(ci,
+                            "{0}|{1}|{2:F3}|{3:F3}|{4:F3}|{5:F5}|{6:F5}|{7:F5}|{8:F5}|{9:F3}|{10:F3}|{11:F3}|{12:F3}|{13:F3}|{14}\n",
+                            placed, t.Name ?? "",
+                            t.Position.x, t.Position.y, t.Position.z,
+                            t.Rotation.x, t.Rotation.y, t.Rotation.z, t.Rotation.w,
+                            t.Scale.x, t.Scale.y, t.Scale.z,
+                            tw, dy, shape.Parts?.Count ?? 0);
+                        try { System.IO.File.AppendAllText(_shapeDumpPath, line); } catch { }
+                    }
+
+                    // Her part için child mesh oluştur
+                    if (shape.Parts != null && shape.Parts.Count > 0)
+                    {
+                        foreach (var part in shape.Parts)
+                        {
+                            CreatePartObject(shapeObj.transform, part, placed);
+                        }
+                    }
+                    else
+                    {
+                        // Part yoksa basit küp placeholder
+                        var cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                        cube.name = "NoPartPlaceholder";
+                        cube.transform.SetParent(shapeObj.transform);
+                        cube.transform.localPosition = Vector3.zero;
+                        cube.transform.localScale = Vector3.one * 2f;
+                        cube.GetComponent<Renderer>().material = CreateMaterial(
+                            new Color(0.5f, 0.45f, 0.4f));
+                    }
+
+                    if (shape.EventID != 0)
+                    {
+                        var worldEvent = shapeObj.AddComponent<KOWorldEvent>();
+                        worldEvent.EventID = shape.EventID;
+                        worldEvent.EventType = shape.EventType;
+                        worldEvent.NPC_ID = shape.NPC_ID;
+
+                        // MeshCollider ekle — raycast ile tıklanabilir olması için
+                        // Child mesh'lerden birini kullan
+                        var meshFilters = shapeObj.GetComponentsInChildren<MeshFilter>();
+                        foreach (var mfEvt in meshFilters)
+                        {
+                            if (mfEvt.sharedMesh != null)
+                            {
+                                var mc = mfEvt.gameObject.AddComponent<MeshCollider>();
+                                mc.sharedMesh = mfEvt.sharedMesh;
+                                mc.convex = false;
+                            }
+                        }
+
+                        Debug.Log($"[WORLD] Event shape: {t.Name} EventID={shape.EventID} " +
+                                  $"EventType={shape.EventType} NPC_ID={shape.NPC_ID} " +
+                                  $"pos=({t.Position.x:F1},{t.Position.y:F1},{t.Position.z:F1})");
+                    }
+
+                    placed++;
+                }
+
+                Debug.Log($"[WORLD] ✅ {placed} shape yerleştirildi — " +
+                          $"mesh: {_meshLoaded} yüklendi, {_meshFailed} placeholder, " +
+                          $"texture: {_texLoaded} yüklendi");
+            }
+
+            // OPD collision sistemi başlat — tüm shape'ler yüklendikten sonra
+            // MeshCollider yerine tek birleşik OPD collision mesh kullanılır
+            var collisionObj = new GameObject("KOCollisionManager");
+            collisionObj.transform.SetParent(transform, false);
+            var collisionMgr = collisionObj.AddComponent<KOCollisionManager>();
+            collisionMgr.Initialize(opdFull);
+        }
+
+        /// <summary>
+        /// Spawns a 3D loot box at the specified position.
+        /// Parses the shape file and instantiates its parts.
+        /// </summary>
+        public GameObject SpawnLootBox(Vector3 position, long bundleId, KOEntity corpse)
+        {
+            var shapeData = N3ShapeParser.ParseShapeFile("Misc/itembox.n3shape");
+            if (shapeData == null)
+            {
+                Debug.LogError("[LOOT] itembox.n3shape yüklenemedi!");
+                return null;
+            }
+
+            var shapeObj = new GameObject($"LootBox_{bundleId}");
+            shapeObj.transform.position = position;
+            shapeObj.transform.rotation = Quaternion.identity;
+            shapeObj.transform.localScale = new Vector3(1.6f, 1.6f, 1.6f);
+
+            if (shapeData.Parts != null)
+            {
+                foreach (var part in shapeData.Parts)
+                {
+                    CreatePartObject(shapeObj.transform, part, -99);
+                }
+            }
+
+            // Attach KOLootBox component
+            var lootBox = shapeObj.AddComponent<KOLootBox>();
+            lootBox.BundleID = bundleId;
+            lootBox.CorpseEntity = corpse;
+
+            // Compute bounds and add a BoxCollider for raycast selection
+            var renderers = shapeObj.GetComponentsInChildren<MeshRenderer>();
+            if (renderers.Length > 0)
+            {
+                Bounds bounds = renderers[0].bounds;
+                for (int i = 1; i < renderers.Length; i++)
+                {
+                    bounds.Encapsulate(renderers[i].bounds);
+                }
+                var col = shapeObj.AddComponent<BoxCollider>();
+                col.center = shapeObj.transform.InverseTransformPoint(bounds.center);
+                col.size = bounds.size;
+                col.isTrigger = true;
+            }
+            else
+            {
+                var col = shapeObj.AddComponent<BoxCollider>();
+                col.size = Vector3.one;
+                col.isTrigger = true;
+            }
+
+            // Attach KOLootBoxInteractButton
+            var interactBtn = shapeObj.AddComponent<KOLootBoxInteractButton>();
+            interactBtn.Initialize(lootBox);
+
+            return shapeObj;
+        }
+
+        /// <summary>
+        /// N3SPart verilerinden child mesh objesi oluşturur.
+        /// .N3PMesh dosyasından gerçek mesh verisi yüklenir.
+        /// Dosya bulunamazsa placeholder küp kullanılır.
+        /// </summary>
+        private void CreatePartObject(Transform parent, N3ShapeParser.N3PartData part, int shapeIdx)
+        {
+            string partName = string.IsNullOrEmpty(part.MeshFileName)
+                ? $"Part_{shapeIdx}" : System.IO.Path.GetFileName(part.MeshFileName);
+
+            // Materyal: shape'in orijinal diffuse rengini kullan
+            Color diffuse = part.Material != null ? part.Material.Diffuse : Color.gray;
+            if (diffuse.r < 0.01f && diffuse.g < 0.01f && diffuse.b < 0.01f)
+                diffuse = new Color(0.5f, 0.48f, 0.45f);
+
+            // .N3PMesh dosyasını yüklemeyi dene
+            Mesh unityMesh = null;
+            N3PMeshImporter.N3PMeshData lodMeshData = null;
+            if (!string.IsNullOrEmpty(part.MeshFileName))
+            {
+                // === Resources.Load fallback: convert edilmiş mesh ===
+                string meshBaseName = System.IO.Path.GetFileNameWithoutExtension(part.MeshFileName);
+                unityMesh = Resources.Load<Mesh>($"KOModels/Object/Meshes/{meshBaseName}");
+
+                // === Fallback: parse ===
+                if (unityMesh == null)
+                {
+                    string meshRelPath = part.MeshFileName.Replace('\\', '/');
+                    string meshFullPath = System.IO.Path.Combine("", meshRelPath);
+
+                    if (!KOBinaryProvider.Exists(meshFullPath))
+                    {
+                        string meshName = System.IO.Path.GetFileName(meshRelPath);
+                        string altPath = System.IO.Path.Combine("", "Object", meshName);
+                        if (KOBinaryProvider.Exists(altPath))
+                            meshFullPath = altPath;
+                    }
+
+                    if (KOBinaryProvider.Exists(meshFullPath))
+                    {
+                        lodMeshData = N3PMeshImporter.Load(meshFullPath);
+                        if (lodMeshData != null)
+                        {
+                            unityMesh = N3PMeshImporter.CreateUnityMesh(lodMeshData);
+                        }
+                    }
+                }
+            }
+
+            GameObject partObj;
+            if (unityMesh != null)
+            {
+                // Gerçek mesh kullan
+                partObj = new GameObject(partName);
+                var mf = partObj.AddComponent<MeshFilter>();
+                mf.mesh = unityMesh;
+                var mr = partObj.AddComponent<MeshRenderer>();
+
+                // Texture yüklemeyi dene
+                Material mat = CreateMeshMaterial(part, diffuse);
+                mr.material = mat;
+
+                _meshLoaded++;
+
+                // Open-KO birebir: KOShapeLOD component ekle (CN3SPart::Tick LOD)
+                // LOD verisi olan mesh'ler için progressive mesh LOD sistemi
+                if (lodMeshData != null && lodMeshData.Collapses != null &&
+                    lodMeshData.Collapses.Length > 0 && lodMeshData.MinLODIndices != null)
+                {
+                    var lod = partObj.AddComponent<KOShapeLOD>();
+                    lod.Initialize(lodMeshData, mf, mr);
+                }
+            }
+            else
+            {
+                // Placeholder küp
+                partObj = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                partObj.name = partName;
+                partObj.transform.localScale = Vector3.one * 2f;
+                partObj.GetComponent<Renderer>().material = CreateMaterial(diffuse);
+                _meshFailed++;
+            }
+
+            partObj.transform.SetParent(parent, false);
+            partObj.transform.localPosition = part.Pivot;
+            partObj.transform.localRotation = Quaternion.identity;
+            partObj.transform.localScale = Vector3.one;
+
+            // RF_BOARD_Y (0x8) — Y ekseni billboard (CN3SPart::Tick, N3Shape.cpp:108-128)
+            uint renderFlags = part.Material != null ? part.Material.RenderFlags : 0;
+            if ((renderFlags & 0x8) != 0)
+            {
+                partObj.AddComponent<BillboardY>();
+            }
+
+            // RF_WINDY (0x20) — Rüzgar salınım efekti (CN3SPart::Tick, N3Shape.cpp:131-173)
+            if ((renderFlags & 0x20) != 0)
+            {
+                partObj.AddComponent<WindyPart>();
+            }
+
+            // Texture Animation (CN3SPart::Tick, N3Shape.cpp:99-106)
+            // Part'ın birden fazla texture'ı varsa FPS bazlı döngü
+            if (part.TextureFileNames != null && part.TextureFileNames.Count > 1)
+            {
+                var texList = new System.Collections.Generic.List<Texture2D>();
+                foreach (string texRelPath in part.TextureFileNames)
+                {
+                    string path = texRelPath.Replace('\\', '/');
+                    string texBaseName = System.IO.Path.GetFileNameWithoutExtension(path);
+                    Texture2D t = null;
+
+                    // === Resources.Load fallback ===
+                    string[] texSearchDirs = { "Object", "Chr", "Item", "DTex", "Misc" };
+                    foreach (var dir in texSearchDirs)
+                    {
+                        t = Resources.Load<Texture2D>($"KOTextures/{dir}/{texBaseName}");
+                        if (t != null) break;
+                    }
+
+                    // === Fallback ===
+                    if (t == null)
+                    {
+                        string fullPath = System.IO.Path.Combine("", path);
+                        if (!KOBinaryProvider.Exists(fullPath))
+                        {
+                            string texName = System.IO.Path.GetFileName(path);
+                            string altPath = System.IO.Path.Combine("", "Object", texName);
+                            if (KOBinaryProvider.Exists(altPath))
+                                fullPath = altPath;
+                        }
+                        if (KOBinaryProvider.Exists(fullPath))
+                            t = KOTextureProvider.Load(fullPath, flipY: false);
+                    }
+                    texList.Add(t);
+                }
+                if (texList.Count > 1)
+                {
+                    var anim = partObj.AddComponent<TextureAnimPart>();
+                    // C++ varsayılan: m_fTexFPS = 10.0f (N3Shape.cpp:17)
+                    anim.Initialize(texList.ToArray(), part.TexFPS > 0 ? part.TexFPS : 10.0f);
+                }
+            }
+        }
+
+        private Material CreateMeshMaterial(N3ShapeParser.N3PartData part, Color diffuse)
+        {
+            // Part'ın ilk texture'ını yüklemeyi dene
+            Texture2D tex = null;
+            if (part.TextureFileNames != null && part.TextureFileNames.Count > 0)
+            {
+                string texRelPath = part.TextureFileNames[0].Replace('\\', '/');
+                if (!string.IsNullOrEmpty(texRelPath))
+                {
+                    // === Resources.Load fallback: convert edilmiş texture ===
+                    string texBaseName = System.IO.Path.GetFileNameWithoutExtension(texRelPath);
+                    string[] texSearchDirs = { "Object", "Chr", "Item", "ChrSelect", "DTex", "Misc" };
+                    foreach (var dir in texSearchDirs)
+                    {
+                        tex = Resources.Load<Texture2D>($"KOTextures/{dir}/{texBaseName}");
+                        if (tex != null) break;
+                    }
+
+                    // === Fallback: DXT yükle ===
+                    if (tex == null)
+                    {
+                        string texFullPath = System.IO.Path.Combine("", texRelPath);
+                        if (!KOBinaryProvider.Exists(texFullPath))
+                        {
+                            string texName = System.IO.Path.GetFileName(texRelPath);
+                            string altPath = System.IO.Path.Combine("", "Object", texName);
+                            if (KOBinaryProvider.Exists(altPath))
+                                texFullPath = altPath;
+                        }
+                        if (KOBinaryProvider.Exists(texFullPath))
+                        {
+                            tex = KOTextureProvider.Load(texFullPath, flipY: false);
+                        }
+                    }
+                }
+            }
+
+            if (tex != null)
+            {
+                _texLoaded++;
+                var shader = Shader.Find("Universal Render Pipeline/Lit");
+                if (shader == null) shader = Shader.Find("Standard");
+                var mat = new Material(shader);
+                if (mat.HasProperty("_BaseMap"))
+                    mat.SetTexture("_BaseMap", tex);
+                else
+                    mat.mainTexture = tex;
+                if (mat.HasProperty("_BaseColor"))
+                    mat.SetColor("_BaseColor", Color.white);
+                else
+                    mat.color = Color.white;
+
+                // C++ __Material render flags (My_3DStruct.h:78-89)
+                uint renderFlags = part.Material != null ? part.Material.RenderFlags : 0;
+
+                // RF_ALPHABLENDING (0x1) — C++ My_3DStruct.h:79
+                // C++ CN3SPart::Render: D3DRS_ALPHABLENDENABLE = TRUE
+                //   + D3DRS_SRCBLEND = mat.dwSrcBlend
+                //   + D3DRS_DESTBLEND = mat.dwDestBlend
+                //
+                // D3DBLEND constants (d3d9types.h):
+                //   D3DBLEND_ZERO = 1
+                //   D3DBLEND_ONE = 2
+                //   D3DBLEND_SRCCOLOR = 3
+                //   D3DBLEND_INVSRCCOLOR = 4
+                //   D3DBLEND_SRCALPHA = 5
+                //   D3DBLEND_INVSRCALPHA = 6
+                //   D3DBLEND_DESTALPHA = 7
+                //   D3DBLEND_INVDESTALPHA = 8
+                //   D3DBLEND_DESTCOLOR = 9
+                //   D3DBLEND_INVDESTCOLOR = 10
+                bool hasAlphaBlend = (renderFlags & 0x1) != 0;
+                // RF_DIFFUSEALPHA (0x80) — Diffuse alpha kullanarak blending
+                bool hasDiffuseAlpha = (renderFlags & 0x80) != 0;
+                // RF_NOTZWRITE (0x100) — Z buffer yazma kapalı
+                bool noZWrite = (renderFlags & 0x100) != 0;
+                // RF_NOTZBUFFER (0x400) — Z buffer tamamen kapalı
+                bool noZBuffer = (renderFlags & 0x400) != 0;
+
+                uint srcBlend = part.Material != null ? part.Material.SrcBlend : 0;
+                uint destBlend = part.Material != null ? part.Material.DestBlend : 0;
+
+                // Additive blend tanıma: siyah pikselleri saydam yapar
+                // D3DBLEND_ONE(2) + D3DBLEND_ONE(2) = pure additive
+                // D3DBLEND_SRCALPHA(5) + D3DBLEND_ONE(2) = pre-multiplied additive
+                // D3DBLEND_ONE(2) + D3DBLEND_INVSRCALPHA(6) = pre-multiplied alpha
+                bool isAdditiveBlend = hasAlphaBlend && (
+                    (srcBlend == 2 && destBlend == 2) ||   // ONE + ONE
+                    (srcBlend == 5 && destBlend == 2) ||   // SRCALPHA + ONE
+                    (srcBlend == 2 && destBlend == 6));     // ONE + INVSRCALPHA
+
+                if (isAdditiveBlend)
+                {
+                    // Additive blending — siyah piksel saydam olur (ateş, ışınlanma, decal efektleri)
+                    mat.SetFloat("_Surface", 1); // Transparent
+                    mat.SetOverrideTag("RenderType", "Transparent");
+                    mat.renderQueue = (int)UnityEngine.Rendering.RenderQueue.Transparent;
+                    mat.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.One);
+                    mat.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.One);
+                    mat.SetFloat("_ZWrite", 0);
+                    mat.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+                    mat.DisableKeyword("_ALPHATEST_ON");
+                    if (mat.HasProperty("_AlphaClip"))
+                        mat.SetFloat("_AlphaClip", 0);
+                    if (mat.HasProperty("_Cull"))
+                        mat.SetFloat("_Cull", 0); // Cull Off
+                }
+                else if (hasAlphaBlend || hasDiffuseAlpha)
+                {
+                    // Standard alpha blending — SrcAlpha + InvSrcAlpha
+                    mat.SetFloat("_Surface", 1);
+                    mat.SetOverrideTag("RenderType", "Transparent");
+                    mat.renderQueue = (int)UnityEngine.Rendering.RenderQueue.Transparent;
+                    mat.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+                    mat.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+                    mat.SetFloat("_ZWrite", 0);
+                    mat.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+                    if (mat.HasProperty("_Cull"))
+                        mat.SetFloat("_Cull", 0); // Cull Off
+                }
+                else
+                {
+                    // Non-alpha-blend: Alpha cutout (DXT1/3/5 alpha için)
+                    // C++ CN3SPart::Render: D3DRS_ALPHATESTENABLE = TRUE, D3DCMP_GREATER, ALPHAREF=0x88
+                    // 0x88 / 0xFF = 0.533
+                    // Sadece texture gerçekten alpha içeriyorsa uygula (opak texture'ları bozma)
+                    bool texHasAlpha = HasTransparentPixels(tex);
+                    if (texHasAlpha && mat.HasProperty("_AlphaClip"))
+                    {
+                        mat.SetFloat("_AlphaClip", 1);
+                        mat.SetFloat("_Cutoff", 0.53f);
+                        mat.SetOverrideTag("RenderType", "TransparentCutout");
+                        mat.renderQueue = (int)UnityEngine.Rendering.RenderQueue.AlphaTest;
+                        mat.EnableKeyword("_ALPHATEST_ON");
+                    }
+                }
+
+                // RF_NOTZWRITE (0x100) veya RF_NOTZBUFFER (0x400) — Z write kapalı
+                if (noZWrite || noZBuffer)
+                {
+                    mat.SetFloat("_ZWrite", 0);
+                }
+
+                // RF_ALPHABLENDING (0x1) veya RF_BOARD_Y (0x8): çift taraflı render
+                bool needsDoubleSided = (renderFlags & 0x1) != 0 || (renderFlags & 0x8) != 0;
+                if (needsDoubleSided)
+                {
+                    if (mat.HasProperty("_Cull"))
+                        mat.SetFloat("_Cull", 0); // Cull Off
+                }
+
+                // RF_DOUBLESIDED (0x4) — Çift taraflı render (D3DCULL_NONE)
+                if ((renderFlags & 0x4) != 0)
+                {
+                    if (mat.HasProperty("_Cull"))
+                        mat.SetFloat("_Cull", 0); // 0 = Off (D3DCULL_NONE)
+                }
+
+                // RF_POINTSAMPLING (0x10) — MipMap Point Sampling
+                // C++ CN3SPart::Render: D3DTSS_MINFILTER/MAGFILTER = D3DTEXF_POINT
+                if ((renderFlags & 0x10) != 0 && tex != null)
+                {
+                    tex.filterMode = FilterMode.Point;
+                }
+
+                // RF_NOTUSELIGHT (0x40) — Aydınlatma kapalı (Light Off)
+                // C++ CN3SPart::Render: D3DRS_LIGHTING = FALSE
+                if ((renderFlags & 0x40) != 0)
+                {
+                    // Unlit shader'a geç — ama alpha handling'i de uygula!
+                    var unlitShader = Shader.Find("Universal Render Pipeline/Unlit");
+                    if (unlitShader == null) unlitShader = Shader.Find("Unlit/Texture");
+                    if (unlitShader != null)
+                    {
+                        var unlitMat = new Material(unlitShader);
+                        if (unlitMat.HasProperty("_BaseMap"))
+                            unlitMat.SetTexture("_BaseMap", tex);
+                        else
+                            unlitMat.mainTexture = tex;
+                        if (unlitMat.HasProperty("_BaseColor"))
+                            unlitMat.SetColor("_BaseColor", Color.white);
+
+                        // Alpha handling — unlit shader'da da uygulanmalı
+                        if (isAdditiveBlend)
+                        {
+                            // Additive blending (ateş efektleri: siyah=saydam)
+                            unlitMat.SetFloat("_Surface", 1);
+                            unlitMat.SetOverrideTag("RenderType", "Transparent");
+                            unlitMat.renderQueue = (int)UnityEngine.Rendering.RenderQueue.Transparent;
+                            unlitMat.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.One);
+                            unlitMat.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.One);
+                            unlitMat.SetFloat("_ZWrite", 0);
+                            unlitMat.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+                            if (unlitMat.HasProperty("_Cull"))
+                                unlitMat.SetFloat("_Cull", 0);
+                        }
+                        else if (hasAlphaBlend || hasDiffuseAlpha)
+                        {
+                            // Standard alpha blending
+                            unlitMat.SetFloat("_Surface", 1);
+                            unlitMat.SetOverrideTag("RenderType", "Transparent");
+                            unlitMat.renderQueue = (int)UnityEngine.Rendering.RenderQueue.Transparent;
+                            unlitMat.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+                            unlitMat.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+                            unlitMat.SetFloat("_ZWrite", 0);
+                            unlitMat.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+                            if (unlitMat.HasProperty("_Cull"))
+                                unlitMat.SetFloat("_Cull", 0);
+                        }
+                        else if (unlitMat.HasProperty("_AlphaClip"))
+                        {
+                            // Alpha cutout (ağaçlar, çimenler)
+                            unlitMat.SetFloat("_AlphaClip", 1);
+                            unlitMat.SetFloat("_Cutoff", 0.5f);
+                            unlitMat.SetOverrideTag("RenderType", "TransparentCutout");
+                            unlitMat.renderQueue = (int)UnityEngine.Rendering.RenderQueue.AlphaTest;
+                            unlitMat.EnableKeyword("_ALPHATEST_ON");
+                        }
+
+                        // Cull off — unlit+alpha objeleri genellikle çift taraflı
+                        if ((renderFlags & 0x4) != 0 || hasAlphaBlend)
+                        {
+                            if (unlitMat.HasProperty("_Cull"))
+                                unlitMat.SetFloat("_Cull", 0);
+                        }
+
+                        return unlitMat;
+                    }
+                }
+
+                // RF_DIFFUSEALPHA (0x80) — Diffuse renk alfa ile alpha blending
+                // C++ CN3SPart::Render: D3DRS_ALPHABLENDENABLE + diffuse alpha
+                if ((renderFlags & 0x80) != 0)
+                {
+                    if (mat.HasProperty("_Surface"))
+                        mat.SetFloat("_Surface", 1); // Transparent
+                    mat.SetOverrideTag("RenderType", "Transparent");
+                    mat.renderQueue = (int)UnityEngine.Rendering.RenderQueue.Transparent;
+                    if (mat.HasProperty("_Blend"))
+                        mat.SetFloat("_Blend", 1); // Alpha
+                }
+
+                // RF_NOTZWRITE (0x100) — ZBuffer'a yazma (Z-Write Off)
+                // C++ CN3SPart::Render: D3DRS_ZWRITEENABLE = FALSE
+                if ((renderFlags & 0x100) != 0)
+                {
+                    if (mat.HasProperty("_ZWrite"))
+                        mat.SetFloat("_ZWrite", 0);
+                }
+
+                // RF_UV_CLAMP (0x200) — Texture UV modunu Clamp'e ayarla
+                if ((renderFlags & 0x200) != 0 && tex != null)
+                {
+                    tex.wrapMode = TextureWrapMode.Clamp;
+                }
+
+                // RF_NOTZBUFFER (0x400) — ZBuffer testi kapalı (ZTest Always)
+                // C++ CN3SPart::Render: D3DRS_ZENABLE = FALSE
+                if ((renderFlags & 0x400) != 0)
+                {
+                    if (mat.HasProperty("_ZTest"))
+                        mat.SetFloat("_ZTest", (float)UnityEngine.Rendering.CompareFunction.Always);
+                }
+
+                return mat;
+            }
+            else
+            {
+                // Sadece diffuse renkli materyal
+                return CreateMaterial(diffuse);
+            }
+        }
+
+        /// <summary>
+        /// N3ShapeParser başarısız olursa collision-based fallback.
+        /// </summary>
+        private void LoadObjectsFallback(string opdPath)
+        {
+            var opdData = OpdObjectImporter.Parse(opdPath);
+            if (opdData == null || opdData.Objects.Count == 0) return;
+
+            _objectsParent = new GameObject("KOObjects_Fallback");
+            int placed = 0;
+
+            Color[] colors = {
+                new Color(0.5f, 0.45f, 0.4f),
+                new Color(0.4f, 0.35f, 0.3f),
+                new Color(0.55f, 0.5f, 0.45f),
+            };
+
+            foreach (var obj in opdData.Objects)
+            {
+                var size = obj.Size;
+                if (size.x > 100f || size.z > 100f || size.y > 80f) continue;
+                if (size.x < 2f && size.z < 2f) continue;
+
+                var cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                cube.name = $"Obj_{placed}";
+                cube.transform.SetParent(_objectsParent.transform);
+                cube.transform.position = obj.Center;
+                cube.transform.localScale = size;
+                cube.GetComponent<Renderer>().material = CreateMaterial(colors[placed % colors.Length]);
+                placed++;
+            }
+
+            Debug.Log($"[WORLD] {placed} obje yerleştirildi (fallback collision AABB)");
+        }
+
+        // ============================
+        // GÖKYÜZÜ & SİS
+        // ============================
+
+        private void CreateSkyAndFog()
+        {
+            // --- N3Sky dosyasından zone ortam verisini yükle ---
+            // Open-KO: N3TerrainManager::InitWorld → m_pSky->LoadFromFile(pZone->szSkySetting)
+            var zoneInfo = KOZoneMapper.GetZoneInfo(_currentZoneId);
+            N3SkyImporter.N3SkyData skyData = null;
+
+            if (zoneInfo != null && !string.IsNullOrEmpty(zoneInfo.SkyFile))
+            {
+                string skyPath = System.IO.Path.Combine("", zoneInfo.SkyFile);
+                skyData = N3SkyImporter.Load(skyPath);
+            }
+
+            // --- Oyun saati hesapla ---
+            // Open-KO: SetCheckGameTime(CONVERT_SEC(10, 0, 0)) — varsayılan sabah 10:00
+            // FixedSunDirection > 0 ise o saati kullan
+            uint gameTimeSec = 10 * 3600; // 10:00 AM default
+            if (zoneInfo != null && zoneInfo.FixedSunDirection > 0)
+                gameTimeSec = (uint)(zoneInfo.FixedSunDirection * 3600);
+
+            // --- Sky Color ---
+            Color skyColor = new Color(0.45f, 0.55f, 0.75f); // fallback
+            Color fogColor = new Color(0.6f, 0.65f, 0.75f);  // fallback
+            Color light0Color = Color.white;                   // fallback
+
+            if (skyData != null)
+            {
+                skyColor = N3SkyImporter.GetSkyColorAtTime(skyData, gameTimeSec);
+                fogColor = N3SkyImporter.GetFogColorAtTime(skyData, gameTimeSec);
+                light0Color = N3SkyImporter.GetLight0ColorAtTime(skyData, gameTimeSec);
+
+                Debug.Log($"[N3Sky] Saat {gameTimeSec / 3600}:00 → " +
+                          $"sky=({skyColor.r:F2},{skyColor.g:F2},{skyColor.b:F2}), " +
+                          $"fog=({fogColor.r:F2},{fogColor.g:F2},{fogColor.b:F2}), " +
+                          $"light0=({light0Color.r:F2},{light0Color.g:F2},{light0Color.b:F2})");
+            }
+
+            // --- Skybox ---
+            var skyMat = new Material(Shader.Find("Skybox/Procedural"));
+            if (skyMat != null)
+            {
+                skyMat.SetColor("_SkyTint", skyColor);
+                skyMat.SetColor("_GroundColor", fogColor * 0.6f);
+                skyMat.SetFloat("_Exposure", 1.1f);
+                skyMat.SetFloat("_SunSize", 0.06f);
+                skyMat.SetFloat("_AtmosphereThickness", 1.2f);
+                RenderSettings.skybox = skyMat;
+            }
+
+            // Fog kapalı — terrain üzerinde yarı saydam kaplama oluşturuyordu
+            RenderSettings.fog = false;
+
+            // --- Sun/Directional Light rengini N3Sky Light0 verisiyle güncelle ---
+            // Kullanıcı ek Unity ışığı istemiyor — sun intensity=0, color güncellemeye gerek yok
+            // if (_sun != null)
+            // {
+            //     _sun.color = light0Color;
+            // }
+
+            // --- Ambient ---
+            // Kullanıcı ek Unity ışıklandırması istemiyor — ambient=white tutularak
+            // texture renkleri olduğu gibi görünsün
+            RenderSettings.ambientLight = Color.white;
+
+        }
+
+        // ============================
+        // YARDIMCI
+        // ============================
+
+        /// <summary>
+        /// Verilen dünya koordinatındaki terrain + collision yüksekliğini döndürür.
+        /// KOCollisionManager varsa kombine yükseklik (max terrain, collision) kullanılır.
+        /// </summary>
+        public float GetTerrainHeight(float x, float z)
+        {
+            if (IsIndoor)
+            {
+                if (KOCollisionManager.Instance != null)
+                    return KOCollisionManager.Instance.GetHeight(x, z);
+                return 0f;
+            }
+
+            // OPD collision sistemi aktifse kombine yükseklik kullan
+            if (KOCollisionManager.Instance != null)
+                return KOCollisionManager.Instance.GetCombinedHeight(x, z, _terrain);
+
+            // Fallback: sadece terrain
+            if (_terrain != null)
+                return _terrain.transform.position.y + _terrain.SampleHeight(new Vector3(x, 0, z));
+
+            return 0f;
+        }
+
+        /// <summary>Terrain'in dünya boyutu (metre).</summary>
+        public float TerrainWorldSize => _terrainWorldSize;
+
+        private Texture2D CreateGrassTexture()
+        {
+            var tex = new Texture2D(64, 64);
+            for (int y = 0; y < 64; y++)
+            {
+                for (int x = 0; x < 64; x++)
+                {
+                    float noise = Mathf.PerlinNoise(x * 0.15f, y * 0.15f);
+                    float r = Mathf.Lerp(0.18f, 0.35f, noise);
+                    float g = Mathf.Lerp(0.42f, 0.62f, noise);
+                    float b = Mathf.Lerp(0.08f, 0.18f, noise);
+                    tex.SetPixel(x, y, new Color(r, g, b));
+                }
+            }
+            tex.Apply();
+            tex.wrapMode = TextureWrapMode.Repeat;
+            return tex;
+        }
+
+        /// <summary>URP/Standard materyal oluşturucu.</summary>
+        public static Material CreateMaterial(Color color)
+        {
+            var shader = Shader.Find("Universal Render Pipeline/Lit");
+            if (shader == null) shader = Shader.Find("Standard");
+            if (shader == null) shader = Shader.Find("Sprites/Default");
+            var mat = new Material(shader);
+            if (mat.HasProperty("_BaseColor"))
+                mat.SetColor("_BaseColor", color);
+            else
+                mat.color = color;
+            return mat;
+        }
+
+        /// <summary>
+        /// Texture'ın gerçekten saydam pikselleri olup olmadığını kontrol eder.
+        /// Hızlı örnekleme: tüm pikselleri değil, grid bazlı örnek noktaları kontrol eder.
+        /// Alpha < 250 olan piksel varsa true döner.
+        /// </summary>
+        private static bool HasTransparentPixels(Texture2D tex)
+        {
+            if (tex == null) return false;
+            
+            try
+            {
+                var pixels = tex.GetPixels32();
+                // Hızlı örnekleme: her 16. pikseli kontrol et
+                int step = Mathf.Max(1, pixels.Length / 256);
+                for (int i = 0; i < pixels.Length; i += step)
+                {
+                    if (pixels[i].a < 250)
+                        return true;
+                }
+                return false;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        // ============================
+        // KARAKTER SİSTEMİ
+        // ============================
+
+        /// <summary>
+        /// Karakter modelini dünyaya spawn eder.
+        /// N3CharBuilder ile tam skeleton + skinned mesh + material pipeline.
+        /// </summary>
+        /// <param name="chrFileName">Karakter dosya adı (ör: "mob_goblin.n3chr")</param>
+        /// <param name="worldPos">Dünya pozisyonu</param>
+        /// <param name="yRotation">Y ekseni rotasyonu (derece)</param>
+        /// <returns>Oluşturulan karakter GameObject'i</returns>
+        public GameObject SpawnCharacter(string chrFileName, Vector3 worldPos, float yRotation = 0f)
+        {
+            string chrPath = System.IO.Path.Combine("", "Chr", chrFileName);
+
+            var charObj = N3CharBuilder.Build(chrPath);
+            if (charObj == null)
+            {
+                Debug.LogWarning($"[WORLD] Karakter yüklenemedi: {chrFileName}");
+                return null;
+            }
+
+            charObj.transform.position = worldPos;
+            charObj.transform.rotation = Quaternion.Euler(0, yRotation, 0);
+
+            return charObj;
+        }
+
+        // ============================
+        // MERCHANT STALL SYSTEM
+        // ============================
+        private readonly Dictionary<int, GameObject> _merchantStalls = new Dictionary<int, GameObject>();
+
+        public bool IsPlayerMerchant(int socketId)
+        {
+            return _merchantStalls.ContainsKey(socketId);
+        }
+
+        private GameObject CreateBoothPart(string partName, Mesh mesh, Texture2D texture, Transform parent, bool isCutout)
+        {
+            if (mesh == null)
+            {
+                Debug.LogWarning($"[WORLD] Pazar parçası yüklenemedi: {partName} mesh'i null");
+                return null;
+            }
+
+            GameObject partObj = new GameObject(partName);
+            partObj.transform.SetParent(parent, false);
+            partObj.transform.localPosition = Vector3.zero;
+            partObj.transform.localRotation = Quaternion.identity;
+            partObj.transform.localScale = Vector3.one;
+
+            var mf = partObj.AddComponent<MeshFilter>();
+            mf.mesh = mesh;
+            var mr = partObj.AddComponent<MeshRenderer>();
+
+            var shader = Shader.Find("Universal Render Pipeline/Lit");
+            if (shader == null) shader = Shader.Find("Standard");
+            var mat = new Material(shader);
+
+            if (texture != null)
+            {
+                if (mat.HasProperty("_BaseMap"))
+                {
+                    mat.SetTexture("_BaseMap", texture);
+                    mat.SetTextureScale("_BaseMap", new Vector2(1f, -1f));
+                    mat.SetTextureOffset("_BaseMap", new Vector2(0f, 1f));
+                }
+                else
+                {
+                    mat.mainTexture = texture;
+                    mat.mainTextureScale = new Vector2(1f, -1f);
+                    mat.mainTextureOffset = new Vector2(0f, 1f);
+                }
+            }
+
+            if (mat.HasProperty("_BaseColor"))
+                mat.SetColor("_BaseColor", Color.white);
+            else
+                mat.color = Color.white;
+
+            if (isCutout)
+            {
+                mat.SetFloat("_AlphaClip", 1f);
+                mat.SetFloat("_Cutoff", 0.5f);
+                mat.EnableKeyword("_ALPHATEST_ON");
+                mat.renderQueue = (int)UnityEngine.Rendering.RenderQueue.AlphaTest;
+            }
+
+            mr.material = mat;
+            return partObj;
+        }
+
+
+        public void SpawnMerchantStall(int socketId, string message, int[] itemIds, bool isPremium, string sellerName, float x, float y, float z)
+        {
+            DespawnMerchantStall(socketId);
+
+            Transform playerTransform = null;
+            FloatingName fn = null;
+            byte nation = 2; // Default El Morad
+
+            if (GameManager.Instance != null && (GameManager.Instance.CharacterId == socketId || (short)GameManager.Instance.CharacterId == (short)socketId))
+            {
+                // Local player
+                var playerObj = GameObject.FindGameObjectWithTag("Player") ?? GameObject.Find("Player");
+                if (playerObj != null)
+                {
+                    playerTransform = playerObj.transform;
+                    fn = playerObj.GetComponent<FloatingName>();
+                    nation = GameManager.Instance.Nation;
+                }
+            }
+            else
+            {
+                // Remote player
+                var rp = EntityManager.Instance?.GetRemotePlayer(socketId);
+                if (rp != null && rp.Root != null)
+                {
+                    playerTransform = rp.Root.transform;
+                    fn = rp.Root.GetComponent<FloatingName>();
+                    var rpe = rp.Root.GetComponent<RemotePlayerEntity>();
+                    rpe?.Action(PlayerStateAction.PSA_SITDOWN);
+                    if (rpe != null) nation = rpe.Nation;
+                }
+            }
+
+            // Instantiate a visual stall parent object at the exact location
+            GameObject stallObj = new GameObject($"Stall_{socketId}");
+            stallObj.transform.position = new Vector3(x, y, z);
+            if (playerTransform != null)
+            {
+                stallObj.transform.rotation = playerTransform.rotation;
+            }
+            else
+            {
+                stallObj.transform.rotation = Quaternion.identity;
+            }
+
+            if (isPremium)
+            {
+                // Orijinal Gold Pazar Kutusu Yükleme
+                Mesh goldMesh = Resources.Load<Mesh>("KOModels/Object/Meshes/counter_g");
+                Texture2D goldTex = Resources.Load<Texture2D>("KOTextures/Object/counterg2");
+                if (goldMesh != null)
+                {
+                    CreateBoothPart("GoldMerchantBox", goldMesh, goldTex, stallObj.transform, false);
+                }
+            }
+            else
+            {
+                // Orijinal Normal Pazar Kutusu Yükleme
+                Mesh normalMesh = Resources.Load<Mesh>("KOModels/Object/Meshes/obj_counter");
+                Texture2D normalTex = Resources.Load<Texture2D>("KOTextures/Object/counter");
+                if (normalMesh != null)
+                {
+                    CreateBoothPart("NormalMerchantBox", normalMesh, normalTex, stallObj.transform, false);
+                }
+            }
+
+            string playerName = sellerName;
+            if (string.IsNullOrEmpty(playerName))
+            {
+                if (GameManager.Instance != null && (GameManager.Instance.CharacterId == socketId || (short)GameManager.Instance.CharacterId == (short)socketId))
+                {
+                    playerName = GameManager.Instance.CharacterName;
+                }
+                else
+                {
+                    var rp = EntityManager.Instance?.GetRemotePlayer(socketId);
+                    if (rp != null) playerName = rp.Name;
+                }
+            }
+
+            _merchantStalls[socketId] = stallObj;
+
+            var billboard = stallObj.AddComponent<KOMerchantBillboard>();
+            billboard.Initialize(socketId, playerName, itemIds);
+
+            // Show the sign above player's head (persistent chat bubble) if local/remote entity is online here
+            fn?.ShowChatBubble(message, new Color(0.1f, 0.9f, 0.4f), true);
+        }
+
+        public void DespawnMerchantStall(int socketId)
+        {
+            if (_merchantStalls.TryGetValue(socketId, out var stallObj))
+            {
+                if (stallObj != null) Destroy(stallObj);
+                _merchantStalls.Remove(socketId);
+            }
+
+            FloatingName fn = null;
+
+            if (GameManager.Instance != null && (GameManager.Instance.CharacterId == socketId || (short)GameManager.Instance.CharacterId == (short)socketId))
+            {
+                var playerObj = GameObject.FindGameObjectWithTag("Player") ?? GameObject.Find("Player");
+                if (playerObj != null)
+                {
+                    fn = playerObj.GetComponent<FloatingName>();
+                    var pc = playerObj.GetComponent<EntropyOnline.Character.PlayerController>();
+                    pc?.Action(PlayerStateAction.PSA_BASIC);
+                }
+            }
+            else
+            {
+                var rp = EntityManager.Instance?.GetRemotePlayer(socketId);
+                if (rp != null && rp.Root != null)
+                {
+                    fn = rp.Root.GetComponent<FloatingName>();
+                    var rpe = rp.Root.GetComponent<RemotePlayerEntity>();
+                    rpe?.Action(PlayerStateAction.PSA_BASIC);
+                }
+            }
+
+            // Remove persistent message
+            fn?.ShowChatBubble(string.Empty, Color.clear);
+        }
+
+        /// <summary>
+        /// Debug: Transform hierarchy'sini recursive log'a yazar.
+        /// Çift model / T-pose teşhisi için.
+        /// </summary>
+        private void DumpHierarchy(Transform t, string indent, int maxDepth)
+        {
+            if (maxDepth <= 0) return;
+            for (int i = 0; i < t.childCount; i++)
+            {
+                var child = t.GetChild(i);
+                string components = "";
+                if (child.GetComponent<Animation>() != null) components += "[Anim] ";
+                if (child.GetComponent<SkinnedMeshRenderer>() != null) components += "[SMR] ";
+                if (child.GetComponent<MeshRenderer>() != null) components += "[MR] ";
+                if (child.GetComponent<MeshFilter>() != null) components += "[MF] ";
+
+                Debug.Log($"[WORLD-DIAG] {indent}{child.name} {components}(children={child.childCount})");
+                DumpHierarchy(child, indent + "  ", maxDepth - 1);
+            }
+        }
+    }
+}

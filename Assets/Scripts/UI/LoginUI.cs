@@ -1,0 +1,2533 @@
+using System.Collections.Generic;
+using System.IO;
+using UnityEngine;
+using UnityEngine.UI;
+using UnityEngine.SceneManagement;
+using UnityEngine.InputSystem;
+using EntropyOnline.Network;
+using EntropyOnline.Network.KO;
+using EntropyOnline.Core;
+using EntropyOnline.Import;
+using TMPro;
+
+namespace EntropyOnline.UI
+{
+    /// <summary>
+    /// Open-KO v1.298 birebir: CUILogIn_1298 + CGameProcLogIn_1298
+    ///
+    /// C++ kaynak:
+    ///   UILogin_1298.h/cpp — UI bileşen tanımları + mantık
+    ///   GameProcLogIn_1298.cpp — Login prosedürü
+    ///
+    /// UI: .uif dosyasından yüklenir (KOUIRenderer pipeline — HUD panelleriyle aynı)
+    /// Arka plan: DXT texture (el_login01/02/03 veya ka_login01/02/03)
+    /// Butonlar/Input'lar: .uif'den gelen texture-based elemanlar
+    /// </summary>
+    public class LoginUI : MonoBehaviour
+    {
+
+        // UI child grupları
+        private GameObject _groupLogIn;       // m_pGroup_LogIn → "Group_LogIn"
+        private GameObject _groupServerList;  // m_pGroup_ServerList → "Group_ServerList_01"
+
+        // UI kontrol elemanları
+        private InputField _editId;         // m_pEdit_id → "Edit_ID"
+        private InputField _editPw;         // m_pEdit_pw → "Edit_PW"
+        private Button _btnLogIn;           // m_pBtn_LogIn → "btn_ok"
+        private Button _btnCancel;          // m_pBtn_Cancel → "btn_cancel"
+        private Button _btnConnect;         // m_pBtn_Connect → "Btn_Connect"
+
+        // Canvas
+        private Canvas _canvas;
+
+        // State — GameProcLogIn_1298.h:16-19
+        private bool _bLogIn = false;
+        private float _fTimeUntilNextGameConnectionAttempt = 0f;
+
+        // Server info — UILogin_1298.h:14-43
+        private struct GameServerInfo
+        {
+            public string szName;
+            public string szIP;
+            public int iConcurrentUserCount;
+        }
+        private List<GameServerInfo> _serverInfos = new List<GameServerInfo>();
+        private int _iSelectedServerIndex = -1;
+
+
+
+        // Modern UI referansları
+        private RectTransform _serverListContainer;
+        private List<TextMeshProUGUI> _serverTextList = new List<TextMeshProUGUI>();
+        
+        // Yeni Sunucu Secimi Referanslari
+        private GameObject _modernLoginPanel;
+        private GameObject _channelsAndEnterGroup;
+        
+        // Animasyon ve Slayt Gecis Referanslari
+        private CanvasGroup _loginCanvasGroup;
+        private CanvasGroup _serverListCanvasGroup;
+        private RectTransform _serverListPanelRt;
+        private CanvasGroup _channelsAndEnterCanvasGroup;
+        private RectTransform _channelsAndEnterRt;
+        private CanvasGroup _warningBarCanvasGroup;
+        private CanvasGroup _agreementCanvasGroup;
+        private CanvasGroup _copyrightCanvasGroup;
+        private RectTransform _channelsPanelRt;
+        private RectTransform _bottomGroupRt;
+        private Image _bgImage;
+        private Image _logoBgImg;
+        private GameObject _agreementPanelObj;
+        private GameObject _copyrightPanelObj;
+        private GameObject _logoContainerObj;
+        private List<Image> _serverBgList = new List<Image>();
+        private RectTransform _channelsListContainer;
+        private TextMeshProUGUI _currentChannelTxt;
+        private int _selectedChannelSubIndex = 0;
+        private GameObject _serverListWarningBar;
+        private GameObject _btnWebObj;
+        private GameObject _uiConnectingDialog;
+        private CanvasGroup _uiConnectingDialogCanvasGroup;
+
+        // Merchant Control Panel / Skill Theme Renk Şeması
+        private Color _colorBg = new Color(0.12f, 0.10f, 0.08f, 0.96f);          // Koyu warm charcoal kenar
+        private Color _colorBgInner = new Color(0.04f, 0.04f, 0.04f, 0.96f);     // Koyu warm charcoal merkez
+        private Color _colorBorder = new Color(0.6f, 0.48f, 0.22f, 0.9f);        // Altın/Bronz kenarlık
+        private Color _colorTextGold = new Color(0.95f, 0.85f, 0.35f, 1f);       // Altın rengi metin
+        private Color _colorBtnGold = new Color(0.48f, 0.38f, 0.22f, 1f);        // Aktif buton rengi
+        private Color _colorBtnGoldBorder = new Color(0.6f, 0.48f, 0.22f, 1f);   // Aktif buton kenarlığı
+        private Color _colorInputBg = new Color(0.05f, 0.04f, 0.04f, 1f);        // Koyu giriş kutusu içi
+        private Color _colorBtnDark = new Color(0.08f, 0.07f, 0.06f, 0.95f);      // İkincil buton dolgu rengi
+
+        // Remember Me logic fields
+        private bool _rememberMe = false;
+        private Image _rememberCheckImg;
+
+
+
+        // ============================================
+        // Init — GameProcLogIn_1298::Init() birebir (cpp:41-151)
+        // ============================================
+        private void Start()
+        {
+            // Global olarak sadece Warning ve Error loglarını göster, düz Debug.Log'ları engelle
+            Debug.unityLogger.filterLogType = LogType.Warning;
+
+            // Canvas oluştur — 1024x768 (KO orijinal viewport)
+            CreateCanvas();
+
+            // Arka planı ayarla ve en-boy oranını koruyarak kırpma yap
+            SetupCustomBackground();
+
+            // Modern arayüzü sıfırdan oluştur
+            CreateModernLoginUI();
+
+            _rememberMe = PlayerPrefs.GetInt("RememberMe", 0) == 1;
+            if (_rememberMe)
+            {
+                if (_editId != null) _editId.text = PlayerPrefs.GetString("SaveId", "");
+                if (_editPw != null) _editPw.text = PlayerPrefs.GetString("SavePw", "");
+            }
+            UpdateRememberCheckVisual();
+
+            // KONetworkManager yoksa otomatik oluştur (sahne güncellenmemişse)
+            if (KONetworkManager.Instance == null)
+            {
+                var koNmObj = new GameObject("KONetworkManager");
+                koNmObj.AddComponent<KONetworkManager>();
+            }
+
+            // Ağ olayları — Open-KO protokolü
+            KOPacketHandler.OnLoginResult += MsgRecv_AccountLogIn_KO;
+
+            if (KONetworkManager.Instance != null)
+            {
+                KONetworkManager.Instance.OnConnected += OnConnected;
+                KONetworkManager.Instance.OnConnectionError += OnConnectionError;
+            }
+
+            SetStatus("Connecting...");
+
+            // cpp:102-108 — Ebenezer'a bağlan (Open-KO port 15001)
+            if (KONetworkManager.Instance != null)
+                KONetworkManager.Instance.Connect();
+        }
+
+        private void OnDestroy()
+        {
+            KOPacketHandler.OnLoginResult -= MsgRecv_AccountLogIn_KO;
+
+            if (KONetworkManager.Instance != null)
+            {
+                KONetworkManager.Instance.OnConnected -= OnConnected;
+                KONetworkManager.Instance.OnConnectionError -= OnConnectionError;
+            }
+        }
+
+        // ============================================
+        // Canvas oluşturma — KO viewport birebir 1024x768
+        // ============================================
+        private void CreateCanvas()
+        {
+            var canvasObj = new GameObject("LoginCanvas");
+            canvasObj.transform.SetParent(transform, false);
+            _canvas = canvasObj.AddComponent<Canvas>();
+            _canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+            _canvas.sortingOrder = 100;
+ 
+            var scaler = canvasObj.AddComponent<CanvasScaler>();
+            scaler.uiScaleMode = CanvasScaler.ScaleMode.ConstantPixelSize;
+            
+            float scale = 1.3f; // Mobil için ideal sabit ölçek çarpanı (1.3x)
+            if (GameOptionsManager.Instance != null)
+            {
+                scale = Mathf.Lerp(0.7f, 1.3f, GameOptionsManager.Instance.Graphic3_UIScale);
+            }
+            scaler.scaleFactor = scale;
+ 
+            canvasObj.AddComponent<GraphicRaycaster>();
+        }
+
+        // ============================================
+        // Modern Arayüz Oluşturma (Self-Contained Dynamic Style)
+        // ============================================
+        private void CreateModernLoginUI()
+        {
+            var fontAsset = Resources.Load<TMP_FontAsset>("Fonts & Materials/LiberationSans SDF");
+
+                                                // 0. Epic Draco Online World Logo (Teksturel Logo Efekti)
+            GameObject logoContainer = new GameObject("GameLogo", typeof(RectTransform));
+            logoContainer.transform.SetParent(_canvas.transform, false);
+            _logoContainerObj = logoContainer;
+            RectTransform logoRt = logoContainer.GetComponent<RectTransform>();
+            logoRt.anchorMin = new Vector2(0.5f, 0.5f);
+            logoRt.anchorMax = new Vector2(0.5f, 0.5f);
+            logoRt.pivot = new Vector2(0.5f, 0.5f);
+            logoRt.sizeDelta = new Vector2(600, 115); // Fade-out bar ebatlari
+            logoRt.anchoredPosition = new Vector2(0, 290); // Dikey konum
+
+            // Logosunun arkasindaki fade-outlu altin cizgili koyu arkaplan bari
+            Image logoBgImg = logoContainer.AddComponent<Image>();
+            logoBgImg.sprite = CreateAgreementFadeBg(600, 115, new Color(0.03f, 0.02f, 0.02f, 0.85f), new Color(0.6f, 0.48f, 0.22f, 0.85f), 1);
+            logoBgImg.color = Color.white;
+            _logoBgImg = logoBgImg;
+
+            // Draco Basligi (Ust Kisim - Kalin Duz Altin Gradyan, Buyutuldu ve Kalinlastirildi)
+            GameObject dracoObj = new GameObject("DracoText", typeof(RectTransform));
+            dracoObj.transform.SetParent(logoContainer.transform, false);
+            RectTransform dracoRt = dracoObj.GetComponent<RectTransform>();
+            dracoRt.anchorMin = new Vector2(0.5f, 0.5f);
+            dracoRt.anchorMax = new Vector2(0.5f, 0.5f);
+            dracoRt.pivot = new Vector2(0.5f, 0.5f);
+            dracoRt.sizeDelta = new Vector2(500, 70);
+            dracoRt.anchoredPosition = new Vector2(0, 12); // Dikey bosluk hizalandi
+
+            var dracoTxt = dracoObj.AddComponent<TextMeshProUGUI>();
+            dracoTxt.font = fontAsset;
+            dracoTxt.fontSize = 68; // 60'dan 68'e buyutuldu (böylece daha kalin duracak)
+            dracoTxt.alignment = TextAlignmentOptions.Center;
+            dracoTxt.text = "DRACO";
+            dracoTxt.fontStyle = FontStyles.Bold; // Italic kaldirildi
+            
+            dracoTxt.enableVertexGradient = true;
+            dracoTxt.colorGradient = new VertexGradient(
+                new Color(0.96f, 0.80f, 0.22f, 1f), // Sol Ust (Düzgün Altın Sarısı)
+                new Color(0.96f, 0.80f, 0.22f, 1f), // Sag Ust (Düzgün Altın Sarısı)
+                new Color(0.68f, 0.48f, 0.16f, 1f), // Sol Alt (Koyu Bronz/Altın)
+                new Color(0.68f, 0.48f, 0.16f, 1f)  // Sag Alt (Koyu Bronz/Altın)
+            );
+            
+            dracoTxt.outlineColor = Color.black;
+            dracoTxt.outlineWidth = 0.35f; // Harf etrafindaki siyah kontur kalinlastirilarak dolgunluk artirildi
+
+            var dracoShadow = dracoObj.AddComponent<Shadow>();
+            dracoShadow.effectColor = new Color(0f, 0f, 0f, 0.9f);
+            dracoShadow.effectDistance = new Vector2(2f, -2f);
+
+            // Online World Alt Yazisi (Alt Kisim - Tam Draco Altina Hizali, Altin Gradyan, Buyutuldu)
+            GameObject onlineObj = new GameObject("OnlineWorldText", typeof(RectTransform));
+            onlineObj.transform.SetParent(logoContainer.transform, false);
+            RectTransform onlineRt = onlineObj.GetComponent<RectTransform>();
+            onlineRt.anchorMin = new Vector2(0.5f, 0.5f);
+            onlineRt.anchorMax = new Vector2(0.5f, 0.5f);
+            onlineRt.pivot = new Vector2(0.5f, 0.5f);
+            onlineRt.sizeDelta = new Vector2(500, 30);
+            onlineRt.anchoredPosition = new Vector2(0, -32); // Konum hizalandi
+
+            var onlineTxt = onlineObj.AddComponent<TextMeshProUGUI>();
+            onlineTxt.font = fontAsset;
+            onlineTxt.fontSize = 20; // 18'den 20'ye buyutuldu
+            onlineTxt.alignment = TextAlignmentOptions.Center;
+            onlineTxt.text = "<cspace=0.35em>ONLINE WORLD</cspace>";
+            onlineTxt.fontStyle = FontStyles.Bold;
+            
+            onlineTxt.enableVertexGradient = true;
+            onlineTxt.colorGradient = new VertexGradient(
+                new Color(0.96f, 0.80f, 0.22f, 1f), // Sol Ust (Altın Sarısı)
+                new Color(0.96f, 0.80f, 0.22f, 1f), // Sag Ust (Altın Sarısı)
+                new Color(0.68f, 0.48f, 0.16f, 1f), // Sol Alt (Koyu Bronz/Altın)
+                new Color(0.68f, 0.48f, 0.16f, 1f)  // Sag Alt (Koyu Bronz/Altın)
+            );
+            
+            onlineTxt.outlineColor = Color.black;
+            onlineTxt.outlineWidth = 0.3f; // Kontur kalinligi artirildi
+
+            var onlineShadow = onlineObj.AddComponent<Shadow>();
+            onlineShadow.effectColor = new Color(0f, 0f, 0f, 0.9f);
+            onlineShadow.effectDistance = new Vector2(1.5f, -1.5f);
+
+// 1. Ana Panel (Giriş Kutusu) - 320x360 size (perfect symmetry, manually enlarged)
+            GameObject panelObj = new GameObject("ModernLoginPanel", typeof(RectTransform));
+            panelObj.transform.SetParent(_canvas.transform, false);
+            _modernLoginPanel = panelObj;
+            _loginCanvasGroup = panelObj.AddComponent<CanvasGroup>();
+            
+            RectTransform pRt = panelObj.GetComponent<RectTransform>();
+            pRt.anchorMin = new Vector2(0.5f, 0.5f);
+            pRt.anchorMax = new Vector2(0.5f, 0.5f);
+            pRt.pivot = new Vector2(0.5f, 0.5f);
+            pRt.sizeDelta = new Vector2(370, 410);
+            pRt.anchoredPosition = Vector2.zero;
+
+            Image pImg = panelObj.AddComponent<Image>();
+            pImg.sprite = CreatePanelBgSprite("login_panel_bg", 370, 410, _colorBg, _colorBgInner, _colorBorder, 2);
+            pImg.color = Color.white;
+
+            // 2. Başlık (LOGIN)
+            GameObject titleObj = new GameObject("TitleText", typeof(RectTransform));
+            titleObj.transform.SetParent(panelObj.transform, false);
+            var titleTxt = titleObj.AddComponent<TextMeshProUGUI>();
+            titleTxt.font = fontAsset;
+            titleTxt.fontSize = 22;
+            titleTxt.fontStyle = FontStyles.Bold;
+            titleTxt.color = _colorTextGold;
+            titleTxt.alignment = TextAlignmentOptions.Center;
+            titleTxt.text = "LOGIN";
+            
+            var titleShadow = titleTxt.gameObject.AddComponent<Shadow>();
+            titleShadow.effectColor = Color.black;
+            titleShadow.effectDistance = new Vector2(1f, -1f);
+
+            RectTransform tRt = titleObj.GetComponent<RectTransform>();
+            tRt.sizeDelta = new Vector2(370, 25);
+            tRt.anchoredPosition = new Vector2(0, 165);
+
+            // Altın Bölücü Çizgi (Divider) - Genişletildi
+            GameObject dividerGO = new GameObject("Divider", typeof(RectTransform));
+            dividerGO.transform.SetParent(panelObj.transform, false);
+            RectTransform divRT = dividerGO.GetComponent<RectTransform>();
+            divRT.sizeDelta = new Vector2(330, 2);
+            divRT.anchoredPosition = new Vector2(0, 140);
+            Image divImg = dividerGO.AddComponent<Image>();
+            divImg.sprite = CreateFadingDividerSprite("login_header_divider", 330, 2, new Color(0.9f, 0.75f, 0.25f, 0.8f));
+            divImg.color = Color.white;
+
+            // 3. Giriş Paneli Grubu (Group_LogIn)
+            _groupLogIn = new GameObject("Group_LogIn", typeof(RectTransform));
+            _groupLogIn.transform.SetParent(panelObj.transform, false);
+            RectTransform gLogInRt = _groupLogIn.GetComponent<RectTransform>();
+            gLogInRt.anchorMin = Vector2.zero;
+            gLogInRt.anchorMax = Vector2.one;
+            gLogInRt.offsetMin = Vector2.zero;
+            gLogInRt.offsetMax = Vector2.zero;
+
+            // Giriş alanları ve Butonlar - Genişlik 280'e, Yükseklik 38'e büyütüldü
+            _editId = CreateStyledInputField(_groupLogIn.transform, "Username", 85, 330, 42, false, fontAsset);
+            _editPw = CreateStyledInputField(_groupLogIn.transform, "Password", 30, 330, 42, true, fontAsset);
+
+            // "Forgot Password?" ve "Remember Me" alanları
+            CreateForgotPasswordAndRemember(_groupLogIn.transform, fontAsset);
+            
+            // Altın Renkli Ana Giriş Butonu (Yatayda ve dikeyde büyütüldü - 220x40)
+            _btnLogIn = CreateStyledButton(_groupLogIn.transform, "LOGIN", -85, 260, 50, _colorBtnGold, Color.black, fontAsset, true);
+            _btnLogIn.onClick.AddListener(OnBtnLogInClick);
+
+            // Alt Butonlar: Create Account & Login With Apple (Yatayda yan yana - 135x34 genişlik)
+            var createAccBtn = CreateStyledButton(_groupLogIn.transform, "Create Account", -150, 160, 38, _colorBtnDark, _colorTextGold, fontAsset, false);
+            var caRt = createAccBtn.GetComponent<RectTransform>();
+            caRt.anchoredPosition = new Vector2(-85, -150);
+
+            var appleBtn = CreateStyledButton(_groupLogIn.transform, "Login With Apple", -150, 160, 38, _colorBtnDark, _colorTextGold, fontAsset, false);
+            var apRt = appleBtn.GetComponent<RectTransform>();
+            apRt.anchoredPosition = new Vector2(85, -150);
+
+             // 4. Sol Üst Kapatma/Oyundan Çıkış Butonu (Baklava Şeklinde, 54x54 Boyutunda, Ekran Sol Üstüne Sabitlenmiş)
+             GameObject exitBtnObj = new GameObject("btn_exit_round", typeof(RectTransform));
+             exitBtnObj.transform.SetParent(_canvas.transform, false);
+             RectTransform exRt = exitBtnObj.GetComponent<RectTransform>();
+             exRt.anchorMin = new Vector2(0f, 1f); // Sol üst köşe
+             exRt.anchorMax = new Vector2(0f, 1f); // Sol üst köşe
+             exRt.pivot = new Vector2(0.5f, 0.5f); // Pivot merkez yapıldı (dönme esnasında taşmayı önler)
+             exRt.anchoredPosition = new Vector2(50, -50); // Merkez pivot ile köşeden hizalama
+             exRt.sizeDelta = new Vector2(54, 54); // %25 küçültüldü (72'den 54'e)
+             exRt.localRotation = Quaternion.Euler(0, 0, 45); // Baklava yapmak için 45 derece döndürme
+ 
+             Image exImg = exitBtnObj.AddComponent<Image>();
+             exImg.sprite = CreateRoundedRectSprite("exit_btn_bg", 54, 54, 6, new Color(0.15f, 0.12f, 0.08f, 0.95f), _colorBorder, 2);
+             exImg.color = Color.white;
+ 
+             // İçindeki çarpı işaretinin dönmesini engellemek için ters döndürülmüş bir alt nesne kullanıyoruz
+             GameObject exitTxtObj = new GameObject("ExitText", typeof(RectTransform));
+             exitTxtObj.transform.SetParent(exitBtnObj.transform, false);
+             RectTransform etRt = exitTxtObj.GetComponent<RectTransform>();
+             etRt.anchorMin = Vector2.zero;
+             etRt.anchorMax = Vector2.one;
+             etRt.offsetMin = Vector2.zero;
+             etRt.offsetMax = Vector2.zero;
+             etRt.localRotation = Quaternion.Euler(0, 0, -45); // Ananın 45 derece dönmesini sıfırlar
+ 
+             var exitTxt = CreateText(exitTxtObj, "X", 26, TextAlignmentOptions.Center, fontAsset); // Çarpı boyutu büyütüldü
+             exitTxt.color = _colorTextGold;
+             exitTxt.fontStyle = FontStyles.Bold;
+ 
+             _btnCancel = exitBtnObj.AddComponent<Button>();
+_btnCancel.onClick.AddListener(OnBtnCancelClick);
+             // Cikis butonu tiklama renk gecisi (Basildiginda altin sarisi yanar)
+             ColorBlock exitCb = _btnCancel.colors;
+             exitCb.normalColor = Color.white;
+             exitCb.highlightedColor = new Color(1.1f, 1.1f, 1.1f, 1f);
+             exitCb.pressedColor = new Color(0.96f, 0.80f, 0.22f, 1f); // Altin rengi parlama
+             exitCb.selectedColor = Color.white;
+             _btnCancel.colors = exitCb;
+             // 4b. Sag Ust Web Sitesi Butonu (Sol usttekiyle ayni tasarimda baklava, dunya kuresi ikonuyla)
+             GameObject webBtnObj = new GameObject("btn_web_diamond", typeof(RectTransform));
+            _btnWebObj = webBtnObj;
+             webBtnObj.transform.SetParent(_canvas.transform, false);
+             RectTransform webRt = webBtnObj.GetComponent<RectTransform>();
+             webRt.anchorMin = new Vector2(1f, 1f); // Sag ust kose
+             webRt.anchorMax = new Vector2(1f, 1f); // Sag ust kose
+             webRt.pivot = new Vector2(0.5f, 0.5f); // Pivot merkez
+             webRt.anchoredPosition = new Vector2(-50, -50); // Simetrik sag ust konum (50px iceride)
+             webRt.sizeDelta = new Vector2(54, 54);
+             webRt.localRotation = Quaternion.Euler(0, 0, 45); // Baklava Z rotasyonu
+ 
+             Image webImg = webBtnObj.AddComponent<Image>();
+             webImg.sprite = CreateRoundedRectSprite("exit_btn_bg", 54, 54, 6, new Color(0.15f, 0.12f, 0.08f, 0.95f), _colorBorder, 2);
+             webImg.color = Color.white;
+ 
+             GameObject webIconObj = new GameObject("WebIcon", typeof(RectTransform));
+             webIconObj.transform.SetParent(webBtnObj.transform, false);
+             RectTransform wiRt = webIconObj.GetComponent<RectTransform>();
+             wiRt.anchorMin = new Vector2(0.5f, 0.5f);
+             wiRt.anchorMax = new Vector2(0.5f, 0.5f);
+             wiRt.pivot = new Vector2(0.5f, 0.5f);
+             wiRt.sizeDelta = new Vector2(26, 26);
+             wiRt.localRotation = Quaternion.Euler(0, 0, -45); // Ters donus
+ 
+             Image wiImg = webIconObj.AddComponent<Image>();
+             wiImg.sprite = CreateGlobeIconSprite(26, 26);
+             wiImg.color = Color.white;
+ 
+             Button btnWeb = webBtnObj.AddComponent<Button>();
+             btnWeb.onClick.AddListener(() => {
+                 Application.OpenURL("https://dracoonlineworld.com");
+             });
+             // Web butonu tiklama renk gecisi (Basildiginda altin sarisi yanar)
+             ColorBlock webCb = btnWeb.colors;
+             webCb.normalColor = Color.white;
+             webCb.highlightedColor = new Color(1.1f, 1.1f, 1.1f, 1f);
+             webCb.pressedColor = new Color(0.96f, 0.80f, 0.22f, 1f); // Altin rengi parlama
+             webCb.selectedColor = Color.white;
+             btnWeb.colors = webCb;
+
+            // 5. Sunucu Seçim Grubu (Group_ServerList - Doğrudan Canvas'a Bağlı Bağımsız Grup)
+            _groupServerList = new GameObject("Group_ServerList_01", typeof(RectTransform));
+            _groupServerList.transform.SetParent(_canvas.transform, false);
+            RectTransform gServerRt = _groupServerList.GetComponent<RectTransform>();
+            gServerRt.anchorMin = Vector2.zero;
+            gServerRt.anchorMax = Vector2.one;
+            gServerRt.offsetMin = Vector2.zero;
+            gServerRt.offsetMax = Vector2.zero;
+            _groupServerList.SetActive(false);
+
+            // ================= SOL PANEL (SERVER LIST - Sol-Orta Çapa) =================
+            GameObject serverListPanel = new GameObject("Panel_ServerList", typeof(RectTransform));
+            serverListPanel.transform.SetParent(_groupServerList.transform, false);
+            RectTransform slRt = serverListPanel.GetComponent<RectTransform>();
+            _serverListCanvasGroup = serverListPanel.AddComponent<CanvasGroup>();
+            _serverListPanelRt = slRt;
+            slRt.anchorMin = new Vector2(0f, 0.5f); // Ekranın sol kenarı
+            slRt.anchorMax = new Vector2(0f, 0.5f);
+            slRt.pivot = new Vector2(0f, 0.5f); // Sol-orta hizalama
+            slRt.sizeDelta = new Vector2(300, 300);
+            slRt.anchoredPosition = new Vector2(150, 20); // Ekranın solundan tam 150px içeride!
+
+            Image slImg = serverListPanel.AddComponent<Image>();
+            slImg.sprite = CreatePanelBgSprite("server_list_panel_bg", 300, 300, _colorBg, _colorBgInner, _colorBorder, 2);
+            slImg.color = Color.white;
+
+            // Sol Panel Başlık (SERVER LIST)
+            var slTitle = CreateText(serverListPanel, "SERVER LIST", 18, TextAlignmentOptions.Center, fontAsset);
+            slTitle.fontStyle = FontStyles.Bold;
+            slTitle.color = _colorTextGold;
+            RectTransform sltRt = slTitle.GetComponent<RectTransform>();
+            sltRt.sizeDelta = new Vector2(300, 25);
+            sltRt.anchoredPosition = new Vector2(0, 120);
+
+            // Sol Panel Divider
+            GameObject slDiv = new GameObject("ServerListDivider", typeof(RectTransform));
+            slDiv.transform.SetParent(serverListPanel.transform, false);
+            RectTransform sldRt = slDiv.GetComponent<RectTransform>();
+            sldRt.sizeDelta = new Vector2(260, 2);
+            sldRt.anchoredPosition = new Vector2(0, 105);
+            Image sldImg = slDiv.AddComponent<Image>();
+            sldImg.sprite = CreateFadingDividerSprite("server_list_divider", 260, 2, _colorBorder);
+            sldImg.color = Color.white;
+
+            // Sol Panel Sunucu Dikey Taşıyıcısı
+            GameObject listContainer = new GameObject("ServerListContainer", typeof(RectTransform));
+            listContainer.transform.SetParent(serverListPanel.transform, false);
+            _serverListContainer = listContainer.GetComponent<RectTransform>();
+            _serverListContainer.anchorMin = new Vector2(0.5f, 0.5f);
+            _serverListContainer.anchorMax = new Vector2(0.5f, 0.5f);
+            _serverListContainer.pivot = new Vector2(0.5f, 0.5f);
+            _serverListContainer.sizeDelta = new Vector2(260, 170);
+            _serverListContainer.anchoredPosition = new Vector2(0, -10);
+
+            VerticalLayoutGroup vlg = listContainer.AddComponent<VerticalLayoutGroup>();
+            vlg.spacing = 8;
+            vlg.childAlignment = TextAnchor.UpperCenter;
+            vlg.childControlHeight = false;
+            vlg.childControlWidth = false;
+
+            // Sol Panel Bilgi Metni
+            var slInfo = CreateText(serverListPanel, "* Select server for login the game", 12, TextAlignmentOptions.Center, fontAsset);
+            slInfo.color = _colorTextGold * 0.8f;
+            RectTransform sliRt = slInfo.GetComponent<RectTransform>();
+            sliRt.sizeDelta = new Vector2(280, 20);
+            sliRt.anchoredPosition = new Vector2(0, -125);
+
+
+            // ================= GRUPLANMIŞ SAĞ BÖLÜM VE ALT KONTROLLER (Tıklanınca Kapanma İçin) =================
+            GameObject channelsAndEnterGroup = new GameObject("Group_ChannelsAndEnter", typeof(RectTransform));
+            channelsAndEnterGroup.transform.SetParent(_groupServerList.transform, false);
+            RectTransform cegRt = channelsAndEnterGroup.GetComponent<RectTransform>();
+            _channelsAndEnterCanvasGroup = channelsAndEnterGroup.AddComponent<CanvasGroup>();
+            _channelsAndEnterRt = cegRt;
+            cegRt.anchorMin = Vector2.zero;
+            cegRt.anchorMax = Vector2.one;
+            cegRt.offsetMin = Vector2.zero;
+            cegRt.offsetMax = Vector2.zero;
+            // Class member'a kaydet
+            _channelsAndEnterGroup = channelsAndEnterGroup;
+
+            // ================= SAĞ PANEL (SERVER CHANNELS - Sağ-Orta Çapa) =================
+            GameObject channelsPanel = new GameObject("Panel_ServerChannels", typeof(RectTransform));
+            channelsPanel.transform.SetParent(channelsAndEnterGroup.transform, false);
+            RectTransform chRt = channelsPanel.GetComponent<RectTransform>();
+            _channelsPanelRt = chRt;
+            chRt.anchorMin = new Vector2(1f, 0.5f); // Ekranın sağ kenarı
+            chRt.anchorMax = new Vector2(1f, 0.5f);
+            chRt.pivot = new Vector2(1f, 0.5f); // Sağ-orta hizalama
+            chRt.sizeDelta = new Vector2(340, 300);
+            chRt.anchoredPosition = new Vector2(-150, 20); // Ekranın sağından tam 150px içeride!
+
+            Image chImg = channelsPanel.AddComponent<Image>();
+            chImg.sprite = CreatePanelBgSprite("server_channels_panel_bg", 340, 300, _colorBg, _colorBgInner, _colorBorder, 2);
+            chImg.color = Color.white;
+
+            // Sağ Panel Başlık (SERVER CHANNELS)
+            var chTitle = CreateText(channelsPanel, "SERVER CHANNELS", 18, TextAlignmentOptions.Center, fontAsset);
+            chTitle.fontStyle = FontStyles.Bold;
+            chTitle.color = _colorTextGold;
+            RectTransform chtRt = chTitle.GetComponent<RectTransform>();
+            chtRt.sizeDelta = new Vector2(340, 25);
+            chtRt.anchoredPosition = new Vector2(0, 120);
+
+            // Sağ Panel Divider
+            GameObject chDiv = new GameObject("ServerChannelsDivider", typeof(RectTransform));
+            chDiv.transform.SetParent(channelsPanel.transform, false);
+            RectTransform chdRt = chDiv.GetComponent<RectTransform>();
+            chdRt.sizeDelta = new Vector2(300, 2);
+            chdRt.anchoredPosition = new Vector2(0, 105);
+            Image chdImg = chDiv.AddComponent<Image>();
+            chdImg.sprite = CreateFadingDividerSprite("server_channels_divider", 300, 2, _colorBorder);
+            chdImg.color = Color.white;
+
+            // Sağ Panel Kanallar Dikey Taşıyıcısı
+            GameObject channelsContainer = new GameObject("ChannelsContainer", typeof(RectTransform));
+            channelsContainer.transform.SetParent(channelsPanel.transform, false);
+            _channelsListContainer = channelsContainer.GetComponent<RectTransform>();
+            _channelsListContainer.anchorMin = new Vector2(0.5f, 0.5f);
+            _channelsListContainer.anchorMax = new Vector2(0.5f, 0.5f);
+            _channelsListContainer.pivot = new Vector2(0.5f, 0.5f);
+            _channelsListContainer.sizeDelta = new Vector2(300, 200);
+            _channelsListContainer.anchoredPosition = new Vector2(0, -10);
+
+            VerticalLayoutGroup cvlg = channelsContainer.AddComponent<VerticalLayoutGroup>();
+            cvlg.spacing = 6;
+            cvlg.childAlignment = TextAnchor.UpperCenter;
+            cvlg.childControlHeight = false;
+            cvlg.childControlWidth = false;
+
+
+            // ================= ALT KONTROLLER (Seçim kutusu, Enter) =================
+            GameObject bottomGroup = new GameObject("Group_BottomSelection", typeof(RectTransform));
+            bottomGroup.transform.SetParent(channelsAndEnterGroup.transform, false);
+            _bottomGroupRt = bottomGroup.GetComponent<RectTransform>();
+            _bottomGroupRt.anchorMin = new Vector2(0.5f, 0.5f);
+            _bottomGroupRt.anchorMax = new Vector2(0.5f, 0.5f);
+            _bottomGroupRt.pivot = new Vector2(0.5f, 0.5f);
+            _bottomGroupRt.sizeDelta = new Vector2(850, 150);
+            _bottomGroupRt.anchoredPosition = Vector2.zero;
+
+            // 1. SELECTED Başlığı (Arkası Fadeout'lu Şerit)
+            GameObject currentTitleObj = new GameObject("CurrentTitle", typeof(RectTransform));
+            currentTitleObj.transform.SetParent(bottomGroup.transform, false);
+            RectTransform ctRt = currentTitleObj.GetComponent<RectTransform>();
+            ctRt.anchorMin = new Vector2(0.5f, 0.5f);
+            ctRt.anchorMax = new Vector2(0.5f, 0.5f);
+            ctRt.pivot = new Vector2(0.5f, 0.5f);
+            ctRt.sizeDelta = new Vector2(220, 20);
+            ctRt.anchoredPosition = new Vector2(0, -220); // SELECTED Sabit kaldi
+
+            Image ctBg = currentTitleObj.AddComponent<Image>();
+            ctBg.sprite = CreateAgreementFadeBg(220, 20, new Color(0.03f, 0.02f, 0.02f, 0.85f), Color.clear, 0);
+            ctBg.color = Color.white;
+
+            var ctTxt = CreateText(currentTitleObj, "SELECTED", 10, TextAlignmentOptions.Center, fontAsset);
+            ctTxt.fontStyle = FontStyles.Bold;
+            ctTxt.color = _colorTextGold;
+
+            // 2. Seçili Kanal Kutusu (Altıgen Hexagon Tasarım - 0 Boşlukla Altına Yaslandı)
+            GameObject curChannelObj = new GameObject("CurrentChannelBox", typeof(RectTransform));
+            curChannelObj.transform.SetParent(bottomGroup.transform, false);
+            RectTransform ccbRt = curChannelObj.GetComponent<RectTransform>();
+            ccbRt.anchorMin = new Vector2(0.5f, 0.5f);
+            ccbRt.anchorMax = new Vector2(0.5f, 0.5f);
+            ccbRt.pivot = new Vector2(0.5f, 0.5f);
+            ccbRt.sizeDelta = new Vector2(280, 40); // Yukseklik 40
+            ccbRt.anchoredPosition = new Vector2(0, -250); // SELECTED'in alt kenarina (Y=-230) tam 0 boslukla hizalandi (-230 - 20 = -250)
+
+            Image ccbImg = curChannelObj.AddComponent<Image>();
+            ccbImg.sprite = CreateHexagonSprite("current_channel_bg", 280, 40, 
+                new Color(0.12f, 0.10f, 0.08f, 0.95f), 
+                new Color(0.06f, 0.05f, 0.04f, 0.95f), 
+                _colorBorder, 
+                _colorBorder * 1.2f);
+            ccbImg.color = Color.white;
+
+            _currentChannelTxt = CreateText(curChannelObj, "", 14, TextAlignmentOptions.Center, fontAsset);
+            _currentChannelTxt.fontStyle = FontStyles.Bold;
+            _currentChannelTxt.color = _colorTextGold;
+
+            // 3. ENTER Butonu (0 Boşlukla Sunucu Kutusunun Altına Yaslandı)
+            _btnConnect = CreateStyledButton(bottomGroup.transform, "ENTER", -294, 200, 48, _colorBtnGold, Color.black, fontAsset, true);
+            _btnConnect.onClick.AddListener(OnBtnConnectClick); // Kutu alt kenarina (Y=-270) tam 0 boslukla hizalandi (-270 - 24 = -294)
+
+
+            // ================= YATAY GÜVENLİK UYARISI ŞERİDİ (Yukarıdaki Paneller ile Aşağıdaki SELECTED Arasında Ortalandı) =================
+            GameObject warnBarObj = new GameObject("ServerListWarningBar", typeof(RectTransform));
+            warnBarObj.transform.SetParent(_groupServerList.transform, false);
+            _serverListWarningBar = warnBarObj;
+            RectTransform wbRt = warnBarObj.GetComponent<RectTransform>();
+            _warningBarCanvasGroup = warnBarObj.AddComponent<CanvasGroup>();
+            wbRt.anchorMin = new Vector2(0.5f, 0.5f);
+            wbRt.anchorMax = new Vector2(0.5f, 0.5f);
+            wbRt.pivot = new Vector2(0.5f, 0.5f);
+            wbRt.sizeDelta = new Vector2(850, 30);
+            wbRt.anchoredPosition = new Vector2(0, -170); // Matematiksel olarak ortalandi: Ust panel alt siniri (-130) ile SELECTED ust siniri (-210) tam ortasi!
+
+            Image wbImg = warnBarObj.AddComponent<Image>();
+            wbImg.sprite = CreateAgreementFadeBg(850, 30, new Color(0.03f, 0.02f, 0.02f, 0.85f), Color.clear, 0);
+            wbImg.color = Color.white;
+
+            var wbTxt = CreateText(warnBarObj, "For your security, make sure to change your password periodically and use uppercase, lowercase letters, and special characters. • Don't forget to activate the \"Secure Device\" feature in the game.", 11, TextAlignmentOptions.Center, fontAsset);
+            wbTxt.color = Color.white;
+
+
+            // ================= YARDIMCI KÖŞE BUTONLARI =================
+            // 1. Sol Üst: Back (Geri) Butonu
+            GameObject backBtnObj = new GameObject("btn_back_diamond", typeof(RectTransform));
+            backBtnObj.transform.SetParent(_groupServerList.transform, false);
+            RectTransform bkRt = backBtnObj.GetComponent<RectTransform>();
+            bkRt.anchorMin = new Vector2(0f, 1f); // Sol üst köşe
+            bkRt.anchorMax = new Vector2(0f, 1f);
+            bkRt.pivot = new Vector2(0.5f, 0.5f);
+            bkRt.anchoredPosition = new Vector2(50, -50); // Çıkış butonuyla simetrik
+            bkRt.sizeDelta = new Vector2(54, 54);
+            bkRt.localRotation = Quaternion.Euler(0, 0, 45); // Baklava
+ 
+            Image bkImg = backBtnObj.AddComponent<Image>();
+            bkImg.sprite = CreateRoundedRectSprite("back_btn_bg", 54, 54, 6, new Color(0.15f, 0.12f, 0.08f, 0.95f), _colorBorder, 2);
+            bkImg.color = Color.white;
+ 
+            GameObject bkIconObj = new GameObject("BackTextObj", typeof(RectTransform));
+            bkIconObj.transform.SetParent(backBtnObj.transform, false);
+            RectTransform bkiRt = bkIconObj.GetComponent<RectTransform>();
+            bkiRt.anchorMin = Vector2.zero;
+            bkiRt.anchorMax = Vector2.one;
+            bkiRt.offsetMin = Vector2.zero;
+            bkiRt.offsetMax = Vector2.zero;
+            bkiRt.localRotation = Quaternion.Euler(0, 0, -45); // Ters dönüş
+ 
+            var bkTxt = CreateText(bkIconObj, "Back", 14, TextAlignmentOptions.Center, fontAsset);
+            bkTxt.fontStyle = FontStyles.Bold;
+            bkTxt.color = _colorTextGold;
+ 
+            Button btnBack = backBtnObj.AddComponent<Button>();
+            btnBack.onClick.AddListener(OnBtnBackClick);
+
+            // Back butonu tıklama renk geçişi (Parıldama)
+            ColorBlock bkCb = btnBack.colors;
+            bkCb.normalColor = Color.white;
+            bkCb.highlightedColor = new Color(1.1f, 1.1f, 1.1f, 1f);
+            bkCb.pressedColor = new Color(0.96f, 0.80f, 0.22f, 1f);
+            bkCb.selectedColor = Color.white;
+            btnBack.colors = bkCb;
+
+            // 2. Sağ Üst: Mute (Ses) Butonu
+            GameObject muteBtnObj = new GameObject("btn_mute_diamond", typeof(RectTransform));
+            muteBtnObj.transform.SetParent(_groupServerList.transform, false);
+            RectTransform mtRt = muteBtnObj.GetComponent<RectTransform>();
+            mtRt.anchorMin = new Vector2(1f, 1f); // Sağ üst köşe
+            mtRt.anchorMax = new Vector2(1f, 1f);
+            mtRt.pivot = new Vector2(0.5f, 0.5f);
+            mtRt.anchoredPosition = new Vector2(-50, -50); // Web butonuyla simetrik
+            mtRt.sizeDelta = new Vector2(54, 54);
+            mtRt.localRotation = Quaternion.Euler(0, 0, 45); // Baklava
+ 
+            Image mtImg = muteBtnObj.AddComponent<Image>();
+            mtImg.sprite = CreateRoundedRectSprite("mute_btn_bg", 54, 54, 6, new Color(0.15f, 0.12f, 0.08f, 0.95f), _colorBorder, 2);
+            mtImg.color = Color.white;
+ 
+            GameObject mtIconObj = new GameObject("MuteIcon", typeof(RectTransform));
+            mtIconObj.transform.SetParent(muteBtnObj.transform, false);
+            RectTransform mtiRt = mtIconObj.GetComponent<RectTransform>();
+            mtiRt.anchorMin = new Vector2(0.5f, 0.5f);
+            mtiRt.anchorMax = new Vector2(0.5f, 0.5f);
+            mtiRt.pivot = new Vector2(0.5f, 0.5f);
+            mtiRt.sizeDelta = new Vector2(26, 26);
+            mtiRt.localRotation = Quaternion.Euler(0, 0, -45); // Ters dönüş
+ 
+            Image mtiImg = mtIconObj.AddComponent<Image>();
+            mtiImg.sprite = CreateMuteIconSprite(26, 26);
+            mtiImg.color = Color.white;
+ 
+            Button btnMute = muteBtnObj.AddComponent<Button>();
+            btnMute.onClick.AddListener(() => {
+                AudioListener.volume = AudioListener.volume > 0f ? 0f : 1f;
+                mtiImg.color = AudioListener.volume > 0f ? Color.white : new Color(1f, 1f, 1f, 0.4f);
+            });
+
+            // Mute butonu tıklama renk geçişi (Parıldama)
+            ColorBlock mtCb = btnMute.colors;
+            mtCb.normalColor = Color.white;
+            mtCb.highlightedColor = new Color(1.1f, 1.1f, 1.1f, 1f);
+            mtCb.pressedColor = new Color(0.96f, 0.80f, 0.22f, 1f);
+            mtCb.selectedColor = Color.white;
+            btnMute.colors = mtCb;
+
+            // 3. Sağ Alt: Delete My Account Yazısı
+            GameObject delAccObj = new GameObject("btn_delete_account", typeof(RectTransform));
+            delAccObj.transform.SetParent(_groupServerList.transform, false);
+            RectTransform delRt = delAccObj.GetComponent<RectTransform>();
+            delRt.anchorMin = new Vector2(1f, 0f); // Sağ alt köşe
+            delRt.anchorMax = new Vector2(1f, 0f);
+            delRt.pivot = new Vector2(1f, 0.5f);
+            delRt.anchoredPosition = new Vector2(-50, 40); // Köşeden hizalı
+            delRt.sizeDelta = new Vector2(180, 22);
+
+            Image delBg = delAccObj.AddComponent<Image>();
+            delBg.sprite = CreateAgreementFadeBg(180, 22, new Color(0.03f, 0.02f, 0.02f, 0.85f), Color.clear, 0);
+            delBg.color = Color.white;
+
+            var delTxt = CreateText(delAccObj, "Delete My Account", 12, TextAlignmentOptions.Center, fontAsset);
+            delTxt.fontStyle = FontStyles.Bold;
+            delTxt.color = _colorTextGold * 0.7f; // Hafif sönük gold
+
+            Button btnDel = delAccObj.AddComponent<Button>();
+            btnDel.onClick.AddListener(() => {
+                SetStatus("Account deletion request initiated.");
+            });
+
+             // 6. Uyarı/Sözleşme Metni ve Arka Planı (Genişlik 700, Yükseklik 56, Yazı Beyaz ve 15 Font)
+             GameObject agreePanelObj = new GameObject("AgreementPanel", typeof(RectTransform));
+             agreePanelObj.transform.SetParent(_canvas.transform, false);
+             _agreementPanelObj = agreePanelObj;
+             _agreementCanvasGroup = agreePanelObj.AddComponent<CanvasGroup>();
+             RectTransform agreeRt = agreePanelObj.GetComponent<RectTransform>();
+             agreeRt.anchorMin = new Vector2(0.5f, 0.5f);
+             agreeRt.anchorMax = new Vector2(0.5f, 0.5f);
+             agreeRt.pivot = new Vector2(0.5f, 0.5f);
+             agreeRt.sizeDelta = new Vector2(700, 56);
+             agreeRt.anchoredPosition = new Vector2(0, -275);
+ 
+             Image agreeImg = agreePanelObj.AddComponent<Image>();
+             agreeImg.sprite = CreateAgreementFadeBg(700, 56, new Color(0.03f, 0.02f, 0.02f, 0.85f), new Color(0.6f, 0.48f, 0.22f, 0.85f), 1);
+             agreeImg.color = Color.white;
+ 
+             var agreeTxt = CreateText(agreePanelObj, "By playing Draco Online World, you are deemed to have accepted\nthe game rules and terms. Click here for Terms and Conditions.", 15, TextAlignmentOptions.Center, fontAsset);
+             agreeTxt.color = Color.white;
+             
+             Button agreeBtn = agreePanelObj.AddComponent<Button>();
+             agreeBtn.transition = Selectable.Transition.None;
+             agreeBtn.onClick.AddListener(() => {
+                 Application.OpenURL("https://dracoonlineworld.com/terms");
+             });
+
+             // 7. Telif Hakkı Metni
+             GameObject copyPanelObj = new GameObject("CopyrightPanel", typeof(RectTransform));
+             copyPanelObj.transform.SetParent(_canvas.transform, false);
+             _copyrightPanelObj = copyPanelObj;
+              _copyrightCanvasGroup = copyPanelObj.AddComponent<CanvasGroup>();
+             RectTransform copyRt = copyPanelObj.GetComponent<RectTransform>();
+             copyRt.anchorMin = new Vector2(0.5f, 0.5f);
+             copyRt.anchorMax = new Vector2(0.5f, 0.5f);
+             copyRt.pivot = new Vector2(0.5f, 0.5f);
+             copyRt.sizeDelta = new Vector2(600, 30);
+             copyRt.anchoredPosition = new Vector2(0, -345);
+ 
+             Image copyImg = copyPanelObj.AddComponent<Image>();
+             copyImg.sprite = CreateAgreementFadeBg(600, 30, new Color(0f, 0f, 0f, 0.65f), Color.clear, 0);
+             copyImg.color = Color.white;
+ 
+             var copyTxt = CreateText(copyPanelObj, "© 2026 Draco Online World - All Rights Reserved.", 17, TextAlignmentOptions.Center, fontAsset);
+             copyTxt.color = _colorTextGold;
+         }
+
+        private void CreateForgotPasswordAndRemember(Transform parent, TMP_FontAsset font)
+        {
+            // 1. Sol Taraf: Beni Hatırla (Remember Me)
+            GameObject remObj = new GameObject("Txt_Remember", typeof(RectTransform));
+            remObj.transform.SetParent(parent, false);
+            RectTransform rRt = remObj.GetComponent<RectTransform>();
+            rRt.sizeDelta = new Vector2(120, 20);
+            rRt.anchoredPosition = new Vector2(-81, -25); // Hizalandı (X=-60, Y=-25)
+
+            var rTxt = CreateText(remObj, "Remember Me", 15, TextAlignmentOptions.MidlineLeft, font); // Font 11 yapıldı
+            rTxt.color = _colorTextGold;
+
+            // Solundaki Altın Baklava (Kare kutunun 45 derece döndürülmüş ve 15x15 büyütülmüş hali)
+            GameObject checkObj = new GameObject("Check_Diamond", typeof(RectTransform));
+            checkObj.transform.SetParent(parent, false);
+            RectTransform cRt = checkObj.GetComponent<RectTransform>();
+            cRt.sizeDelta = new Vector2(18, 18);
+            cRt.anchoredPosition = new Vector2(-155, -25); // Sol kenara hizalandı (X=-130, Y=-25)
+            cRt.localRotation = Quaternion.Euler(0, 0, 45); // Tam baklava yapmak için 45 derece döndürme
+
+            _rememberCheckImg = checkObj.AddComponent<Image>();
+            _rememberCheckImg.color = Color.white;
+            
+            Button cBtn = checkObj.AddComponent<Button>();
+            cBtn.onClick.AddListener(OnRememberToggle);
+            
+            Button rBtn = remObj.AddComponent<Button>();
+            rBtn.onClick.AddListener(OnRememberToggle);
+
+            // 2. Sağ Taraf: Şifremi Unuttum (Forgot Password?)
+            // Soluna eklenen Kilit İkonu (Lock Icon) - Yüksekliği 15
+            GameObject lockObj = new GameObject("Lock_Icon", typeof(RectTransform));
+            lockObj.transform.SetParent(parent, false);
+            RectTransform lRt = lockObj.GetComponent<RectTransform>();
+            lRt.sizeDelta = new Vector2(15, 18);
+            lRt.anchoredPosition = new Vector2(12, -25); // Hizalandı (X=38, Y=-25)
+
+            Image lImg = lockObj.AddComponent<Image>();
+            lImg.sprite = CreateLockIconSprite(15, 18);
+            lImg.color = Color.white;
+
+            GameObject forgotObj = new GameObject("Btn_Forgot", typeof(RectTransform));
+            forgotObj.transform.SetParent(parent, false);
+            RectTransform fRt = forgotObj.GetComponent<RectTransform>();
+            fRt.sizeDelta = new Vector2(130, 20);
+            fRt.anchoredPosition = new Vector2(90, -25); // Hizalandı (X=95, Y=-25)
+
+            var fTxt = CreateText(forgotObj, "Forgot Password?", 15, TextAlignmentOptions.MidlineLeft, font); // Font 11 yapıldı
+            fTxt.color = _colorTextGold;
+            
+            Button fBtn = forgotObj.AddComponent<Button>();
+        }
+
+
+
+        private InputField CreateStyledInputField(Transform parent, string placeholderText, float yPos, float width, float height, bool isPassword, TMP_FontAsset font)
+        {
+            GameObject inputObj = new GameObject("InputField", typeof(RectTransform));
+            inputObj.transform.SetParent(parent, false);
+            
+            RectTransform rt = inputObj.GetComponent<RectTransform>();
+            rt.sizeDelta = new Vector2(width, height);
+            rt.anchoredPosition = new Vector2(0, yPos);
+            
+            Image img = inputObj.AddComponent<Image>();
+            img.sprite = CreateHexagonSprite("login_input_bg", (int)width, (int)height, 
+                new Color(0.06f, 0.05f, 0.05f, 0.98f), 
+                new Color(0.03f, 0.02f, 0.02f, 0.98f), 
+                new Color(0.36f, 0.29f, 0.13f, 0.9f), 
+                new Color(0.54f, 0.43f, 0.20f, 0.9f));
+            img.color = Color.white;
+
+            GameObject textObj = new GameObject("Text", typeof(RectTransform));
+            textObj.transform.SetParent(inputObj.transform, false);
+            Text text = textObj.AddComponent<Text>();
+            text.font = Font.CreateDynamicFontFromOSFont("Arial", 13);
+            text.fontSize = 13;
+            text.color = Color.white;
+            text.alignment = TextAnchor.MiddleLeft;
+            text.supportRichText = false;
+            
+            RectTransform textRt = textObj.GetComponent<RectTransform>();
+            textRt.anchorMin = Vector2.zero;
+            textRt.anchorMax = Vector2.one;
+            textRt.offsetMin = new Vector2(20f, 0f); // Sivri altıgen kenarlar için 20px sol payı
+            textRt.offsetMax = new Vector2(-20f, 0f); // 20px sağ payı
+            
+            GameObject placeholderObj = new GameObject("Placeholder", typeof(RectTransform));
+            placeholderObj.transform.SetParent(inputObj.transform, false);
+            Text placeholder = placeholderObj.AddComponent<Text>();
+            placeholder.font = text.font;
+            placeholder.fontSize = 13;
+            placeholder.color = new Color(0.5f, 0.5f, 0.5f, 0.8f);
+            placeholder.alignment = TextAnchor.MiddleLeft;
+            placeholder.text = placeholderText;
+            placeholder.fontStyle = FontStyle.Italic;
+            
+            RectTransform placeholderRt = placeholderObj.GetComponent<RectTransform>();
+            placeholderRt.anchorMin = Vector2.zero;
+            placeholderRt.anchorMax = Vector2.one;
+            placeholderRt.offsetMin = new Vector2(20f, 0f); // Sivri altıgen kenarlar için 20px sol payı
+            placeholderRt.offsetMax = new Vector2(-20f, 0f); // 20px sağ payı
+            
+            InputField inputField = inputObj.AddComponent<InputField>();
+            inputField.textComponent = text;
+            inputField.placeholder = placeholder;
+            inputField.characterLimit = 20;
+            if (isPassword)
+            {
+                inputField.contentType = InputField.ContentType.Password;
+            }
+            
+            return inputField;
+        }
+
+        private Button CreateStyledButton(Transform parent, string buttonText, float yPos, float width, float height, Color buttonColor, Color textColor, TMP_FontAsset font, bool isPrimary)
+        {
+            GameObject btnObj = new GameObject("Button", typeof(RectTransform));
+            btnObj.transform.SetParent(parent, false);
+            
+            RectTransform rt = btnObj.GetComponent<RectTransform>();
+            rt.sizeDelta = new Vector2(width, height);
+            rt.anchoredPosition = new Vector2(0, yPos);
+            
+            Image img = btnObj.AddComponent<Image>();
+            if (isPrimary)
+            {
+                img.sprite = CreateHexagonSprite("login_btn_gold", (int)width, (int)height, 
+                    new Color(0.96f, 0.80f, 0.22f, 0.98f), 
+                    new Color(0.68f, 0.48f, 0.08f, 0.98f), 
+                    new Color(0.85f, 0.65f, 0.15f, 0.98f), 
+                    new Color(1.00f, 0.95f, 0.72f, 0.98f));
+            }
+            else
+            {
+                img.sprite = CreateHexagonSprite("login_btn_dark", (int)width, (int)height, 
+                    new Color(0.12f, 0.10f, 0.08f, 0.98f), 
+                    new Color(0.06f, 0.05f, 0.04f, 0.98f), 
+                    new Color(0.42f, 0.34f, 0.15f, 0.98f), 
+                    new Color(0.60f, 0.48f, 0.22f, 0.98f));
+            }
+            img.color = Color.white;
+            
+            int fontSize = isPrimary ? 15 : 12; // İkincil altıgen butonların yazısı sığması için 9 yapıldı
+            var textTxt = CreateText(btnObj, buttonText, fontSize, TextAlignmentOptions.Center, font);
+            textTxt.color = textColor;
+            textTxt.fontStyle = FontStyles.Bold;
+
+            if (isPrimary)
+            {
+                var shadow = textTxt.gameObject.AddComponent<Shadow>();
+                shadow.effectColor = new Color(0.08f, 0.05f, 0.02f, 0.9f); // koyu kahve gölge
+                shadow.effectDistance = new Vector2(1f, -1f);
+            }
+            
+            Button btn = btnObj.AddComponent<Button>();
+            btn.transition = Selectable.Transition.ColorTint;
+            
+            return btn;
+        }
+
+        private TextMeshProUGUI CreateText(GameObject parent, string text, int fontSize, TextAlignmentOptions alignment, TMP_FontAsset font)
+        {
+            var go = new GameObject("Text", typeof(RectTransform));
+            go.transform.SetParent(parent.transform, false);
+            var rt = go.GetComponent<RectTransform>();
+            rt.anchorMin = Vector2.zero;
+            rt.anchorMax = Vector2.one;
+            rt.offsetMin = Vector2.zero;
+            rt.offsetMax = Vector2.zero;
+ 
+            var txt = go.AddComponent<TextMeshProUGUI>();
+            txt.text = text;
+            txt.fontSize = fontSize;
+            txt.alignment = alignment;
+            txt.color = _colorTextGold;
+            txt.font = font;
+            return txt;
+        }
+
+
+        // ============================================
+        // Dinamik Vektör Arayüz Çiziciler (Procedural Texture & Sprites)
+        // ============================================
+        private Sprite CreateHexagonSprite(string name, int w, int h, Color centerColor, Color edgeColor, Color borderColor, Color innerGlowColor)
+        {
+            int scale = 4; // 4x Supersampling for extremely smooth vector lines (no pixelation)
+            int sw = w * scale;
+            int sh = h * scale;
+
+            Texture2D tex = new Texture2D(sw, sh, TextureFormat.RGBA32, false);
+            tex.filterMode = FilterMode.Bilinear;
+            tex.wrapMode = TextureWrapMode.Clamp;
+
+            float cy = sh / 2f;
+            float indent = sh * 0.4f; // Sivri ok ucunun derinliği
+            float cosTheta = 0.78f;
+
+            float resScale = sh / 36f;
+            float borderOuter = 1.5f * resScale;
+            float borderInner = 3.0f * resScale;
+            float shadowGap = 4.0f * resScale;
+
+            for (int y = 0; y < sh; y++)
+            {
+                for (int x = 0; x < sw; x++)
+                {
+                    // Altıgen üyelik testi
+                    float leftBound = Mathf.Abs(y - cy) * (indent / cy);
+                    float rightBound = sw - leftBound;
+
+                    // Sınırlara olan en yakın mesafeyi bul
+                    float distToLeft = (x - leftBound) * cosTheta;
+                    float distToRight = (rightBound - x) * cosTheta;
+                    float distToTop = (sh - 1) - y;
+                    float distToBottom = y;
+                    float minDist = Mathf.Min(Mathf.Min(distToLeft, distToRight), Mathf.Min(distToTop, distToBottom));
+
+                    // Kenarlarda Anti-Aliasing (Subpixel Yumuşatma) hesabı
+                    if (minDist < 0f)
+                    {
+                        float edgeFade = Mathf.Clamp01(1f + minDist);
+                        if (edgeFade > 0.01f)
+                        {
+                            Color edgeC = borderColor;
+                            edgeC.a *= edgeFade;
+                            tex.SetPixel(x, y, edgeC);
+                        }
+                        else
+                        {
+                            tex.SetPixel(x, y, Color.clear);
+                        }
+                    }
+                    else if (minDist < borderOuter)
+                    {
+                        tex.SetPixel(x, y, borderColor);
+                    }
+                    else if (minDist < borderInner)
+                    {
+                        tex.SetPixel(x, y, innerGlowColor);
+                    }
+                    else if (minDist < shadowGap)
+                    {
+                        // Koyu gölge oluğu (merkez rengine yakın ama çok daha koyu)
+                        tex.SetPixel(x, y, Color.Lerp(edgeColor, Color.black, 0.6f));
+                    }
+                    else
+                    {
+                        float fade = Mathf.Abs(y - cy) / cy;
+                        Color fillColor = Color.Lerp(centerColor, edgeColor, fade);
+
+                        // Çok hafif cam yansıması parlaması
+                        float hx = sw * 0.35f;
+                        float hy = sh * 0.65f;
+                        float hdx = (x - hx) * ((float)sh / sw);
+                        float hdy = y - hy;
+                        float distToHighlight = Mathf.Sqrt(hdx * hdx + hdy * hdy);
+                        float highlightRadius = sh * 0.35f;
+
+                        if (distToHighlight < highlightRadius)
+                        {
+                            float factor = 1f - (distToHighlight / highlightRadius);
+                            factor = factor * factor * (3f - 2f * factor);
+                            float gloss = factor * 0.06f;
+                            fillColor.r = Mathf.Clamp01(fillColor.r + gloss);
+                            fillColor.g = Mathf.Clamp01(fillColor.g + gloss * 0.8f);
+                            fillColor.b = Mathf.Clamp01(fillColor.b + gloss * 0.5f);
+                            fillColor.a = Mathf.Clamp01(fillColor.a + gloss * 0.5f);
+                        }
+
+                        tex.SetPixel(x, y, fillColor);
+                    }
+                }
+            }
+            tex.Apply();
+            return Sprite.Create(tex, new Rect(0f, 0f, sw, sh), new Vector2(0.5f, 0.5f));
+        }
+
+        private Sprite CreateLockIconSprite(int w, int h)
+        {
+            int scale = 4;
+            int sw = w * scale;
+            int sh = h * scale;
+            Texture2D tex = new Texture2D(sw, sh, TextureFormat.RGBA32, false);
+            tex.filterMode = FilterMode.Bilinear;
+            tex.wrapMode = TextureWrapMode.Clamp;
+
+            Color metalColor = _colorBorder; // Altın/bronz kilit gövdesi
+            Color shackleColor = new Color(0.85f, 0.75f, 0.55f, 1f); // Gümüş/altın halka
+
+            float bodyHeight = sh * 0.55f;
+            float shackleHeight = sh - bodyHeight;
+            float cx = sw / 2f;
+            
+            // Halka yarıçapları
+            float outerR = sw * 0.35f;
+            float innerR = sw * 0.18f;
+            float shackleCenterY = bodyHeight;
+
+            for (int y = 0; y < sh; y++)
+            {
+                for (int x = 0; x < sw; x++)
+                {
+                    bool drawBody = false;
+                    bool drawShackle = false;
+
+                    // 1. Gövde testi (alt kısım)
+                    if (y < bodyHeight)
+                    {
+                        // Kenarlardan hafif yumuşatılmış gövde
+                        float dx = Mathf.Max(0, Mathf.Abs(x - cx) - (sw * 0.4f));
+                        float dy = Mathf.Max(0, Mathf.Abs(y - bodyHeight * 0.5f) - (bodyHeight * 0.35f));
+                        if (dx * dx + dy * dy < 4f * scale)
+                        {
+                            drawBody = true;
+                        }
+                    }
+                    // 2. Kelepçe/Halka testi (üst kısım)
+                    else
+                    {
+                        float dx = x - cx;
+                        float dy = y - shackleCenterY;
+                        float dist = Mathf.Sqrt(dx * dx + dy * dy);
+                        // Halka yarım daire ve düz bacaklar
+                        if (y >= shackleCenterY)
+                        {
+                            if (dist >= innerR && dist <= outerR)
+                            {
+                                drawShackle = true;
+                            }
+                        }
+                    }
+
+                    if (drawBody)
+                    {
+                        tex.SetPixel(x, y, metalColor);
+                    }
+                    else if (drawShackle)
+                    {
+                        tex.SetPixel(x, y, shackleColor);
+                    }
+                    else
+                    {
+                        tex.SetPixel(x, y, Color.clear);
+                    }
+                }
+            }
+            tex.Apply();
+            return Sprite.Create(tex, new Rect(0f, 0f, sw, sh), new Vector2(0.5f, 0.5f));
+        }
+
+
+
+        private Sprite CreatePanelBgSprite(string name, int w, int h, Color topColor, Color bottomColor, Color borderColor, int borderWidth)
+        {
+            int scale = 2; // 2x supersampling is enough for a crisp vector login panel
+            int sw = w * scale;
+            int sh = h * scale;
+            int sborderWidth = borderWidth * scale;
+
+            Texture2D tex = new Texture2D(sw, sh, TextureFormat.RGBA32, false);
+            tex.filterMode = FilterMode.Bilinear;
+            tex.wrapMode = TextureWrapMode.Clamp;
+
+            for (int y = 0; y < sh; y++)
+            {
+                float t = (float)y / sh;
+                Color fillColor = Color.Lerp(bottomColor, topColor, t);
+
+                for (int x = 0; x < sw; x++)
+                {
+                    bool isBorder = false;
+                    if (sborderWidth > 0)
+                    {
+                        if (x < sborderWidth || x >= sw - sborderWidth || y < sborderWidth || y >= sh - sborderWidth)
+                            isBorder = true;
+                    }
+                    tex.SetPixel(x, y, isBorder ? borderColor : fillColor);
+                }
+            }
+            tex.Apply();
+            return Sprite.Create(tex, new Rect(0, 0, sw, sh), new Vector2(0.5f, 0.5f));
+        }
+
+        private Sprite CreateMuteIconSprite(int w, int h)
+        {
+            int scale = 4;
+            int sw = w * scale;
+            int sh = h * scale;
+            Texture2D tex = new Texture2D(sw, sh, TextureFormat.RGBA32, false);
+            tex.filterMode = FilterMode.Bilinear;
+            tex.wrapMode = TextureWrapMode.Clamp;
+
+            Color goldColor = new Color(0.9f, 0.75f, 0.25f, 1f);
+            float cx = sw * 0.4f;
+            float cy = sh / 2f;
+
+            for (int y = 0; y < sh; y++)
+            {
+                for (int x = 0; x < sw; x++)
+                {
+                    bool draw = false;
+                    // Speaker body
+                    if (x >= cx - 3f * scale && x <= cx && Mathf.Abs(y - cy) <= 2.5f * scale)
+                    {
+                        draw = true;
+                    }
+                    // Speaker cone
+                    float dx = x - cx;
+                    if (dx > 0 && dx <= 4.5f * scale)
+                    {
+                        float halfHeight = 2.5f * scale + dx * 0.7f;
+                        if (Mathf.Abs(y - cy) <= halfHeight)
+                        {
+                            draw = true;
+                        }
+                    }
+                    // Sound waves
+                    float r1 = 6.5f * scale;
+                    float r2 = 9.5f * scale;
+                    float dist = Mathf.Sqrt((x - cx)*(x - cx) + (y - cy)*(y - cy));
+                    if (x > cx + 4.5f * scale)
+                    {
+                        if (Mathf.Abs(dist - r1) < 0.8f * scale && Mathf.Abs(y - cy) < 5f * scale)
+                            draw = true;
+                        if (Mathf.Abs(dist - r2) < 0.8f * scale && Mathf.Abs(y - cy) < 8f * scale)
+                            draw = true;
+                    }
+
+                    tex.SetPixel(x, y, draw ? goldColor : Color.clear);
+                }
+            }
+            tex.Apply();
+            return Sprite.Create(tex, new Rect(0f, 0f, sw, sh), new Vector2(0.5f, 0.5f));
+        }
+
+        private void UpdateBackgroundForState(bool isServerList)
+        {
+            if (_bgImage != null)
+            {
+                string path = isServerList ? "UI/select_server" : "UI/login_bg";
+                Sprite newBg = Resources.Load<Sprite>(path);
+                if (newBg != null)
+                {
+                    _bgImage.sprite = newBg;
+                    var fitter = _bgImage.GetComponent<AspectRatioFitter>();
+                    if (fitter != null)
+                    {
+                        fitter.aspectRatio = newBg.rect.width / newBg.rect.height;
+                    }
+                }
+                else
+                {
+                    Debug.LogWarning($"[LOGIN] Arka plan görseli '{path}' Sprite olarak yuklenemedi.");
+                }
+            }
+        }
+
+        private Sprite CreateGlobeIconSprite(int w, int h)
+        {
+            int scale = 4;
+            int sw = w * scale;
+            int sh = h * scale;
+            Texture2D tex = new Texture2D(sw, sh, TextureFormat.RGBA32, false);
+            tex.filterMode = FilterMode.Bilinear;
+            tex.wrapMode = TextureWrapMode.Clamp;
+            Color goldColor = new Color(0.9f, 0.75f, 0.25f, 1f);
+            float cx = sw / 2f;
+            float cy = sh / 2f;
+            float rOuter = sw * 0.45f;
+            float thickness = 1.2f * scale;
+            for (int y = 0; y < sh; y++)
+            {
+                for (int x = 0; x < sw; x++)
+                {
+                    float dx = x - cx;
+                    float dy = y - cy;
+                    float dist = Mathf.Sqrt(dx * dx + dy * dy);
+                    bool drawLine = false;
+                    // 1. Dis Cember
+                    if (Mathf.Abs(dist - rOuter) < thickness * 0.75f)
+                    {
+                        drawLine = true;
+                    }
+                    // 2. Ekvator (Yatay)
+                    if (Mathf.Abs(dy) < thickness * 0.5f && dist < rOuter)
+                    {
+                        drawLine = true;
+                    }
+                    // 3. Merkez Boylami (Dikey)
+                    if (Mathf.Abs(dx) < thickness * 0.5f && dist < rOuter)
+                    {
+                        drawLine = true;
+                    }
+                    // 4. Yan Boylamlar (Elips)
+                    float ellipseA = rOuter * 0.5f;
+                    float ellipseVal = (dx * dx) / (ellipseA * ellipseA) + (dy * dy) / (rOuter * rOuter);
+                    if (Mathf.Abs(ellipseVal - 1f) < 0.12f && dist < rOuter)
+                    {
+                        drawLine = true;
+                    }
+                    if (drawLine)
+                    {
+                        tex.SetPixel(x, y, goldColor);
+                    }
+                    else
+                    {
+                        tex.SetPixel(x, y, Color.clear);
+                    }
+                }
+            }
+            tex.Apply();
+            return Sprite.Create(tex, new Rect(0f, 0f, sw, sh), new Vector2(0.5f, 0.5f));
+        }
+        private Sprite CreateAgreementFadeBg(int w, int h, Color fillColor, Color borderGoldColor, int borderWidth)
+        {
+            int scale = 2;
+            int sw = w * scale;
+            int sh = h * scale;
+            int sborderWidth = borderWidth * scale;
+            Texture2D tex = new Texture2D(sw, sh, TextureFormat.RGBA32, false);
+            tex.filterMode = FilterMode.Bilinear;
+            tex.wrapMode = TextureWrapMode.Clamp;
+
+            for (int y = 0; y < sh; y++)
+            {
+                for (int x = 0; x < sw; x++)
+                {
+                    // Merkezden yatayda uzaklık oranı (0.0 merkezde, 1.0 en uçlarda)
+                    float distRatio = Mathf.Abs(x - sw / 2f) / (sw / 2f);
+                    // Cosine tabanlı pürüzsüz sönümlenme çarpanı
+                    float fade = Mathf.Cos(distRatio * Mathf.PI / 2f);
+                    Color c = Color.clear;
+
+                    // Üst veya alt sınırda ince sınır çizgisi varsa
+                    if (y >= sh - sborderWidth || y < sborderWidth)
+                    {
+                        c = new Color(borderGoldColor.r, borderGoldColor.g, borderGoldColor.b, borderGoldColor.a * fade);
+                    }
+                    else
+                    {
+                        c = new Color(fillColor.r, fillColor.g, fillColor.b, fillColor.a * fade);
+                    }
+                    tex.SetPixel(x, y, c);
+                }
+            }
+            tex.Apply();
+            return Sprite.Create(tex, new Rect(0f, 0f, sw, sh), new Vector2(0.5f, 0.5f));
+        }
+
+        private Sprite CreateRoundedRectSprite(string name, int w, int h, int radius, Color fillColor, Color borderColor, int borderWidth)
+        {
+            int scale = 2;
+            int sw = w * scale;
+            int sh = h * scale;
+            int sradius = radius * scale;
+            int sborderWidth = borderWidth * scale;
+
+            Texture2D tex = new Texture2D(sw, sh, TextureFormat.RGBA32, false);
+            tex.filterMode = FilterMode.Bilinear;
+            tex.wrapMode = TextureWrapMode.Clamp;
+
+            for (int y = 0; y < sh; y++)
+            {
+                for (int x = 0; x < sw; x++)
+                {
+                    bool isCorner = false;
+                    float dx = 0, dy = 0;
+
+                    if (sradius > 0)
+                    {
+                        if (x < sradius && y < sradius) { dx = sradius - x; dy = sradius - y; isCorner = true; }
+                        else if (x >= sw - sradius && y < sradius) { dx = sradius - (sw - x); dy = sradius - y; isCorner = true; }
+                        else if (x < sradius && y >= sh - sradius) { dx = sradius - x; dy = sradius - (sh - y); isCorner = true; }
+                        else if (x >= sw - sradius && y >= sh - sradius) { dx = sradius - (sw - x); dy = sradius - (sh - y); isCorner = true; }
+                    }
+
+                    if (isCorner)
+                    {
+                        float dist = Mathf.Sqrt(dx * dx + dy * dy);
+                        float outerEdgeTransition = 1.0f;
+                        float delta = dist - sradius;
+
+                        if (delta >= outerEdgeTransition)
+                        {
+                            tex.SetPixel(x, y, Color.clear);
+                        }
+                        else
+                        {
+                            bool isBorder = (sborderWidth > 0 && dist >= (sradius - sborderWidth));
+                            Color baseColor = isBorder ? borderColor : fillColor;
+                            if (delta > -outerEdgeTransition)
+                            {
+                                float alphaPct = 1f - ((delta + outerEdgeTransition) / (2f * outerEdgeTransition));
+                                baseColor.a *= Mathf.Clamp01(alphaPct);
+                            }
+                            tex.SetPixel(x, y, baseColor);
+                        }
+                    }
+                    else
+                    {
+                        bool isBorder = false;
+                        if (sborderWidth > 0)
+                        {
+                            if (x < sborderWidth || x >= sw - sborderWidth || y < sborderWidth || y >= sh - sborderWidth)
+                                isBorder = true;
+                        }
+                        tex.SetPixel(x, y, isBorder ? borderColor : fillColor);
+                    }
+                }
+            }
+            tex.Apply();
+            return Sprite.Create(tex, new Rect(0, 0, sw, sh), new Vector2(0.5f, 0.5f));
+        }
+
+        private Sprite CreateFadingDividerSprite(string name, int w, int h, Color color)
+        {
+            int sw = w;
+            int sh = h;
+            Texture2D tex = new Texture2D(sw, sh, TextureFormat.RGBA32, false);
+            tex.filterMode = FilterMode.Bilinear;
+            tex.wrapMode = TextureWrapMode.Clamp;
+
+            for (int y = 0; y < sh; y++)
+            {
+                for (int x = 0; x < sw; x++)
+                {
+                    float t = (float)x / sw;
+                    // Fade out towards the edges (quadratic fade)
+                    float alphaPct = 1f - Mathf.Pow(2f * t - 1f, 2f);
+                    Color pixelColor = color;
+                    pixelColor.a *= alphaPct;
+                    tex.SetPixel(x, y, pixelColor);
+                }
+            }
+            tex.Apply();
+            return Sprite.Create(tex, new Rect(0, 0, sw, sh), new Vector2(0.5f, 0.5f));
+        }
+
+        // ============================================
+        // Tick — cpp:153-163
+        // ============================================
+        private void Update()
+        {
+            if (_fTimeUntilNextGameConnectionAttempt > 0f)
+            {
+                _fTimeUntilNextGameConnectionAttempt -= Time.deltaTime;
+                if (_fTimeUntilNextGameConnectionAttempt <= 0f)
+                {
+                    _fTimeUntilNextGameConnectionAttempt = 0f;
+                    if (_btnConnect != null) _btnConnect.interactable = true;
+                }
+            }
+            HandleKeyInput();
+        }
+
+        // ============================================
+        // OnKeyPress — cpp:568-636
+        // ============================================
+        private void HandleKeyInput()
+        {
+            var kb = Keyboard.current;
+            if (kb == null) return;
+
+            if (!_bLogIn)
+            {
+                if (kb.tabKey.wasPressedThisFrame)
+                    FocusCircular();
+                if (kb.enterKey.wasPressedThisFrame || kb.numpadEnterKey.wasPressedThisFrame)
+                    MsgSend_AccountLogIn();
+            }
+            else if (_groupServerList != null && _groupServerList.activeSelf)
+            {
+                if (kb.enterKey.wasPressedThisFrame || kb.numpadEnterKey.wasPressedThisFrame)
+                    ConnectToGameServer();
+            }
+        }
+
+        private void FocusCircular()
+        {
+            if (_editId == null || _editPw == null) return;
+            if (_editId.isFocused)
+                _editPw.ActivateInputField();
+            else
+                _editId.ActivateInputField();
+        }
+
+        // ============================================
+        // Buton handler'ları — cpp:72-161
+        // ============================================
+        private void OnBtnLogInClick() => MsgSend_AccountLogIn();
+
+        private void OnBtnCancelClick()
+        {
+            Application.Quit();
+#if UNITY_EDITOR
+            UnityEditor.EditorApplication.isPlaying = false;
+#endif
+        }
+
+        private void OnBtnConnectClick() => ConnectToGameServer();
+
+        // ============================================
+        // MsgSend_AccountLogIn — cpp:188-219
+        // ============================================
+        private void MsgSend_AccountLogIn()
+        {
+            if (_editId == null || _editPw == null) return;
+            string szAccount = _editId.text?.Trim() ?? "";
+            string szPassWord = _editPw.text ?? "";
+
+            if (string.IsNullOrEmpty(szAccount) || string.IsNullOrEmpty(szPassWord) ||
+                szAccount.Length >= 20 || szPassWord.Length >= 12)
+                return;
+
+            // Remember Me verilerini kaydet/sil
+            if (_rememberMe)
+            {
+                PlayerPrefs.SetString("SaveId", szAccount);
+                PlayerPrefs.SetString("SavePw", szPassWord);
+            }
+            else
+            {
+                PlayerPrefs.DeleteKey("SaveId");
+                PlayerPrefs.DeleteKey("SavePw");
+            }
+            PlayerPrefs.SetInt("RememberMe", _rememberMe ? 1 : 0);
+            PlayerPrefs.Save();
+
+            SetVisibleLogInUIs(false);
+            _bLogIn = true;
+            SetStatus("Logging in...");
+
+            // Open-KO: WIZ_LOGIN — JvCryption şifreli
+            KONetworkManager.Instance.SendLogin(szAccount, szPassWord);
+        }
+
+
+
+        /// <summary>
+        /// Open-KO WIZ_LOGIN yanıtı.
+        /// result: 0xFF=fail, 1=Karus, 2=ElMorad (nation)
+        /// Birebir: EbenezerReadQueueThread.cpp satır 37-44
+        /// </summary>
+        private void MsgRecv_AccountLogIn_KO(byte result)
+        {
+            if (result == 0xFF)
+            {
+                // Gerçek hata — hesap veya şifre yanlış
+                SetStatus("Login failed — invalid account or password.");
+                SetVisibleLogInUIs(true);
+                _bLogIn = false;
+                return;
+            }
+
+            // result: 0=nation yok, 1=Karus, 2=ElMorad
+            byte nation = result;
+
+            if (GameManager.Instance != null)
+                GameManager.Instance.Nation = nation;
+
+            // Login başarılı — karakter listesini iste
+            KONetworkManager.Instance.SendAllCharInfoReq();
+
+            // Sunucu listesi — tek sunucu (her başarılı loginde listeyi temizle)
+            _serverInfos.Clear();
+            string curIP = (KONetworkManager.Instance != null && !string.IsNullOrEmpty(KONetworkManager.Instance.ServerIP)) 
+                ? KONetworkManager.Instance.ServerIP 
+                : "192.168.1.10";
+            ServerInfoAdd("Ares", curIP, KOPacketHandler.MobileServerUserCount);
+            OpenServerList();
+        }
+
+        public void ShowConnectingDialog()
+        {
+            if (_uiConnectingDialog != null)
+            {
+                _uiConnectingDialog.SetActive(true);
+                StartCoroutine(FadeInConnectingDialogCoroutine());
+                return;
+            }
+
+            var fontAsset = Resources.Load<TMPro.TMP_FontAsset>("Fonts & Materials/LiberationSans SDF");
+
+            // Connecting Dialog (Centered, 360x160 matching Disconnect Dialog box)
+            _uiConnectingDialog = new GameObject("ConnectingDialog", typeof(RectTransform), typeof(Image), typeof(CanvasGroup));
+            _uiConnectingDialog.transform.SetParent(_canvas.transform, false);
+            var dialogRt = _uiConnectingDialog.GetComponent<RectTransform>();
+            dialogRt.anchorMin = new Vector2(0.5f, 0.5f);
+            dialogRt.anchorMax = new Vector2(0.5f, 0.5f);
+            dialogRt.pivot = new Vector2(0.5f, 0.5f);
+            dialogRt.sizeDelta = new Vector2(360f, 160f);
+            dialogRt.anchoredPosition = Vector2.zero;
+
+            var dialogImg = _uiConnectingDialog.GetComponent<Image>();
+            dialogImg.sprite = CreatePanelBgSprite("connecting_dialog_bg", 360, 160, 
+                new Color(0.15f, 0.12f, 0.10f, 0.95f), // Top brown
+                new Color(0.06f, 0.05f, 0.05f, 0.95f), // Bottom black
+                new Color(0.6f, 0.48f, 0.22f, 0.9f),   // Border gold
+                2);
+            dialogImg.color = Color.white;
+
+            _uiConnectingDialogCanvasGroup = _uiConnectingDialog.GetComponent<CanvasGroup>();
+            _uiConnectingDialogCanvasGroup.alpha = 0f;
+
+            // Dialog Title (NETWORK)
+            GameObject dialogTitleObj = new GameObject("TitleText", typeof(RectTransform));
+            dialogTitleObj.transform.SetParent(_uiConnectingDialog.transform, false);
+            var dialogTitleRt = dialogTitleObj.GetComponent<RectTransform>();
+            dialogTitleRt.anchorMin = new Vector2(0.5f, 1f);
+            dialogTitleRt.anchorMax = new Vector2(0.5f, 1f);
+            dialogTitleRt.pivot = new Vector2(0.5f, 0.5f);
+            dialogTitleRt.sizeDelta = new Vector2(340f, 22f);
+            dialogTitleRt.anchoredPosition = new Vector2(0f, -20f);
+
+            var dialogTitleTxt = dialogTitleObj.AddComponent<TMPro.TextMeshProUGUI>();
+            dialogTitleTxt.font = fontAsset;
+            dialogTitleTxt.fontSize = 16;
+            dialogTitleTxt.fontStyle = TMPro.FontStyles.Bold;
+            dialogTitleTxt.alignment = TMPro.TextAlignmentOptions.Center;
+            dialogTitleTxt.color = new Color(0.95f, 0.82f, 0.45f); // Medieval Gold
+            dialogTitleTxt.text = "NETWORK";
+
+            // Dialog Content (Connecting...)
+            GameObject dialogContentObj = new GameObject("ContentText", typeof(RectTransform));
+            dialogContentObj.transform.SetParent(_uiConnectingDialog.transform, false);
+            var dialogContentRt = dialogContentObj.GetComponent<RectTransform>();
+            dialogContentRt.anchorMin = new Vector2(0.5f, 1f);
+            dialogContentRt.anchorMax = new Vector2(0.5f, 1f);
+            dialogContentRt.pivot = new Vector2(0.5f, 0.5f);
+            dialogContentRt.sizeDelta = new Vector2(340f, 36f);
+            dialogContentRt.anchoredPosition = new Vector2(0f, -95f); // Centered below title
+
+            var dialogContentTxt = dialogContentObj.AddComponent<TMPro.TextMeshProUGUI>();
+            dialogContentTxt.font = fontAsset;
+            dialogContentTxt.fontSize = 14;
+            dialogContentTxt.fontStyle = TMPro.FontStyles.Bold;
+            dialogContentTxt.alignment = TMPro.TextAlignmentOptions.Center;
+            dialogContentTxt.color = new Color(0.9f, 0.85f, 0.75f, 1f); // Warm white
+            dialogContentTxt.text = "Connecting...";
+
+            StartCoroutine(FadeInConnectingDialogCoroutine());
+        }
+
+        private System.Collections.IEnumerator FadeInConnectingDialogCoroutine()
+        {
+            float elapsed = 0f;
+            float fadeDuration = 0.25f;
+            if (_uiConnectingDialogCanvasGroup != null)
+                _uiConnectingDialogCanvasGroup.alpha = 0f;
+
+            if (_uiConnectingDialog != null)
+                _uiConnectingDialog.transform.localScale = new Vector3(0.85f, 0.85f, 1f);
+
+            while (elapsed < fadeDuration)
+            {
+                elapsed += Time.deltaTime;
+                float t = Mathf.Clamp01(elapsed / fadeDuration);
+                float easeT = 1f - Mathf.Pow(1f - t, 3); // Ease out cubic
+
+                if (_uiConnectingDialogCanvasGroup != null)
+                    _uiConnectingDialogCanvasGroup.alpha = t;
+
+                if (_uiConnectingDialog != null)
+                    _uiConnectingDialog.transform.localScale = Vector3.Lerp(new Vector3(0.85f, 0.85f, 1f), Vector3.one, easeT);
+
+                yield return null;
+            }
+
+            if (_uiConnectingDialogCanvasGroup != null)
+                _uiConnectingDialogCanvasGroup.alpha = 1f;
+
+            if (_uiConnectingDialog != null)
+                _uiConnectingDialog.transform.localScale = Vector3.one;
+        }
+
+        public void HideConnectingDialog()
+        {
+            if (_uiConnectingDialog != null)
+            {
+                _uiConnectingDialog.SetActive(false);
+            }
+        }
+
+
+
+        private System.Collections.IEnumerator TransitionToCharacterSelectCoroutine()
+        {
+            float elapsed = 0f;
+            float fadeOutDuration = 0.4f;
+
+            Vector2 leftStart = _serverListPanelRt != null ? _serverListPanelRt.anchoredPosition : new Vector2(150f, 20f);
+            Vector2 leftEnd = new Vector2(-200f, 20f);
+
+            Vector2 rightStart = _channelsPanelRt != null ? _channelsPanelRt.anchoredPosition : new Vector2(-150f, 20f);
+            Vector2 rightEnd = new Vector2(200f, 20f);
+
+            Vector2 bottomStart = _bottomGroupRt != null ? _bottomGroupRt.anchoredPosition : Vector2.zero;
+            Vector2 bottomEnd = new Vector2(0f, -100f);
+
+            while (elapsed < fadeOutDuration)
+            {
+                elapsed += Time.deltaTime;
+                float t = Mathf.Clamp01(elapsed / fadeOutDuration);
+                float easeT = 1f - Mathf.Pow(1f - t, 3);
+
+                if (_serverListCanvasGroup != null) _serverListCanvasGroup.alpha = 1f - t;
+                if (_serverListPanelRt != null) _serverListPanelRt.anchoredPosition = Vector2.Lerp(leftStart, leftEnd, easeT);
+
+                if (_channelsAndEnterCanvasGroup != null) _channelsAndEnterCanvasGroup.alpha = 1f - t;
+                if (_channelsPanelRt != null) _channelsPanelRt.anchoredPosition = Vector2.Lerp(rightStart, rightEnd, easeT);
+                if (_bottomGroupRt != null) _bottomGroupRt.anchoredPosition = Vector2.Lerp(bottomStart, bottomEnd, easeT);
+
+                if (_warningBarCanvasGroup != null) _warningBarCanvasGroup.alpha = 1f - t;
+
+                yield return null;
+            }
+
+            if (_groupServerList != null) _groupServerList.SetActive(false);
+            GoToCharacterSelect();
+        }
+
+        public void StartFadeOutConnectingDialog()
+        {
+            StartCoroutine(FadeOutConnectingDialogCoroutine());
+        }
+
+        private System.Collections.IEnumerator FadeOutConnectingDialogCoroutine()
+        {
+            float elapsed = 0f;
+            float fadeDuration = 0.2f;
+            while (elapsed < fadeDuration)
+            {
+                elapsed += Time.deltaTime;
+                float t = Mathf.Clamp01(elapsed / fadeDuration);
+                float easeT = 1f - Mathf.Pow(1f - t, 3); // Ease out cubic
+
+                if (_uiConnectingDialogCanvasGroup != null)
+                    _uiConnectingDialogCanvasGroup.alpha = 1f - t;
+
+                if (_uiConnectingDialog != null)
+                    _uiConnectingDialog.transform.localScale = Vector3.Lerp(Vector3.one, new Vector3(0.85f, 0.85f, 1f), easeT);
+
+                yield return null;
+            }
+            HideConnectingDialog();
+            gameObject.SetActive(false);
+        }
+
+        private System.Collections.IEnumerator TransitionToNationSelectCoroutine()
+        {
+            float elapsed = 0f;
+            float fadeOutDuration = 0.4f;
+
+            Vector2 leftStart = _serverListPanelRt != null ? _serverListPanelRt.anchoredPosition : new Vector2(150f, 20f);
+            Vector2 leftEnd = new Vector2(-200f, 20f);
+
+            Vector2 rightStart = _channelsPanelRt != null ? _channelsPanelRt.anchoredPosition : new Vector2(-150f, 20f);
+            Vector2 rightEnd = new Vector2(200f, 20f);
+
+            Vector2 bottomStart = _bottomGroupRt != null ? _bottomGroupRt.anchoredPosition : Vector2.zero;
+            Vector2 bottomEnd = new Vector2(0f, -100f);
+
+            while (elapsed < fadeOutDuration)
+            {
+                elapsed += Time.deltaTime;
+                float t = Mathf.Clamp01(elapsed / fadeOutDuration);
+                float easeT = 1f - Mathf.Pow(1f - t, 3);
+
+                if (_serverListCanvasGroup != null) _serverListCanvasGroup.alpha = 1f - t;
+                if (_serverListPanelRt != null) _serverListPanelRt.anchoredPosition = Vector2.Lerp(leftStart, leftEnd, easeT);
+
+                if (_channelsAndEnterCanvasGroup != null) _channelsAndEnterCanvasGroup.alpha = 1f - t;
+                if (_channelsPanelRt != null) _channelsPanelRt.anchoredPosition = Vector2.Lerp(rightStart, rightEnd, easeT);
+                if (_bottomGroupRt != null) _bottomGroupRt.anchoredPosition = Vector2.Lerp(bottomStart, bottomEnd, easeT);
+
+                if (_warningBarCanvasGroup != null) _warningBarCanvasGroup.alpha = 1f - t;
+
+                yield return null;
+            }
+
+            if (_groupServerList != null) _groupServerList.SetActive(false);
+            gameObject.SetActive(false);
+            GoToNationSelect();
+        }
+
+        // ============================================
+        // ConnectToGameServer — cpp:449-484
+        // ============================================
+        private void ConnectToGameServer()
+        {
+            if (_fTimeUntilNextGameConnectionAttempt > 0f) return;
+            if (_iSelectedServerIndex < 0 || _iSelectedServerIndex >= _serverInfos.Count) return;
+
+            // Oyuncu oyuna girmeyi onayladığı an seçimlerini yerel hafızaya kaydet (Gereksiz disk yazımını önler)
+            PlayerPrefs.SetInt("LastServerIndex", _iSelectedServerIndex);
+            PlayerPrefs.SetInt("LastChannelIndex", _selectedChannelSubIndex);
+            PlayerPrefs.Save();
+
+            if (_btnConnect != null) _btnConnect.interactable = false;
+            SetStatus("Connecting to server...");
+            _fTimeUntilNextGameConnectionAttempt = 5.0f;
+
+            // C++ birebir: sunucu seçimi sonrası nation kontrolü
+            // GameProcLogIn → MsgRecv_GameServerLogIn → nation==0 ? NationSelect : CharacterSelect
+            byte currentNation = GameManager.Instance != null ? GameManager.Instance.Nation : (byte)0;
+            if (currentNation == 0)
+            {
+                StartCoroutine(TransitionToNationSelectCoroutine());
+            }
+            else
+            {
+                ShowConnectingDialog();
+                StartCoroutine(TransitionToCharacterSelectCoroutine());
+            }
+        }
+
+        /// <summary>
+        /// C++ akışı: GameProcLogIn → MsgRecv_GameServerLogIn → ProcActiveSet(s_pProcCharacterSelect)
+        /// Login UI'dan çıkıp karakter seçim ekranına geç
+        /// </summary>
+        private void GoToCharacterSelect()
+        {
+            var selectUI = FindAnyObjectByType<CharacterSelectUI>(FindObjectsInactive.Include);
+            if (selectUI != null)
+            {
+                selectUI.gameObject.SetActive(true);
+            }
+            else
+            {
+                // CharacterSelectUI henüz sahneye eklenmemiş — dinamik oluştur
+                var selectObj = new GameObject("CharacterSelectUI");
+                selectUI = selectObj.AddComponent<CharacterSelectUI>();
+            }
+        }
+
+        /// <summary>
+        /// Open-KO birebir: nation==0 → ProcActiveSet(s_pProcNationSelect)
+        /// Login UI'dan çıkıp nation seçim ekranına geç
+        /// </summary>
+        private void GoToNationSelect()
+        {
+            var nationUI = FindAnyObjectByType<NationSelectUI>(FindObjectsInactive.Include);
+            if (nationUI != null)
+                nationUI.gameObject.SetActive(true);
+            else
+            {
+                // NationSelectUI henüz sahneye eklenmemiş — dinamik oluştur
+                var nationObj = new GameObject("NationSelectUI");
+                nationObj.AddComponent<NationSelectUI>();
+            }
+        }
+
+
+        // ============================================
+        // ServerInfo — cpp:319-397
+        // ============================================
+        private void ServerInfoAdd(string name, string ip, int userCount)
+        {
+            _serverInfos.Add(new GameServerInfo { szName = name, szIP = ip, iConcurrentUserCount = userCount });
+        }
+
+        /// <summary>
+        /// cpp:534-560 — OpenServerList birebir
+        /// </summary>
+        private void OnBtnBackClick()
+        {
+            StopAllCoroutines();
+            StartCoroutine(TransitionToLoginCoroutine());
+        }
+
+        public void OpenServerList()
+        {
+            gameObject.SetActive(true);
+            if (_groupServerList == null) return;
+            if (_btnConnect != null) _btnConnect.interactable = true;
+            _fTimeUntilNextGameConnectionAttempt = 0f;
+            StopAllCoroutines();
+            StartCoroutine(TransitionToServerListCoroutine());
+        }
+
+        private System.Collections.IEnumerator TransitionToServerListCoroutine()
+        {
+            float elapsed = 0f;
+            float fadeOutDuration = 0.4f;
+
+            bool skipLoginFade = (_modernLoginPanel != null && !_modernLoginPanel.activeSelf);
+
+            if (!skipLoginFade)
+            {
+                // 1. Giriş Panelini dikey olarak aşağı kaydırıp görünmez yap (Slide & Fade Out)
+                Vector2 startPos = Vector2.zero;
+                Vector2 endPos = new Vector2(0f, -250f);
+                RectTransform loginRt = _modernLoginPanel != null ? _modernLoginPanel.GetComponent<RectTransform>() : null;
+
+                while (elapsed < fadeOutDuration)
+                {
+                    elapsed += Time.deltaTime;
+                    float t = Mathf.Clamp01(elapsed / fadeOutDuration);
+                    
+                    // Ease out cubic
+                    float easeT = 1f - Mathf.Pow(1f - t, 3);
+
+                    if (_loginCanvasGroup != null) _loginCanvasGroup.alpha = 1f - t;
+                    if (_agreementCanvasGroup != null) _agreementCanvasGroup.alpha = 1f - t;
+                    if (loginRt != null) loginRt.anchoredPosition = Vector2.Lerp(startPos, endPos, easeT);
+
+                    yield return null;
+                }
+
+                // Giriş elemanlarını tamamen gizle
+                if (_loginCanvasGroup != null) _loginCanvasGroup.alpha = 0f;
+                if (_modernLoginPanel != null) _modernLoginPanel.SetActive(false);
+                if (_agreementPanelObj != null) _agreementPanelObj.SetActive(false);
+                if (_btnCancel != null) _btnCancel.gameObject.SetActive(false);
+                if (_btnWebObj != null) _btnWebObj.SetActive(false);
+
+                // 2. Arka planı cross-fade dissolve (erime) efektiyle değiştir
+                float bgFadeDuration = 0.4f;
+                elapsed = 0f;
+
+                GameObject tempBgObj = new GameObject("TempBackground", typeof(RectTransform));
+                tempBgObj.transform.SetParent(_canvas.transform, false);
+                if (_bgImage != null)
+                    tempBgObj.transform.SetSiblingIndex(_bgImage.transform.GetSiblingIndex() + 1);
+
+                Image tempImg = tempBgObj.AddComponent<Image>();
+                Sprite selectBg = Resources.Load<Sprite>("UI/select_server");
+                tempImg.sprite = selectBg;
+                tempImg.color = new Color(1f, 1f, 1f, 0f); // Görünmez başla
+                tempImg.raycastTarget = false;
+
+                var tempRt = tempBgObj.GetComponent<RectTransform>();
+                tempRt.anchorMin = new Vector2(0.5f, 0.5f);
+                tempRt.anchorMax = new Vector2(0.5f, 0.5f);
+                tempRt.pivot = new Vector2(0.5f, 0.5f);
+
+                var fitter = tempBgObj.AddComponent<AspectRatioFitter>();
+                fitter.aspectMode = AspectRatioFitter.AspectMode.EnvelopeParent;
+                if (selectBg != null) fitter.aspectRatio = selectBg.rect.width / selectBg.rect.height;
+
+                while (elapsed < bgFadeDuration)
+                {
+                    elapsed += Time.deltaTime;
+                    float t = Mathf.Clamp01(elapsed / bgFadeDuration);
+                    tempImg.color = new Color(1f, 1f, 1f, t);
+                    yield return null;
+                }
+
+                // Yeni arka planı kalıcı yap ve geçici nesneyi yok et
+                if (_bgImage != null && selectBg != null)
+                {
+                    _bgImage.sprite = selectBg;
+                    var mainFitter = _bgImage.GetComponent<AspectRatioFitter>();
+                    if (mainFitter != null) mainFitter.aspectRatio = selectBg.rect.width / selectBg.rect.height;
+                }
+                Destroy(tempBgObj);
+            }
+            else
+            {
+                // Make sure the background sprite is correct directly, and start it transparent for fade-in
+                Sprite selectBg = Resources.Load<Sprite>("UI/select_server");
+                if (_bgImage != null && selectBg != null)
+                {
+                    _bgImage.sprite = selectBg;
+                    var mainFitter = _bgImage.GetComponent<AspectRatioFitter>();
+                    if (mainFitter != null) mainFitter.aspectRatio = selectBg.rect.width / selectBg.rect.height;
+                    
+                    _bgImage.color = new Color(1f, 1f, 1f, 0f); // Start completely transparent
+                }
+            }
+
+            // 3. Sunucu Listesi Grubunu aç (Başlangıç durumları görünmez ve ekran dışı)
+            if (_serverListCanvasGroup != null) _serverListCanvasGroup.alpha = 0f;
+            if (_channelsAndEnterCanvasGroup != null) _channelsAndEnterCanvasGroup.alpha = 0f;
+            if (_warningBarCanvasGroup != null) _warningBarCanvasGroup.alpha = 0f;
+
+            // Sol panel başlangıç konumu: Ekran dışı sol (X = -200px)
+            if (_serverListPanelRt != null) _serverListPanelRt.anchoredPosition = new Vector2(-200f, 20f);
+            
+            // Sağ panel başlangıç konumu: Ekran dışı sağ (X = 200px relative to right border)
+            if (_channelsPanelRt != null) _channelsPanelRt.anchoredPosition = new Vector2(200f, 20f);
+            
+            // Alt kısım (Bottom Group) başlangıç konumu: Ekran dışı aşağı (Y = -100px)
+            if (_bottomGroupRt != null) _bottomGroupRt.anchoredPosition = new Vector2(0f, -100f);
+
+            _groupServerList.SetActive(true);
+            ServerInfoUpdate();
+            
+            // Son giriş yapılan server ve kanalı hatırla (Varsayılan: En üstteki / ilk kanal)
+            int lastServer = PlayerPrefs.GetInt("LastServerIndex", 0);
+            int lastChannel = PlayerPrefs.GetInt("LastChannelIndex", 0);
+            lastServer = Mathf.Clamp(lastServer, 0, Mathf.Max(0, _serverInfos.Count - 1));
+            
+            _iSelectedServerIndex = -1; // Toggle-off çakışmasını önlemek için sıfırla
+            _selectedChannelSubIndex = lastChannel;
+            
+            SelectServer(lastServer);
+
+            // 4. Fade-in ve Slide animasyonunu başlat
+            float fadeInDuration = 0.5f;
+            elapsed = 0f;
+
+            Vector2 leftStart = new Vector2(-200f, 20f);
+            Vector2 leftEnd = new Vector2(150f, 20f);
+
+            Vector2 rightStart = new Vector2(200f, 20f); // Sağdan sola kayma için ekran dışı sağ
+            Vector2 rightEnd = new Vector2(-150f, 20f);
+
+            Vector2 bottomStart = new Vector2(0f, -100f); // Aşağıdan yukarı kayma
+            Vector2 bottomEnd = Vector2.zero;
+
+            while (elapsed < fadeInDuration)
+            {
+                elapsed += Time.deltaTime;
+                float t = Mathf.Clamp01(elapsed / fadeInDuration);
+                
+                // Ease out cubic
+                float easeT = 1f - Mathf.Pow(1f - t, 3);
+
+                // Fade in the background image over the 3D scene if returning from Character Select
+                if (skipLoginFade && _bgImage != null)
+                {
+                    _bgImage.color = new Color(1f, 1f, 1f, t);
+                }
+
+                // Sol Panel Fade & Slide
+                if (_serverListCanvasGroup != null) _serverListCanvasGroup.alpha = t;
+                if (_serverListPanelRt != null) _serverListPanelRt.anchoredPosition = Vector2.Lerp(leftStart, leftEnd, easeT);
+
+                // Sağ Panel ve Alt Seçim Grubu Fade & Slide (Farklı yönlerden kayma hareketi)
+                if (_channelsAndEnterCanvasGroup != null) _channelsAndEnterCanvasGroup.alpha = t;
+                if (_channelsPanelRt != null) _channelsPanelRt.anchoredPosition = Vector2.Lerp(rightStart, rightEnd, easeT);
+                if (_bottomGroupRt != null) _bottomGroupRt.anchoredPosition = Vector2.Lerp(bottomStart, bottomEnd, easeT);
+
+                // Güvenlik şeridi sadece fade-in (kayma yok)
+                if (_warningBarCanvasGroup != null) _warningBarCanvasGroup.alpha = t;
+
+                yield return null;
+            }
+
+            // Son değerleri kilitle
+            if (_bgImage != null) _bgImage.color = Color.white;
+
+            if (_serverListCanvasGroup != null) _serverListCanvasGroup.alpha = 1f;
+            if (_serverListPanelRt != null) _serverListPanelRt.anchoredPosition = leftEnd;
+
+            if (_channelsAndEnterCanvasGroup != null) _channelsAndEnterCanvasGroup.alpha = 1f;
+            if (_channelsPanelRt != null) _channelsPanelRt.anchoredPosition = rightEnd;
+            if (_bottomGroupRt != null) _bottomGroupRt.anchoredPosition = bottomEnd;
+
+            if (_warningBarCanvasGroup != null) _warningBarCanvasGroup.alpha = 1f;
+        }
+
+        private System.Collections.IEnumerator TransitionToLoginCoroutine()
+        {
+            // Back butonuna basildiginda secim durumlarini kesinlikle sifirla (Boylece tekrar loginde deselect toggle bug'i olusmaz!)
+            _iSelectedServerIndex = -1;
+            _selectedChannelSubIndex = 0;
+
+            float elapsed = 0f;
+            float fadeOutDuration = 0.4f;
+
+            Vector2 leftStart = _serverListPanelRt != null ? _serverListPanelRt.anchoredPosition : new Vector2(150f, 20f);
+            Vector2 leftEnd = new Vector2(-200f, 20f);
+
+            Vector2 rightStart = _channelsPanelRt != null ? _channelsPanelRt.anchoredPosition : new Vector2(-150f, 20f);
+            Vector2 rightEnd = new Vector2(200f, 20f);
+
+            Vector2 bottomStart = _bottomGroupRt != null ? _bottomGroupRt.anchoredPosition : Vector2.zero;
+            Vector2 bottomEnd = new Vector2(0f, -100f);
+
+            // 1. Sunucu Listesini sola, sağ paneli sağa, alt grubu aşağı kaydırarak karart (Fade & Slide Out)
+            while (elapsed < fadeOutDuration)
+            {
+                elapsed += Time.deltaTime;
+                float t = Mathf.Clamp01(elapsed / fadeOutDuration);
+                float easeT = 1f - Mathf.Pow(1f - t, 3);
+
+                if (_serverListCanvasGroup != null) _serverListCanvasGroup.alpha = 1f - t;
+                if (_serverListPanelRt != null) _serverListPanelRt.anchoredPosition = Vector2.Lerp(leftStart, leftEnd, easeT);
+
+                if (_channelsAndEnterCanvasGroup != null) _channelsAndEnterCanvasGroup.alpha = 1f - t;
+                if (_channelsPanelRt != null) _channelsPanelRt.anchoredPosition = Vector2.Lerp(rightStart, rightEnd, easeT);
+                if (_bottomGroupRt != null) _bottomGroupRt.anchoredPosition = Vector2.Lerp(bottomStart, bottomEnd, easeT);
+
+                if (_warningBarCanvasGroup != null) _warningBarCanvasGroup.alpha = 1f - t;
+
+                yield return null;
+            }
+
+            if (_groupServerList != null) _groupServerList.SetActive(false);
+
+            // 2. Arka planı cross-fade ile tekrar login_bg yap
+            float bgFadeDuration = 0.4f;
+            elapsed = 0f;
+
+            GameObject tempBgObj = new GameObject("TempBackground", typeof(RectTransform));
+            tempBgObj.transform.SetParent(_canvas.transform, false);
+            if (_bgImage != null)
+                tempBgObj.transform.SetSiblingIndex(_bgImage.transform.GetSiblingIndex() + 1);
+
+            Image tempImg = tempBgObj.AddComponent<Image>();
+            Sprite loginBg = Resources.Load<Sprite>("UI/login_bg");
+            tempImg.sprite = loginBg;
+            tempImg.color = new Color(1f, 1f, 1f, 0f);
+            tempImg.raycastTarget = false;
+
+            var tempRt = tempBgObj.GetComponent<RectTransform>();
+            tempRt.anchorMin = new Vector2(0.5f, 0.5f);
+            tempRt.anchorMax = new Vector2(0.5f, 0.5f);
+            tempRt.pivot = new Vector2(0.5f, 0.5f);
+
+            var fitter = tempBgObj.AddComponent<AspectRatioFitter>();
+            fitter.aspectMode = AspectRatioFitter.AspectMode.EnvelopeParent;
+            if (loginBg != null) fitter.aspectRatio = loginBg.rect.width / loginBg.rect.height;
+
+            while (elapsed < bgFadeDuration)
+            {
+                elapsed += Time.deltaTime;
+                float t = Mathf.Clamp01(elapsed / bgFadeDuration);
+                tempImg.color = new Color(1f, 1f, 1f, t);
+                yield return null;
+            }
+
+            if (_bgImage != null && loginBg != null)
+            {
+                _bgImage.sprite = loginBg;
+                var mainFitter = _bgImage.GetComponent<AspectRatioFitter>();
+                if (mainFitter != null) mainFitter.aspectRatio = loginBg.rect.width / loginBg.rect.height;
+            }
+            Destroy(tempBgObj);
+
+            // 3. Giriş panelini başlangıç konumuna al ve göster (Fade In)
+            if (_loginCanvasGroup != null) _loginCanvasGroup.alpha = 1f;
+            if (_agreementCanvasGroup != null) _agreementCanvasGroup.alpha = 1f;
+            if (_copyrightCanvasGroup != null) _copyrightCanvasGroup.alpha = 1f;
+            RectTransform loginRt = _modernLoginPanel != null ? _modernLoginPanel.GetComponent<RectTransform>() : null;
+            if (loginRt != null) loginRt.anchoredPosition = Vector2.zero;
+
+            if (_modernLoginPanel != null) _modernLoginPanel.SetActive(true);
+            if (_agreementPanelObj != null) _agreementPanelObj.SetActive(true);
+            if (_copyrightPanelObj != null) _copyrightPanelObj.SetActive(true);
+            if (_btnCancel != null) _btnCancel.gameObject.SetActive(true);
+            if (_btnWebObj != null) _btnWebObj.SetActive(true);
+
+            SetVisibleLogInUIs(true);
+            _bLogIn = false;
+            
+            SetStatus("Connected. Please log in.");
+        }
+
+        /// <summary>
+        /// cpp:341-394 — ServerInfoUpdate() birebir
+        /// Var olan sunucuları göster, geri kalanları gizle.
+        /// MAX_SERVERS = 20 (UILogin_1298.h:46)
+        /// </summary>
+        private const int MAX_SERVERS = 20;
+
+        private void ServerInfoUpdate()
+        {
+            if (_serverInfos.Count == 0) return;
+
+            // Liste taşıyıcısı altındaki tüm eski butonları sil
+            foreach (Transform child in _serverListContainer)
+            {
+                Destroy(child.gameObject);
+            }
+            _serverTextList.Clear();
+            _serverBgList.Clear();
+
+            var fontAsset = Resources.Load<TMP_FontAsset>("Fonts & Materials/LiberationSans SDF");
+
+            // Aktif sunucuları listele (Sol Panel)
+            for (int i = 0; i < _serverInfos.Count; i++)
+            {
+                int idx = i;
+                
+                // Satır nesnesi (Sol panel genişliğine göre 260px genişlik)
+                GameObject rowObj = new GameObject($"server_{idx + 1}", typeof(RectTransform));
+                rowObj.transform.SetParent(_serverListContainer, false);
+                
+                Image rowImg = rowObj.AddComponent<Image>();
+                // Baslangicta koyu metalik altigen buton tasarimi (isPrimary = false gibi)
+                rowImg.sprite = CreateHexagonSprite($"server_btn_{idx}", 260, 48, 
+                    new Color(0.12f, 0.10f, 0.08f, 0.98f), 
+                    new Color(0.06f, 0.05f, 0.04f, 0.98f), 
+                    new Color(0.42f, 0.34f, 0.15f, 0.98f), 
+                    new Color(0.60f, 0.48f, 0.22f, 0.98f));
+                rowImg.color = Color.white;
+                _serverBgList.Add(rowImg);
+                
+                RectTransform rRt = rowObj.GetComponent<RectTransform>();
+                rRt.sizeDelta = new Vector2(260, 48);
+                
+                // Sunucu adı metni
+                var txt = CreateText(rowObj, _serverInfos[idx].szName, 16, TextAlignmentOptions.Center, fontAsset);
+                txt.fontStyle = FontStyles.Bold;
+                txt.color = _colorTextGold; // Baslangicta gold yazi
+                
+                _serverTextList.Add(txt);
+                
+                // Buton mantığı
+                Button btn = rowObj.AddComponent<Button>();
+                btn.transition = Selectable.Transition.None;
+                
+                // Tıklandığında sunucuyu seç
+                btn.onClick.AddListener(() =>
+                {
+                    SelectServer(idx);
+                });
+                
+                // Raycast target aktif et
+                var graphics = rowObj.GetComponentsInChildren<Graphic>();
+                foreach (var g in graphics) g.raycastTarget = true;
+            }
+        }
+
+        private void SelectServer(int iServerListIndex)
+        {
+            // Secili olan sunucuya tekrar tiklanirsa secimi iptal et (Toggle Kapatma Mantigi)
+            if (iServerListIndex == _iSelectedServerIndex)
+            {
+                _iSelectedServerIndex = -1;
+                if (_channelsAndEnterGroup != null) _channelsAndEnterGroup.SetActive(false);
+
+                // Tum butonlari sönük altigen buton tasarima cevir
+                for (int i = 0; i < _serverTextList.Count; i++)
+                {
+                    if (_serverTextList[i] == null || i >= _serverBgList.Count) continue;
+                    _serverTextList[i].color = _colorTextGold;
+                    _serverBgList[i].sprite = CreateHexagonSprite($"server_btn_inactive_{i}", 260, 48, 
+                        new Color(0.12f, 0.10f, 0.08f, 0.98f), 
+                        new Color(0.06f, 0.05f, 0.04f, 0.98f), 
+                        new Color(0.42f, 0.34f, 0.15f, 0.98f), 
+                        new Color(0.60f, 0.48f, 0.22f, 0.98f));
+                }
+
+                SetStatus("Please select a server.");
+                return;
+            }
+
+            _iSelectedServerIndex = Mathf.Clamp(iServerListIndex, 0, MAX_SERVERS - 1);
+            
+            // Sag kanallar grubunu aktiflestir
+            if (_channelsAndEnterGroup != null) _channelsAndEnterGroup.SetActive(true);
+
+            // Sol Paneldeki Sunucu Seçim Görsellerini Güncelle (Altıgen Buton Tasarımı)
+            for (int i = 0; i < _serverTextList.Count; i++)
+            {
+                if (_serverTextList[i] == null || i >= _serverBgList.Count) continue;
+                
+                if (i == _iSelectedServerIndex)
+                {
+                    // Seçili sunucu: Altın sarısı altıgen buton, siyah metin
+                    _serverTextList[i].color = Color.black;
+                    _serverBgList[i].sprite = CreateHexagonSprite($"server_btn_active_{i}", 260, 48, 
+                        new Color(0.96f, 0.80f, 0.22f, 0.98f), 
+                        new Color(0.68f, 0.48f, 0.08f, 0.98f), 
+                        new Color(0.85f, 0.65f, 0.15f, 0.98f), 
+                        new Color(1.00f, 0.95f, 0.72f, 0.98f));
+                }
+                else
+                {
+                    // Seçili olmayan: Koyu metalik altıgen buton, gold metin
+                    _serverTextList[i].color = _colorTextGold;
+                    _serverBgList[i].sprite = CreateHexagonSprite($"server_btn_inactive_{i}", 260, 48, 
+                        new Color(0.12f, 0.10f, 0.08f, 0.98f), 
+                        new Color(0.06f, 0.05f, 0.04f, 0.98f), 
+                        new Color(0.42f, 0.34f, 0.15f, 0.98f), 
+                        new Color(0.60f, 0.48f, 0.22f, 0.98f));
+                }
+            }
+
+            // Sağ Paneldeki Kanalları Dinamik Olarak Güncelle
+            if (_iSelectedServerIndex < _serverInfos.Count)
+            {
+                string sName = _serverInfos[_iSelectedServerIndex].szName;
+                SetStatus($"Server: {sName}");
+                PopulateChannelsList(sName);
+            }
+        }
+
+        private void PopulateChannelsList(string serverName)
+        {
+            if (_channelsListContainer == null) return;
+
+            // Eski kanalları temizle
+            foreach (Transform child in _channelsListContainer)
+            {
+                Destroy(child.gameObject);
+            }
+
+            var fontAsset = Resources.Load<TMP_FontAsset>("Fonts & Materials/LiberationSans SDF");
+
+            // Seçilen sunucuya ait sadece 1 adet kanal oluştur
+            string[] channelSuffixes = new string[] {
+                " 1"
+            };
+
+            int userCount = 0;
+            if (_iSelectedServerIndex >= 0 && _iSelectedServerIndex < _serverInfos.Count)
+            {
+                userCount = _serverInfos[_iSelectedServerIndex].iConcurrentUserCount;
+            }
+
+            // Oyuncu sayısına göre bar çizgi sayısını (1-10 arası) hesapla
+            int loadVal = 1;
+            if (userCount <= 1) loadVal = 1;
+            else if (userCount <= 5) loadVal = 2;
+            else if (userCount <= 20) loadVal = 3;
+            else if (userCount <= 50) loadVal = 4;
+            else if (userCount <= 100) loadVal = 5;
+            else if (userCount <= 200) loadVal = 6;
+            else if (userCount <= 500) loadVal = 7;
+            else if (userCount <= 1000) loadVal = 8;
+            else if (userCount <= 2000) loadVal = 9;
+            else loadVal = 10;
+
+            for (int i = 0; i < 1; i++)
+            {
+                int chIdx = i;
+                string chName = $"{serverName}{channelSuffixes[chIdx]}";
+
+                GameObject rowObj = new GameObject($"channel_{chIdx + 1}", typeof(RectTransform));
+                rowObj.transform.SetParent(_channelsListContainer, false);
+                RectTransform rRt = rowObj.GetComponent<RectTransform>();
+                rRt.sizeDelta = new Vector2(290, 40); // 34'den 40'a dikey buyutuldu
+
+                Image rowImg = rowObj.AddComponent<Image>();
+                rowImg.sprite = CreateRoundedRectSprite($"channel_btn_{chIdx}", 290, 40, 4, _colorBtnDark, _colorBorder * 0.3f, 1);
+                rowImg.color = Color.white;
+
+                // Kanal Metni (Sola dayalı, içeriden 15px paylı)
+                GameObject textObj = new GameObject("ChannelText", typeof(RectTransform));
+                textObj.transform.SetParent(rowObj.transform, false);
+                RectTransform tRt = textObj.GetComponent<RectTransform>();
+                tRt.anchorMin = Vector2.zero;
+                tRt.anchorMax = Vector2.one;
+                tRt.offsetMin = new Vector2(15f, 0f);
+                tRt.offsetMax = new Vector2(-70f, 0f); // Yük barına yer kalsın
+
+                var txt = textObj.AddComponent<TextMeshProUGUI>();
+                txt.font = fontAsset;
+                txt.fontSize = 16; // 13'ten 16'ya buyutuldu
+                txt.alignment = TextAlignmentOptions.MidlineLeft;
+                txt.text = chName;
+                txt.fontStyle = FontStyles.Bold;
+                txt.color = new Color(0.56f, 0.9f, 0.1f, 1f); // Yeşil-Sarı tonlu kanal ismi
+
+                // Doluluk Oranı Göstergesi (Load Bar - 10 Dikey Çizgili)
+                GameObject loadBarObj = new GameObject("LoadBar", typeof(RectTransform));
+                loadBarObj.transform.SetParent(rowObj.transform, false);
+                RectTransform lbRt = loadBarObj.GetComponent<RectTransform>();
+                lbRt.anchorMin = new Vector2(1f, 0.5f);
+                lbRt.anchorMax = new Vector2(1f, 0.5f);
+                lbRt.pivot = new Vector2(1f, 0.5f);
+                lbRt.sizeDelta = new Vector2(55, 14);
+                lbRt.anchoredPosition = new Vector2(-15f, 0f); // Sağdan 15px içeride
+
+                HorizontalLayoutGroup hlg = loadBarObj.AddComponent<HorizontalLayoutGroup>();
+                hlg.spacing = 2;
+                hlg.childControlWidth = false;
+                hlg.childControlHeight = false;
+
+                // 10 adet yük çizgisi oluştur
+                for (int d = 1; d <= 10; d++)
+                {
+                    GameObject dash = new GameObject($"dash_{d}", typeof(RectTransform));
+                    dash.transform.SetParent(loadBarObj.transform, false);
+                    RectTransform dRt = dash.GetComponent<RectTransform>();
+                    dRt.sizeDelta = new Vector2(3, 14); // Yukseklige uygun 14px yapildi
+
+                    Image dashImg = dash.AddComponent<Image>();
+                    
+                    if (d <= loadVal)
+                    {
+                        if (d <= 4) dashImg.color = new Color(0.2f, 0.85f, 0.2f, 1f);       // 1-4: Yeşil
+                        else if (d <= 7) dashImg.color = new Color(0.95f, 0.85f, 0.1f, 1f); // 5-7: Sarı
+                        else dashImg.color = new Color(0.95f, 0.2f, 0.2f, 1f);              // 8-10: Kırmızı
+                    }
+                    else
+                    {
+                        dashImg.color = new Color(0.2f, 0.18f, 0.16f, 1f);
+                    }
+                }
+
+                // Tıklama özellikleri
+                Button btn = rowObj.AddComponent<Button>();
+                btn.transition = Selectable.Transition.None;
+                btn.onClick.AddListener(() =>
+                {
+                    SelectChannel(chIdx, chName);
+                });
+
+                // Seçili olan kanalı işaretle
+                if (chIdx == _selectedChannelSubIndex)
+                {
+                    rowImg.sprite = CreateRoundedRectSprite($"channel_btn_active_{chIdx}", 290, 40, 4, new Color(0.2f, 0.16f, 0.12f, 0.95f), _colorBorder * 0.9f, 2);
+                }
+            }
+            
+            int initialChannelIdx = Mathf.Clamp(_selectedChannelSubIndex, 0, 0);
+            SelectChannel(initialChannelIdx, $"{serverName}{channelSuffixes[initialChannelIdx]}");
+        }
+
+        private void SelectChannel(int subIndex, string channelFullName)
+        {
+            _selectedChannelSubIndex = subIndex;
+
+            // Kanalların çerçeve parlamalarını güncelle
+            if (_channelsListContainer != null)
+            {
+                int idx = 0;
+                foreach (Transform child in _channelsListContainer)
+                {
+                    Image rowImg = child.GetComponent<Image>();
+                    if (rowImg != null)
+                    {
+                        if (idx == _selectedChannelSubIndex)
+                        {
+                            rowImg.sprite = CreateRoundedRectSprite($"channel_btn_active_{idx}", 290, 40, 4, new Color(0.2f, 0.16f, 0.12f, 0.95f), _colorBorder * 0.9f, 2);
+                        }
+                        else
+                        {
+                            rowImg.sprite = CreateRoundedRectSprite($"channel_btn_inactive_{idx}", 290, 40, 4, _colorBtnDark, _colorBorder * 0.3f, 1);
+                        }
+                    }
+                    idx++;
+                }
+            }
+
+            // Alt CURRENT şeridinde seçili kanalı güncelle
+            if (_currentChannelTxt != null)
+            {
+                _currentChannelTxt.text = channelFullName;
+            }
+        }
+
+        /// <summary>
+        /// cpp:562-566 — SetVisibleLogInUIs
+        /// Group_LogIn göster/gizle
+        /// </summary>
+        private void SetVisibleLogInUIs(bool bEnable)
+        {
+            if (_groupLogIn != null) _groupLogIn.SetActive(bEnable);
+        }
+
+        // ============================================
+        // Bağlantı durumu
+        // ============================================
+        private void OnConnected()
+        {
+            SetStatus("Connected. Please log in.");
+            if (_editId != null) _editId.ActivateInputField();
+        }
+
+        private void OnConnectionError(string error)
+        {
+            SetStatus($"Connection error: {error}");
+            SetVisibleLogInUIs(true);
+            _bLogIn = false;
+
+            // If we were connecting to a game server, recover!
+            if (_uiConnectingDialog != null && _uiConnectingDialog.activeSelf)
+            {
+                HideConnectingDialog();
+
+                var selectUI = FindAnyObjectByType<CharacterSelectUI>(FindObjectsInactive.Include);
+                if (selectUI != null)
+                {
+                    selectUI.gameObject.SetActive(false);
+                }
+
+                OpenServerList();
+            }
+        }
+
+
+        private void SetupCustomBackground()
+        {
+            // 1. Özel arka plan görselini Sprite olarak yükle
+            Sprite customBg = Resources.Load<Sprite>("UI/login_bg");
+            if (customBg == null)
+            {
+                Debug.LogWarning("[LOGIN] Özel arka plan 'UI/login_bg' yüklenemedi. Unity'de Sprite (2D and UI) olarak içe aktarıldığından emin olun.");
+                return;
+            }
+
+            // 2. Canvas altında arka plan GameObject'i oluştur (En arkaya yerleştir)
+            GameObject bgObj = new GameObject("CustomLoginBackground", typeof(RectTransform));
+            bgObj.transform.SetParent(_canvas.transform, false);
+            bgObj.transform.SetAsFirstSibling();
+
+            Image bgImage = bgObj.AddComponent<Image>();
+            bgImage.sprite = customBg;
+            _bgImage = bgImage;
+            bgImage.raycastTarget = false; // Tıklamaları engellemesin
+
+            // 3. Merkez odaklı en-boy oranı koruyarak ekranı kaplama (EnvelopeParent)
+            var rt = bgObj.GetComponent<RectTransform>();
+            rt.anchorMin = new Vector2(0.5f, 0.5f);
+            rt.anchorMax = new Vector2(0.5f, 0.5f);
+            rt.pivot = new Vector2(0.5f, 0.5f);
+
+            var fitter = bgObj.AddComponent<AspectRatioFitter>();
+            fitter.aspectMode = AspectRatioFitter.AspectMode.EnvelopeParent;
+            fitter.aspectRatio = customBg.rect.width / customBg.rect.height;
+        }
+
+        private void SetStatus(string msg)
+        {
+        }
+
+        // ============================================
+        // Beni Hatırla (Remember Me) Mantığı ve Çizimi
+        // ============================================
+        private void OnRememberToggle()
+        {
+            _rememberMe = !_rememberMe;
+            PlayerPrefs.SetInt("RememberMe", _rememberMe ? 1 : 0);
+            PlayerPrefs.Save();
+            UpdateRememberCheckVisual();
+        }
+
+        private void UpdateRememberCheckVisual()
+        {
+            if (_rememberCheckImg != null)
+            {
+                if (_rememberMe)
+                {
+                    // Seçili/Dolu Baklava (İçi altın rengi dolgulu)
+                    _rememberCheckImg.sprite = CreateRoundedRectSprite("check_dia_filled", 15, 15, 0, new Color(0.96f, 0.80f, 0.22f, 0.98f), _colorBorder, 1);
+                }
+                else
+                {
+                    // Boş Baklava (İçi koyu arka plan renkli)
+                    _rememberCheckImg.sprite = CreateRoundedRectSprite("check_dia_empty", 15, 15, 0, new Color(0.04f, 0.04f, 0.04f, 1f), _colorBorder, 1);
+                }
+            }
+        }
+
+
+    }
+}

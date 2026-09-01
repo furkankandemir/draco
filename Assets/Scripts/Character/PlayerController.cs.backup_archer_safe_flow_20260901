@@ -1,0 +1,3517 @@
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.InputSystem;
+using EntropyOnline.Core;
+using EntropyOnline.Import;
+using EntropyOnline.Input;
+using EntropyOnline.Network;
+using EntropyOnline.Network.KO;
+using EntropyOnline.World;
+using EntropyOnline.UI;
+using EntropyOnline.Combat;
+
+namespace EntropyOnline.Character
+{
+    /// <summary>
+    /// Entropy Online — Oyuncu Karakter Kontrolcüsü
+    /// Joystick girişini alır, sunucuya C2S_MOVE gönderir.
+    /// Sunucudan onay gelmese bile prediction ile hareket eder (client-side prediction).
+    /// Yeni Input System kullanır.
+    /// </summary>
+    public class PlayerController : MonoBehaviour
+    {
+        public static PlayerController Instance { get; private set; }
+
+        private void Awake()
+        {
+            Instance = this;
+        }
+
+
+        [Header("Hareket")]
+        [SerializeField] private float moveSpeed = 5f;
+        // C++ birebir: RotateTo(fYaw, true) — anlık dönüş, rotationSpeed gereksiz
+
+        [Header("Referanslar")]
+        [SerializeField] private VirtualJoystick joystick;
+
+        private CharacterController _charController;
+        private EntropyOnline.Camera.CameraController _cameraController;
+        private float _gravity = -9.81f;
+        private float _verticalVelocity;
+
+        // Sunucuya son gönderilen konum (flood koruması)
+        private Vector3 _lastSentPosition;
+        private float _sendInterval = 0.1f; // 100ms = 10 Hz
+        private float _sendTimer;
+
+        private bool _wasMoving = false;
+
+        // =============================================
+        // STATE MACHINE — Open-KO birebir
+        // PlayerBase.h satır 96-99, 131
+        // =============================================
+
+        /// <summary>
+        /// Open-KO birebir: PlayerBase.h:96 — e_StateAction m_eState
+        /// Karakter aksiyonu mevcut state.
+        /// </summary>
+        private PlayerStateAction _eState = PlayerStateAction.PSA_BASIC;
+
+        /// <summary>
+        /// Open-KO birebir: PlayerBase.h:97 — e_StateAction m_eStateNext
+        /// State tamamlanınca dönülecek sonraki state.
+        /// </summary>
+        private PlayerStateAction _eStateNext = PlayerStateAction.PSA_BASIC;
+
+        /// <summary>
+        /// Open-KO birebir: PlayerBase.h:98 — e_StateMove m_eStateMove
+        /// </summary>
+        private PlayerStateMove _eStateMove = PlayerStateMove.PSM_STOP;
+
+        /// <summary>
+        /// Open-KO birebir: PlayerBase.h:131 — int m_iMagicAni = 0
+        /// Casting/effecting sırasında oynatılacak animasyon index'i.
+        /// JudgetAnimationSpellMagic() tarafından döndürülür.
+        /// </summary>
+        public int MagicAni { get; set; } = 0;
+
+        public bool CanSeeStealth { get; set; } = false;
+        public float StealthDetectionRadius { get; set; } = 0f;
+
+        /// <summary>
+        /// Open-KO birebir: PlayerBase.h:130 — float m_fCastFreezeTime
+        /// PSA_SPELLMAGIC state'inde animasyonun freeze süresi.
+        /// </summary>
+        public float CastFreezeTime { get; set; } = 0f;
+
+        /// <summary>
+        /// Büyü cast süresi senkronizasyonu için aktif büyünün cast süresi (saniye).
+        /// </summary>
+        public float ActiveCastDuration { get; set; } = 1.6f;
+
+        /// <summary>
+        /// Karakterin aktif bir casting (bar dolma) yeteneği kullandığını belirtir.
+        /// </summary>
+        public bool IsActiveCast { get; set; } = false;
+
+        /// <summary>
+        /// Open-KO birebir: CN3Chr m_FrmCtrl.fFreezeTime
+        /// AniCurSet(eAni, true, fBlendTime, fFreezeTime) ile set edilir.
+        /// Animasyon bittikten sonra bu süre dolana kadar IsAnimEnd()=false döner.
+        /// </summary>
+        private float _fFreezeTimeRemaining = 0f;
+
+        /// <summary>
+        /// Mevcut state'i döndürür.
+        /// Open-KO birebir: PlayerBase.h:193 — e_StateAction State() const
+        /// </summary>
+        public PlayerStateAction State() => _eState;
+
+        /// <summary>
+        /// Mevcut hareket state'ini döndürür.
+        /// Open-KO birebir: PlayerBase.h:194 — e_StateMove StateMove() const
+        /// </summary>
+        public PlayerStateMove StateMove() => _eStateMove;
+
+        // Animation resolver — e_Ani index → clip name
+        private KOAnimResolver _animResolver;
+
+        // =============================================
+        // ANIMATION DEQUE — Open-KO birebir
+        // PlayerBase.h:85-86, PlayerBase.cpp:539-553
+        // =============================================
+
+        /// <summary>
+        /// Open-KO birebir: PlayerBase.h:85 — std::deque<e_Ani> m_AnimationDeque
+        /// Animasyon kuyruğu — mevcut animasyon bitince sıradaki oynatılır.
+        /// Boşsa m_eStateNext'e Action() ile geçilir.
+        /// </summary>
+        private readonly System.Collections.Generic.Queue<KOAni> _animationDeque = new();
+
+        /// <summary>
+        /// Open-KO birebir: PlayerBase.h:86 — bool m_bAnimationChanged
+        /// Kuyruktan animasyon değiştiği frame'de true olur.
+        /// </summary>
+        #pragma warning disable CS0414
+        private bool _bAnimationChanged = false;
+        #pragma warning restore CS0414
+
+        // =============================================
+        // OTO-SALDIRI SİSTEMİ
+        // Open-KO birebir: PlayerMySelf.h:20-26 + PlayerBase.h:142
+        // =============================================
+
+        /// <summary>
+        /// Open-KO birebir: PlayerMySelf.h:26 — m_bAttackContinous
+        /// Sürekli saldırı durumunda mı?
+        /// </summary>
+        private bool _bAttackContinous = false;
+
+        /// <summary>
+        /// Open-KO birebir: PlayerMySelf.h:20 — m_fAttackTimeRecent
+        /// Son saldırı paketi gönderildiği zaman.
+        /// </summary>
+        private float _fAttackTimeRecent;
+
+        /// <summary>
+        /// Open-KO birebir: PlayerBase.h:142 — m_fAttackDelta = 1.0f
+        /// Saldırı hızı çarpanı (buff/debuff ile değişir). 1.0 = varsayılan.
+        /// </summary>
+        private float _fAttackDelta = 1.0f;
+
+        // ============================================================
+        // Open-KO birebir: PlayerBase.cpp:120,450-524 — TickYaw rotation
+        // m_fYawCur: mevcut yaw açısı (radian, -PI..PI)
+        // m_fYawToReach: hedef yaw açısı (RotateTo ile set edilir)
+        // m_fRotRadianPerSec: saniye başına dönüş hızı
+        // ============================================================
+        private float _fYawCur;
+        private float _fYawToReach;
+        private bool  _fYawDirty; // TickYaw'ın çalışması gerekip gerekmediği
+        private float _lastSentYaw;
+        private float _lastRotateSendTime;
+        private const float _fRotRadianPerSec = 270f * Mathf.Deg2Rad; // cpp:120 — DegreesToRadians(270.0f)
+
+        /// <summary>
+        /// Open-KO birebir: PlayerBase.h:143 — m_fMoveDelta = 1.0f
+        /// Hareket hızı çarpanı (buff/debuff ile değişir). 1.0 = varsayılan.
+        /// </summary>
+        private float _fMoveDelta = 1.0f;
+
+        /// <summary>Open-KO birebir: s_pPlayer->m_fAttackDelta erişimi (EffectingType4 için)</summary>
+        public float AttackDelta
+        {
+            get => _fAttackDelta;
+            set => _fAttackDelta = Mathf.Clamp(value, 0.1f, 5.0f);
+        }
+        /// <summary>Open-KO birebir: s_pPlayer->m_fMoveDelta erişimi (EffectingType4 için)</summary>
+        public float MoveDelta
+        {
+            get => _fMoveDelta;
+            set => _fMoveDelta = Mathf.Clamp(value, 0.1f, 5.0f);
+        }
+
+        /// <summary>
+        /// Open-KO birebir: PlayerBase.h:113 — m_fFlickeringFactor = 1.0f
+        /// Invulnerability (hasar sonrası yanıp sönme) durumu.
+        /// 1.0 = normal, != 1.0 = invulnerable (saldırı yapamaz).
+        /// </summary>
+        private float _fFlickeringFactor = 1.0f;
+
+        /// <summary>
+        /// Oto-saldırı hedefi.
+        /// Open-KO'da m_iIDTarget üzerinden TargetPointerCheck ile alınır.
+        /// </summary>
+        private KOEntity _attackTarget;
+
+        /// <summary>
+        /// Hedefe yürüme hedefi.
+        /// Open-KO birebir: PlayerMySelf.h — m_iMoveTarget + m_bTargetOrPosMove
+        /// SetMoveTargetID ile set edilir, TargetOrPosMove ile tick edilir.
+        /// </summary>
+        private KOEntity _moveTarget;
+        private bool _bTargetOrPosMove = false;
+
+        // =============================================
+        // STUN STATE — Open-KO birebir
+        // PlayerMySelf.h:30-31
+        // PlayerMySelf.cpp:279-284, 1085-1098
+        // =============================================
+
+        /// <summary>
+        /// Open-KO birebir: PlayerMySelf.h:30 — bool m_bStun
+        /// Gçertme (기절) state. true ise hareket/saldırı/skill engellenir.
+        /// </summary>
+        private bool _bStun = false;
+
+        /// <summary>
+        /// Open-KO birebir: PlayerMySelf.h:31 — float m_fStunTime
+        /// Kalan stun süresi (saniye). Her frame düşer, 0'a inince StunRelease().
+        /// </summary>
+        private float _fStunTime = 0f;
+
+        /// <summary>
+        /// Open-KO birebir: m_bStun erişimi.
+        /// MagicSkillMng.cpp:166 guard için kullanılır.
+        /// </summary>
+        public bool IsStunned => _bStun;
+
+        // =============================================
+        // ÖLÜM STATE — Open-KO birebir
+        // PlayerBase.h: m_fTimeAfterDeath
+        // =============================================
+
+        /// <summary>
+        /// Oyuncu şu an ölü mü? Ölü iken hareket, saldırı, skill engellenir.
+        /// S2C_ENTITY_DEATH geldiğinde true olur, S2C_ENTITY_RESPAWN geldiğinde false olur.
+        /// </summary>
+        private bool _isDead = false;
+        public bool IsDead => _isDead;
+
+        /// <summary>Open-KO birebir: PlayerBase.h m_fTimeAfterDeath</summary>
+        private float _fTimeAfterDeath = 0f;
+
+        /// <summary>
+        /// Open-KO birebir: CPlayerMySelf::Stun (PlayerMySelf.cpp:1085-1092)
+        ///   m_bStun = true;
+        ///   m_fStunTime = fTime;
+        ///   CommandEnableAttackContinous(false, nullptr);
+        ///   CommandMove(MD_STOP, true);
+        /// </summary>
+        public void Stun(float fTime)
+        {
+            _bStun = true;
+            _fStunTime = fTime;
+
+            // cpp:1090: CommandEnableAttackContinous(false, nullptr)
+            StopAutoAttack();
+
+            // cpp:1091: CommandMove(MD_STOP, true)
+            if (_bTargetOrPosMove)
+                CancelMoveToTarget();
+            ActionMove(PlayerStateMove.PSM_STOP);
+        }
+
+        /// <summary>
+        /// Open-KO birebir: CPlayerMySelf::StunRelease (PlayerMySelf.cpp:1094-1098)
+        ///   m_bStun = false;
+        ///   m_fStunTime = 0.0f;
+        /// </summary>
+        public void StunRelease()
+        {
+            _bStun = false;
+            _fStunTime = 0f;
+        }
+
+        public void Initialize(VirtualJoystick js, EntropyOnline.Camera.CameraController cam)
+        {
+            joystick = js;
+            _cameraController = cam;
+        }
+
+        private void Start()
+        {
+            _charController = GetComponent<CharacterController>();
+            if (_charController == null)
+                _charController = gameObject.AddComponent<CharacterController>();
+
+            _charController.height = 2f;
+            _charController.radius = 0.5f;
+            _charController.center = Vector3.up;
+            _charController.slopeLimit = 45f;    // Merdiven/rampa eğim limiti
+            _charController.stepOffset = 0.5f;   // Basamak yüksekliği (KO merdivenleri)
+            _charController.skinWidth = 0.08f;    // Collision skin
+
+            _lastSentPosition = transform.position;
+
+            // KOCastBar bileşenini ekle (yetenek ilerleme barı)
+            gameObject.AddComponent<UI.KOCastBar>();
+
+            // KOAnimResolver — lazy init (karakter modeli Start sonrası yüklenebilir)
+            _animResolver = new KOAnimResolver();
+            
+            // Anlık warp event'ini dinle (Gate, Random TP, Summon)
+            KOPacketHandler.OnWarp += HandleWarp_KO;
+
+            // Saldırı sonucu event'ini dinle — MsgRecv_Attack birebir
+            KOPacketHandler.OnAttackResult += HandleAttackResult_KO;
+            KOPacketHandler.OnDead += HandleDead_KO;
+            KOPacketHandler.OnRegene += HandleRegene_KO;
+
+            // Open-KO birebir: MsgRecv_Effecting (MagicSkillMng.cpp:1866-1928)
+            KOPacketHandler.OnMagicProcess += HandleMagicProcess_KO;
+            KOPacketHandler.OnStealthInfo += HandleStealthInfo_KO;
+
+            // CameraController referansı Initialize ile verilmediyse otomatik bul
+            if (_cameraController == null)
+            {
+                var cam = global::UnityEngine.Camera.main;
+                if (cam != null)
+                    _cameraController = cam.GetComponent<EntropyOnline.Camera.CameraController>();
+            }
+
+            DisableWaterColliders();
+        }
+
+        private void DisableWaterColliders()
+        {
+            var colliders = Object.FindObjectsByType<Collider>(FindObjectsInactive.Exclude);
+            foreach (var col in colliders)
+            {
+                if (col == null || col.gameObject == null) continue;
+                string nameLower = col.gameObject.name.ToLowerInvariant();
+                if (nameLower.Contains("water") || nameLower.Contains("plane_medium"))
+                {
+                    col.isTrigger = true;
+                }
+            }
+        }
+
+        private void OnDestroy()
+        {
+            if (Instance == this)
+                Instance = null;
+
+            KOPacketHandler.OnWarp -= HandleWarp_KO;
+            KOPacketHandler.OnAttackResult -= HandleAttackResult_KO;
+            KOPacketHandler.OnDead -= HandleDead_KO;
+            KOPacketHandler.OnRegene -= HandleRegene_KO;
+            KOPacketHandler.OnMagicProcess -= HandleMagicProcess_KO;
+            KOPacketHandler.OnStealthInfo -= HandleStealthInfo_KO;
+        }
+
+        private void HandleStealthInfo_KO(byte isEnabled, short radius)
+        {
+            CanSeeStealth = (isEnabled == 1);
+            StealthDetectionRadius = radius;
+
+            // Trigger transparency refresh for all remote players
+            var entityMgr = EntropyOnline.World.EntityManager.Instance;
+            if (entityMgr != null)
+            {
+                foreach (var pair in entityMgr.GetAllRemotePlayers())
+                {
+                    if (pair.Value != null && pair.Value.Root != null)
+                    {
+                        // Trigger detection refresh by checking the visualizer state
+                        var eqVis = pair.Value.Root.GetComponent<EntropyOnline.World.KOEquipmentVisualizer>();
+                        if (eqVis == null) eqVis = pair.Value.Root.GetComponentInParent<EntropyOnline.World.KOEquipmentVisualizer>();
+                        if (eqVis != null && eqVis.IsStealthActive)
+                        {
+                            // If the player was stealthy, refresh their visual transparent/cutout state
+                            var gameHud = GameHUD.Instance;
+                            if (gameHud != null)
+                            {
+                                bool isSameNation = pair.Value.Nation == GameManager.Instance.Nation;
+                                gameHud.RefreshStealthTransparency(pair.Value.Root, false, isSameNation, true);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // =============================================
+        // KO RAW DATA WRAPPERS
+        // =============================================
+
+        private void HandleWarp_KO(byte[] rawData)
+        {
+            // Open-KO birebir: CharacterMovementHandler.cpp:600-602
+            // Server sends: WIZ_WARP << sPosX << sPosZ — sadece 2 × uint16, Y yok!
+            // Wire: [x:uint16][z:uint16]
+            var r = new KOPacketReader(rawData);
+            ushort x = r.ReadUInt16();   // cpp:601 — sPosX
+            ushort z = r.ReadUInt16();   // cpp:601 — sPosZ
+            // C++ birebir: Y sunucu tarafından gönderilmez — terrain height kullanılır
+            HandleInstantWarp(x / 10f, z / 10f, 0f);
+        }
+
+        /// <summary>
+        /// Open-KO birebir: MsgRecv_Attack (GameProcMain.cpp:3213-3328)
+        /// Wire: [opcode][type:byte][result:byte][attackerId:int16][targetId:int16]
+        /// type: 0x01=physical, 0x02=magic
+        /// result: 0x00=miss, 0x01=hit, 0x02=kill
+        /// </summary>
+        private void HandleAttackResult_KO(byte[] rawData)
+        {
+            var r = new KOPacketReader(rawData);
+            byte type = r.ReadByte();
+            byte result = r.ReadByte();
+            short attackerId = r.ReadInt16();
+            short targetId = r.ReadInt16();
+
+            var gm = GameManager.Instance;
+            if (gm == null) return;
+
+            bool bIAmTarget = (targetId == (short)gm.CharacterId);
+            bool bIAmAttacker = (attackerId == (short)gm.CharacterId);
+
+            // C++ birebir satır 3279-3294: savaş sırasında exit iptal
+            if (bIAmTarget || bIAmAttacker)
+            {
+                // Çıkış zamanlayıcısı iptal edilir — mobilde uygulaması yok, log yeter
+            }
+
+            // C++ birebir satır 3241-3253: target == ben → SitDown(false), casting iptal
+            if (bIAmTarget)
+            {
+                // Saldırı alındı — oturma/casting iptal
+                if (_eState == PlayerStateAction.PSA_SITDOWN)
+                    Action(PlayerStateAction.PSA_BASIC, true);
+
+                // C++ birebir satır 3313-3325: iResult==0x02 (Attack And Dead)
+                // if (pTarget == s_pPlayer) → Regeneration dialog
+                // pTarget->m_fTimeAfterDeath = 0.1f
+                if (result == 0x02)
+                {
+                    _isDead = true;
+                    StopAutoAttack();
+                    if (_bTargetOrPosMove) CancelMoveToTarget();
+
+                    // C++ birebir: pTarget->m_fTimeAfterDeath = 0.1f
+                    _fTimeAfterDeath = 0.1f;
+                    // C++ birebir: ActionDying(PSD_KEEP_POSITION) — ActionMove(PSM_STOP) + Action(PSA_DYING)
+                    ActionMove(PlayerStateMove.PSM_STOP);
+                    Action(PlayerStateAction.PSA_DYING, false);
+
+                    // C++ birebir satır 3315-3319: MessageBoxPost(szMsg, "", MB_OK, BEHAVIOR_REGENERATION)
+                    // Regeneration dialog aç
+                    if (DeathUI.Instance != null)
+                        DeathUI.Instance.TriggerDeath();
+                }
+            }
+
+            // C++ birebir satır 3313-3325: hedef öldü → auto-attack durdur
+            if (bIAmAttacker && result == 0x02)
+            {
+                StopAutoAttack();
+                _attackTarget = null;
+            }
+        }
+
+        /// <summary>
+        /// Open-KO birebir: MsgRecv_Dead (GameProcMain.cpp:3330-3364)
+        /// Wire: [opcode][targetId:int16]
+        /// </summary>
+        private void HandleDead_KO(byte[] rawData)
+        {
+            // C++ birebir: MsgRecv_Dead (GameProcMain.cpp:3330-3364)
+            // Wire: [opcode][targetId:int16]
+            var r = new KOPacketReader(rawData);
+            short targetId = r.ReadInt16();  // cpp:3332
+
+            var gm = GameManager.Instance;
+            if (gm != null && targetId == (short)gm.CharacterId)
+            {
+                // C++ birebir: satır 3337-3343 — kendi ölümümüz
+                _isDead = true;
+                StopAutoAttack();  // cpp: CommandEnableAttackContinous(false)
+                if (_bTargetOrPosMove) CancelMoveToTarget();
+
+                // C++ birebir: satır 3356-3357
+                // pTarget->m_fTimeAfterDeath = 0.1f
+                // pTarget->ActionDying(PSD_KEEP_POSITION, vDir)
+                _fTimeAfterDeath = 0.1f;
+                ActionMove(PlayerStateMove.PSM_STOP);  // cpp:1174: this->ActionMove(PSM_STOP)
+                Action(PlayerStateAction.PSA_DYING, false);  // cpp:1175: this->Action(PSA_DYING, false)
+
+                // C++ birebir: satır 3340 — MessageBoxPost(szMsg, "", MB_OK, BEHAVIOR_REGENERATION)
+                if (DeathUI.Instance != null)
+                    DeathUI.Instance.TriggerDeath();
+            }
+            else
+            {
+                // C++ birebir: satır 3345-3358 — başka entity'nin ölümü
+                var entityMgr = World.EntityManager.Instance;
+                if (entityMgr != null)
+                {
+                    var entity = entityMgr.GetEntityByInstanceId(targetId);
+                    if (entity != null)
+                    {
+                        // C++ birebir: pTarget->m_fTimeAfterDeath = 0.1f
+                        entity.CurrentHP = 0;
+                        // C++ birebir: pTarget->ActionDying(PSD_KEEP_POSITION, vDir)
+                        entity.ActionDying();
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Open-KO birebir: MsgRecv_Regen (GameProcMain.cpp:2399-2428)
+        /// Wire: [opcode][x:uint16][z:uint16][y:int16]
+        /// PlayerController sadece _isDead state'ini sıfırlar — pozisyon DeathUI tarafından ayarlanır.
+        /// </summary>
+        private void HandleRegene_KO(byte[] rawData)
+        {
+            // C++ birebir: GameProcMain.cpp:2409-2410
+            // s_pPlayer->m_fTimeAfterDeath = 0;
+            _fTimeAfterDeath = 0f;
+            _isDead = false;
+            _bStun = false;
+            _fStunTime = 0f;
+
+            // Hareket state'lerini sıfırla — ölüm öncesi kalıntılar temizlenmeli
+            _wasMoving = false;
+            _eStateMove = PlayerStateMove.PSM_STOP;
+
+            // Oto-saldırı ve hedefe yürüme iptal
+            if (_bAttackContinous) StopAutoAttack();
+            if (_bTargetOrPosMove) CancelMoveToTarget();
+
+            // State machine'i zorla sıfırla — PSA_DEATH → PSA_BASIC geçişi
+            // state table tarafından engelleniyor, bForceSet=true gerekli
+            _eState = PlayerStateAction.PSA_BASIC;
+            _eStateNext = PlayerStateAction.PSA_BASIC;
+            Action(PlayerStateAction.PSA_BASIC, true, true);
+            PlayCharAnim("breath");
+        }
+
+        /// <summary>
+        /// Open-KO birebir: MagicSkillMng.cpp MagicPacketRecv()
+        /// Wire: [opcode][subOp:byte][magicId:uint32][sourceId:int16][targetId:int16][data0-5:int16×6]
+        /// </summary>
+        private void HandleMagicProcess_KO(byte[] rawData)
+        {
+            var r = new KOPacketReader(rawData);
+            byte subOp = r.ReadByte();
+
+            // 0x05 (TYPE4BUFFTYPE) ve 0x06 (CANCEL) farklı wire format —
+            // EntityManager.HandleMagicProcess_KO'da handle ediliyor.
+            if (subOp == 0x05 || subOp == 0x06) return;
+
+            uint magicId = r.ReadUInt32();
+            short sourceId = r.ReadInt16();
+            short targetId = r.ReadInt16();
+
+            var gm = GameManager.Instance;
+            if (gm == null) return;
+
+            // cpp birebir: N3_SP_MAGIC_FAIL = 0x04 — MagicSkillMng.cpp:1930-2060
+            if (subOp == 0x04)
+            {
+                // Wire: [magicID:u32][srcID:i16][tgtID:i16][Data[0-5]:i16×6]
+                short d0 = r.ReadInt16();
+                short d1 = r.ReadInt16();
+                short d2 = r.ReadInt16();
+                short d3 = r.ReadInt16(); // fail reason
+                short d4 = r.ReadInt16();
+                short d5 = r.ReadInt16();
+
+                var mgr = Combat.KOMagicSkillManager.Instance;
+                if (mgr != null)
+                    mgr.MsgRecv_Fail(magicId, sourceId, targetId, d0, d1, d2, d3, d4, d5);
+                return;
+            }
+
+            // PacketDef.h birebir: N3_SP_MAGIC_EFFECTING = 0x03
+            // Hedef ben isem stun/debuff kontrolü yapılır
+            if (subOp == 0x03 && targetId == (short)gm.CharacterId)
+            {
+                // KOMagicSkillManager stun/debuff uygulama yapıyor
+            }
+        }
+
+        // =====================================================
+        // C++ birebir: ReCalcMatrixBlended (N3Joint.cpp:390-419)
+        // TickJoints blend (N3Chr.cpp:1647-1651)
+        //
+        // Animasyon geçişinde bone'lar arası yumuşak geçiş:
+        //   fBlendFactor = fBlendTimeCur / fBlendTime (0→1)
+        //   pos  = Lerp(oldPos, newPos, fBlendFactor)
+        //   rot  = Slerp(oldRot, newRot, fBlendFactor)
+        // =====================================================
+        private float _blendTime;        // C++ m_FrmCtrl.fBlendTime
+        private float _blendTimeCur;     // C++ m_FrmCtrl.fBlendTimeCur
+        private Transform[] _blendBones; // Tüm bone transform'ları (cache)
+        private Vector3[] _blendFromPos; // C++ fBlendFrm → eski bone localPosition
+        private Quaternion[] _blendFromRot; // C++ fBlendFrm → eski bone localRotation
+
+        /// <summary>
+        /// C++ birebir: AniCurSet → fBlendFrm = fFrmPrev
+        /// Mevcut bone pozisyonlarını kaydet ve blend timer başlat.
+        /// </summary>
+        private void StartBlend(float blendTime)
+        {
+            if (blendTime <= 0f || _charAnim == null) return;
+
+            // Bone listesini cache'le (ilk seferde)
+            // C++ birebir: TickJoints m_JointRefs üzerinde döner
+            // Index 0 = model root (Animation component'in kendi GO'su)
+            // Model root blend EDILMEZ — sadece bone joint'ler blend edilir
+            if (_blendBones == null)
+            {
+                var allTransforms = _charAnim.GetComponentsInChildren<Transform>();
+                // Index 0'i atla (model root) — C++ m_JointRefs model root içermez
+                if (allTransforms.Length > 1)
+                {
+                    _blendBones = new Transform[allTransforms.Length - 1];
+                    System.Array.Copy(allTransforms, 1, _blendBones, 0, allTransforms.Length - 1);
+                }
+                else
+                {
+                    _blendBones = allTransforms;
+                }
+            }
+
+            // C++ fBlendFrm = fFrmPrev: eski bone pozisyonlarını kaydet
+            int count = _blendBones.Length;
+            if (_blendFromPos == null || _blendFromPos.Length != count)
+            {
+                _blendFromPos = new Vector3[count];
+                _blendFromRot = new Quaternion[count];
+            }
+
+            for (int i = 0; i < count; i++)
+            {
+                if (_blendBones[i] != null)
+                {
+                    _blendFromPos[i] = _blendBones[i].localPosition;
+                    _blendFromRot[i] = _blendBones[i].localRotation;
+                }
+            }
+
+            _blendTime = blendTime;
+            _blendTimeCur = 0f;
+        }
+
+        private void LateUpdate()
+        {
+            // =====================================================
+            // C++ birebir: TickJoints (N3Chr.cpp:1647-1651)
+            //   if (fBlendTime > 0)
+            //     fBlendFactor = fBlendTimeCur / fBlendTime
+            //     ReCalcMatrixBlended(fFrmCur, fBlendFrm, fBlendFactor)
+            // =====================================================
+            if (_blendTimeCur < _blendTime && _blendBones != null)
+            {
+                // C++ birebir: fBlendFactor = fBlendTimeCur / fBlendTime
+                float fBlendFactor = _blendTimeCur / _blendTime;
+
+                for (int i = 0; i < _blendBones.Length; i++)
+                {
+                    // Destroyed object kontrolü — ölüm/respawn sonrası bone silinmiş olabilir
+                    if (_blendBones[i] == null) continue;
+
+                    // C++ birebir: ReCalcMatrixBlended (N3Joint.cpp:398-416)
+                    //   m_vPos = (v1 * fWeight0) + (v2 * fWeight1)  → Lerp
+                    //   m_qRot.Slerp(qt1, qt2, fWeight1)            → Slerp
+                    _blendBones[i].localPosition = Vector3.Lerp(
+                        _blendFromPos[i], _blendBones[i].localPosition, fBlendFactor);
+                    _blendBones[i].localRotation = Quaternion.Slerp(
+                        _blendFromRot[i], _blendBones[i].localRotation, fBlendFactor);
+                }
+
+                // C++ birebir: TickAnimationFrame (N3Chr.cpp:1543)
+                //   fBlendTimeCur += fDelta
+                _blendTimeCur += Time.deltaTime;
+
+                // C++ birebir: N3Chr.cpp:1544-1548
+                //   if (fBlendTimeCur > fBlendTime) → fBlendTime = 0
+                if (_blendTimeCur >= _blendTime)
+                {
+                    _blendTime = 0f;
+                    _blendTimeCur = 0f;
+                }
+            }
+        }
+
+        private void Update()
+        {
+            // Update stealth visibility for nearby players when detection buff is active
+            if (CanSeeStealth && Time.frameCount % 15 == 0)
+            {
+                var entityMgr = EntropyOnline.World.EntityManager.Instance;
+                if (entityMgr != null)
+                {
+                    foreach (var pair in entityMgr.GetAllRemotePlayers())
+                    {
+                        if (pair.Value != null && pair.Value.Root != null)
+                        {
+                            var eqVis = pair.Value.Root.GetComponent<EntropyOnline.World.KOEquipmentVisualizer>();
+                            if (eqVis == null) eqVis = pair.Value.Root.GetComponentInParent<EntropyOnline.World.KOEquipmentVisualizer>();
+                            if (eqVis != null && eqVis.IsStealthActive)
+                            {
+                                var gameHud = GameHUD.Instance;
+                                if (gameHud != null)
+                                {
+                                    bool isSameNation = pair.Value.Nation == GameManager.Instance.Nation;
+                                    gameHud.RefreshStealthTransparency(pair.Value.Root, false, isSameNation, true);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // C++ birebir: Blending süresince yeni animasyon başlangıç karesinde donuk kalır (fFrmCur = fFrmStart)
+            if (_blendTimeCur < _blendTime && !string.IsNullOrEmpty(_currentAnim) && _charAnim != null)
+            {
+                string resolvedName = FindClipCaseInsensitive(_currentAnim);
+                if (resolvedName != null)
+                {
+                    var state = _charAnim[resolvedName];
+                    if (state != null)
+                    {
+                        state.time = 0f;
+                    }
+                }
+            }
+
+            if (joystick == null) return;
+
+            // Karakter zemin/havada kalma teşhisi için her 180 frame'de bir log bas
+            if (Time.frameCount % 180 == 0)
+            {
+                var rrs = GetComponentsInChildren<Renderer>();
+                if (rrs.Length > 0)
+                {
+                    Bounds wb = rrs[0].bounds;
+                    for (int ri = 1; ri < rrs.Length; ri++)
+                    {
+                        // Sadece gövde parçalarını (PART_) dahil et, pelerin/silah (PLUG) hariç
+                        if (rrs[ri].name.StartsWith("PART_") && !rrs[ri].name.Contains("PLUG"))
+                            wb.Encapsulate(rrs[ri].bounds);
+                    }
+                    
+                    float realTerrainY = World.WorldBuilder.Instance != null ? World.WorldBuilder.Instance.GetTerrainHeight(transform.position.x, transform.position.z) : 0f;
+                    float modelLocalY = 0f;
+                    var anim = GetComponentInChildren<Animation>();
+                    if (anim != null)
+                        modelLocalY = anim.transform.localPosition.y;
+                    
+                }
+            }
+
+            // Open-KO birebir: CPlayerBase::Tick() (PlayerBase.cpp:698-706)
+            // TickYaw + TickAnimation — HER ZAMAN çalışır (ölüyken de)
+            // C++'da Tick() death guard'ından ÖNCE çağrılır.
+            TickYaw();
+            TickAnimation();
+
+            // C++ birebir: UIStateBar::TickMiniMap() satır 519 — m_vPosPlayer = s_pPlayer->Position()
+            var gm = GameManager.Instance;
+            if (gm != null)
+            {
+                var pos = transform.position;
+                gm.PlayerPosX = pos.x;
+                gm.PlayerPosZ = pos.z;
+
+                if (KOEventManager.Instance != null)
+                {
+                    KOEventManager.Instance.SetPos(pos.x, pos.z);
+                }
+            }
+
+            // Open-KO birebir: PlayerBase::Tick → if (m_fTimeAfterDeath > 0) return;
+            // Hareket, saldırı ve stun tick'leri ölüyken engellenir.
+            if (_fTimeAfterDeath > 0f) return;
+
+            // ================================================================
+            // Open-KO birebir: PlayerMySelf::Tick() sıralaması (PlayerMySelf.cpp:108-298)
+            //   1. Movement (satır 141-163)
+            //   2. AttackTick — m_bAttackContinous (satır 168-276)
+            //   3. Stun (satır 279-284)
+            //   4. ProcessAttack (satır 287-292)
+            // ================================================================
+            HandleMovement();
+            HandleNetworkSync();
+
+            // Open-KO birebir: PlayerMySelf::Tick (PlayerMySelf.cpp:168-276)
+            // Oto-saldırı tick döngüsü — RotateTo burada çağrılır
+            AttackTick();
+
+            // Open-KO birebir: PlayerMySelf::Tick (PlayerMySelf.cpp:279-284)
+            // Stun countdown tick
+            if (_bStun)
+            {
+                _fStunTime -= Time.deltaTime;  // cpp:281: m_fStunTime -= s_fSecPerFrm
+                if (_fStunTime < 0f)            // cpp:282: if (m_fStunTime < 0)
+                    StunRelease();              // cpp:283: this->StunRelease()
+            }
+        }
+
+        private void HandleMovement()
+        {
+            // Open-KO birebir: GameProcMain.cpp:4697 — stun sırasında hareket engellenir
+            if (_bStun) return;
+
+            Vector2 input = joystick.Direction;
+
+            // Editor'de WASD desteği (Yeni Input System)
+#if UNITY_EDITOR
+            if (!joystick.IsActive && !KOUIManager.IsAnyInputFieldFocused())
+            {
+                var kb = Keyboard.current;
+                if (kb != null)
+                {
+                    float h = 0, v = 0;
+                    if (kb.aKey.isPressed) h -= 1f;
+                    if (kb.dKey.isPressed) h += 1f;
+                    if (kb.wKey.isPressed) v += 1f;
+                    if (kb.sKey.isPressed) v -= 1f;
+                    if (Mathf.Abs(h) > 0.1f || Mathf.Abs(v) > 0.1f)
+                        input = new Vector2(h, v).normalized;
+                }
+            }
+#endif
+
+
+            // Yerçekimi — terrain yüklenmeden uygulanmaz (ilk frame düşme koruması)
+            // C++ birebir: InitWorld tamamlanmadan hareket işlenmez
+            if (WorldBuilder.Instance == null || (!WorldBuilder.Instance.IsIndoor && WorldBuilder.Instance.Terrain == null))
+            {
+                _verticalVelocity = 0f;
+                return;
+            }
+
+            if (_charController.isGrounded)
+                _verticalVelocity = -6.0f;
+            else
+                _verticalVelocity += _gravity * Time.deltaTime;
+
+            // Düşme koruması — terrain'den düştüyse son güvenli pozisyona geri al
+            // Bu olmazsa sunucuya negatif Y gönderilir ve veritabanı bozulur
+            if (transform.position.y < -10f)
+            {
+                Debug.LogWarning($"[PC] Düşme koruması! Y={transform.position.y:F1} — geri alınıyor");
+                if (_charController != null) _charController.enabled = false;
+                // C++ birebir: InitPlayerPosition ile terrain height'a dön
+                float safeY = GetTerrainHeightAtPosition(transform.position.x, transform.position.z);
+                if (safeY < -100f) safeY = 1f; // sentinel check
+                float offset = (WorldBuilder.Instance != null && WorldBuilder.Instance.IsIndoor) ? 0.6f : 0.5f;
+                transform.position = new Vector3(transform.position.x, safeY + offset, transform.position.z);
+                if (_charController != null) _charController.enabled = true;
+                _verticalVelocity = 0f;
+            }
+
+            if (input.sqrMagnitude > 0.01f)
+            {
+                // ================================================================
+                // Open-KO birebir: hareket → PSA_SPELLMAGIC iptal (combo cancel)
+                // C++ PlayerBase.cpp: ActionMove() → Action(PSA_BASIC, true)
+                //
+                // Güvenlik: _fDelay süresi dolmadan tetiklenmiyor.
+                // IsCasting() = true iken (timer aktif VEYA _fDelay > 0) cancel engellenir.
+                // Bu sayede ok fırladığı an (PSA_SPELLMAGIC + _fDelay=0.1f) combo cancel
+                // tetiklenmez, animasyon bozulmaz.
+                // ================================================================
+                if (_eState == PlayerStateAction.PSA_SPELLMAGIC)
+                {
+                    var magicMgr = KOMagicSkillManager.Instance;
+                    if (magicMgr != null)
+                    {
+                        if (magicMgr.IsCastingTimerActive())
+                        {
+                            // Casting timer çalışıyor → FailCast (skill kesilir)
+                            magicMgr.CancelCasting();
+                        }
+                        else
+                        {
+                            // Casting timer bitti, büyü atıldı. Şu an bitiş/efekt animasyonu oynuyor.
+                            // Hareket edilirse animasyonu kes ve yürü/koş durumuna geç (Combo/Movement cancel).
+                            Action(PlayerStateAction.PSA_BASIC, true);
+                        }
+                    }
+                }
+
+                // Open-KO birebir: Manuel hareket → oto-saldırı ve hedefe yürüme iptal
+                // GameProcMain.cpp — CommandMove çağrıldığında attack durdurulur
+                if (_bAttackContinous)
+                    StopAutoAttack();
+                if (_bTargetOrPosMove)
+                    CancelMoveToTarget();
+
+                // C++ birebir: GameProcMain.cpp:4607-4609 — hareket başladığında
+                // s_pUIMgr->UserMoveHideUIs() — UISTYLE_USER_MOVE_HIDE panelleri kapat
+                if (!_wasMoving)
+                {
+                    var uiMgr = EntropyOnline.UI.KOUIManager.Instance;
+                    if (uiMgr != null)
+                        uiMgr.UserMoveHideUIs();
+                }
+
+                // Kamera yönüne göre hareket (3rd person)
+                float cameraYaw = _cameraController != null ? _cameraController.CurrentYaw : 0f;
+                Vector3 forward = Quaternion.Euler(0, cameraYaw, 0) * Vector3.forward;
+                Vector3 right = Quaternion.Euler(0, cameraYaw, 0) * Vector3.right;
+
+                Vector3 moveDir = (forward * input.y + right * input.x).normalized;
+                moveDir.y = 0;
+
+                // C++ birebir: RotateTo(fYaw, true) — bImmediately=true
+                // Hareket yönü değiştiğinde karakter anında döner
+                transform.rotation = Quaternion.LookRotation(moveDir);
+
+                // C++ birebir: yaw'ı senkronize et
+                float fMoveYaw = Mathf.Atan2(moveDir.x, moveDir.z);
+                while (fMoveYaw > Mathf.PI) fMoveYaw -= 2f * Mathf.PI;
+                while (fMoveYaw < -Mathf.PI) fMoveYaw += 2f * Mathf.PI;
+                _fYawCur = fMoveYaw;
+                _fYawToReach = fMoveYaw;
+                _fYawDirty = false;
+
+                // Hareket
+                // Open-KO birebir: speed = baseSpeed * m_fMoveDelta (PlayerBase.h:143)
+                float prevY = transform.position.y;
+                float hSpeed = moveSpeed * _fMoveDelta;
+                Vector3 horizontalMove = moveDir * hSpeed;
+
+                // Open-KO birebir: Dik yamaç tırmanma engeli (Slope Limit Check)
+                if (CheckClimbCollision(moveDir, hSpeed * Time.deltaTime))
+                {
+                    horizontalMove = Vector3.zero;
+                }
+
+                Vector3 velocity = horizontalMove + Vector3.up * _verticalVelocity;
+                if (_charController != null && _charController.enabled)
+                    _charController.Move(velocity * Time.deltaTime);
+
+                if (WorldBuilder.Instance != null && WorldBuilder.Instance.IsIndoor)
+                {
+                    float newY = transform.position.y;
+                    // C++ birebir: if ((m_fYNext > vPos.y + 0.6f) || (m_fYNext < vPos.y - 0.6f * 2.0f)) m_fYNext = vPos.y;
+                    if (newY > prevY + 0.6f || newY < prevY - 1.2f)
+                    {
+                        _charController.enabled = false;
+                        transform.position = new Vector3(transform.position.x, prevY, transform.position.z);
+                        _charController.enabled = true;
+                        _verticalVelocity = 0f;
+                    }
+                }
+
+                // Open-KO birebir: C++'da hareket animasyonu sadece PSA_BASIC/PSA_ATTACK state'inde.
+                // PSA_SPELLMAGIC'te hareket → ProcessCasting FailCast yapar → state PSA_BASIC olur → sonra anim oynar.
+                if (_eState != PlayerStateAction.PSA_SPELLMAGIC)
+                {
+                    if (_eState == PlayerStateAction.PSA_ATTACK)
+                    {
+                        Action(PlayerStateAction.PSA_BASIC, true, true);
+                    }
+                    ActionMove(PlayerStateMove.PSM_RUN);
+                }
+
+                _wasMoving = true;
+            }
+            else
+            {
+                // Sadece yerçekimi
+                float prevY = transform.position.y;
+                if (_charController != null && _charController.enabled)
+                    _charController.Move(Vector3.up * _verticalVelocity * Time.deltaTime);
+
+                if (WorldBuilder.Instance != null && WorldBuilder.Instance.IsIndoor)
+                {
+                    float newY = transform.position.y;
+                    if (newY > prevY + 0.6f || newY < prevY - 1.2f)
+                    {
+                        _charController.enabled = false;
+                        transform.position = new Vector3(transform.position.x, prevY, transform.position.z);
+                        _charController.enabled = true;
+                        _verticalVelocity = 0f;
+                    }
+                }
+
+                // Open-KO birebir: TargetOrPosMove — hedefe yürüme tick'i
+                // PlayerMySelf.cpp:1100-1151
+                TargetOrPosMove();
+
+                // C++ birebir: idle breath animasyonu Action(PSA_BASIC) ile set edilir ve Loop'la döner.
+                // Combo/skill animasyonu (AniCurSet + bOnceAndFreeze=true) oynarken
+                // hareket handler'dan override edilmez.
+                if (!_bTargetOrPosMove
+                    && _eState == PlayerStateAction.PSA_BASIC
+                    && !IsOneShotAnimPlaying())
+                    ActionMove(PlayerStateMove.PSM_STOP);
+
+                // Hedefe yürüme veya oto-saldırıda menzile yürüme aktifse
+                // stop paketi gönderme — hareket devam ediyor
+                if (_wasMoving && !_bTargetOrPosMove)
+                {
+                    // Durma paketi gönder
+                    SendStopPacket();
+                    _wasMoving = false;
+                }
+            }
+        }
+
+        private void OnControllerColliderHit(ControllerColliderHit hit)
+        {
+            if (Time.frameCount % 60 == 0)
+            {
+            }
+        }
+
+        /// <summary>
+        /// Karakter modelinin animasyonunu oynatır.
+        /// KO animasyon isimleri .n3anim'den gelir:
+        ///   breath, walk, run, attack_Punch0_A, attack_Punch0_B, attack_sword0_A, ...
+        /// Open-KO birebir: CN3Chr::AniCurSet (e_Ani index → clip name)
+        /// </summary>
+        private Animation _charAnim;
+        private string _currentAnim;
+        private string _currentAnimUpper;
+
+        /// <summary>
+        /// C++ birebir: bOnceAndFreeze=true ile oynayan animasyon hâlâ devam ediyor mu?
+        /// C++'da AniCurSet(bOnceAndFreeze=true) ile başlatılan combo/skill animasyonları
+        /// bitene kadar hareket handler'dan override edilmez.
+        /// </summary>
+        private bool IsOneShotAnimPlaying()
+        {
+            if (_charAnim == null || string.IsNullOrEmpty(_currentAnim)) return false;
+            string resolved = FindClipCaseInsensitive(_currentAnim);
+            if (resolved == null) return false;
+            AnimationState state = _charAnim[resolved];
+            if (state == null) return false;
+            return state.wrapMode == WrapMode.ClampForever && _charAnim.IsPlaying(resolved);
+        }
+
+        /// <summary>
+        /// Model yeniden oluşturulduğunda (BuildPlayerModel) eski Animation referansı geçersiz olur.
+        /// Bu metot cache'i sıfırlar — sonraki PlayCharAnim çağrısında yeniden bulunur.
+        /// </summary>
+        public void InvalidateAnimCache()
+        {
+            _charAnim = null;
+            _currentAnim = null;
+            _upperBodyBoneSearched = false;
+            _upperBodyBone = null;
+            _animResolver = null; // Model rebuild sonrası yeni clip sırasıyla yeniden init edilmeli
+        }
+
+        // ============================================================
+        // Open-KO birebir: PlayerBase.cpp:465-476 — RotateTo(CPlayerBase* pOther)
+        // Hedef pozisyonundan yaw açısını hesaplar ve _fYawToReach set eder.
+        // C++: vDir = pOther->Position() - m_Chr.Pos(); fYaw = _Yaw2D(vDir.x, vDir.z);
+        //      this->RotateTo(fYaw, false);
+        // ============================================================
+        public void RotateToTarget(Transform target)
+        {
+            if (target == null) return;
+            Vector3 vDir = target.position - transform.position;
+            vDir.y = 0;
+            if (vDir.sqrMagnitude < 0.01f) return;
+
+            // C++ birebir: _Yaw2D(vDir.x, vDir.z) — atan2 ile yaw hesapla
+            float fYaw = Mathf.Atan2(vDir.x, vDir.z); // Unity forward = +Z
+
+            // C++ birebir: RotateTo(fYaw, false) — PlayerBase.cpp:450-460
+            // m_fYawToReach = fYaw (normalize edilmiş -PI..PI arası)
+            // Normalize: -PI..PI arasına getir
+            while (fYaw > Mathf.PI) fYaw -= 2f * Mathf.PI;
+            while (fYaw < -Mathf.PI) fYaw += 2f * Mathf.PI;
+            _fYawToReach = fYaw;
+            _fYawDirty = true;
+        }
+
+        public void RotateToPosition(Vector3 targetPos)
+        {
+            Vector3 vDir = targetPos - transform.position;
+            vDir.y = 0;
+            if (vDir.sqrMagnitude < 0.01f) return;
+
+            // C++ birebir: fYaw = _Yaw2D(vDir.x, vDir.z)
+            float fYaw = Mathf.Atan2(vDir.x, vDir.z);
+
+            while (fYaw > Mathf.PI) fYaw -= 2f * Mathf.PI;
+            while (fYaw < -Mathf.PI) fYaw += 2f * Mathf.PI;
+            _fYawToReach = fYaw;
+            _fYawDirty = true;
+        }
+
+
+        // ============================================================
+        // Open-KO birebir: PlayerBase.cpp:478-524 — TickYaw()
+        // Her frame çağrılır. _fYawCur'ı _fYawToReach'e doğru
+        // m_fRotRadianPerSec * deltaTime kadar döndürür.
+        // C++: m_fRotRadianPerSec = DegreesToRadians(270.0f) — saniyede 270 derece
+        // ============================================================
+        private void TickYaw()
+        {
+            if (!_fYawDirty) return;
+
+            // C++ birebir: PlayerBase.cpp:480
+            // if (m_fYawCur != m_fYawToReach && this->IsAlive())
+            if (Mathf.Approximately(_fYawCur, _fYawToReach))
+            {
+                _fYawDirty = false;
+                return;
+            }
+
+            // C++ birebir: PlayerBase.cpp:482-483
+            float fYawDiff = _fYawToReach - _fYawCur;
+            float fYawDelta = _fRotRadianPerSec * Time.deltaTime;
+
+            // C++ birebir: PlayerBase.cpp:484-486
+            if (Mathf.Abs(fYawDiff) <= fYawDelta)
+            {
+                _fYawCur = _fYawToReach;
+                _fYawDirty = false;
+            }
+            else
+            {
+                // C++ birebir: PlayerBase.cpp:490-503 — en kısa yönde dön
+                if (fYawDiff > 0)
+                {
+                    if (fYawDiff >= Mathf.PI) fYawDelta *= -1f;
+                    // else fYawDelta *= 1f; (varsayılan)
+                }
+                else
+                {
+                    if (fYawDiff > -Mathf.PI) fYawDelta *= -1f;
+                    // else fYawDelta *= 1f;
+                }
+
+                // C++ birebir: PlayerBase.cpp:505
+                _fYawCur += fYawDelta;
+
+                // C++ birebir: PlayerBase.cpp:507-516 — normalize -PI..PI
+                if (Mathf.Abs(_fYawCur) > Mathf.PI)
+                {
+                    int iLot = (int)(_fYawCur / Mathf.PI);
+                    if (iLot != 0) _fYawCur -= iLot * 2f * Mathf.PI;
+                    iLot = (int)(_fYawCur / Mathf.PI);
+                    if (iLot != 0) _fYawCur -= iLot * 2f * Mathf.PI;
+                }
+            }
+
+            // C++ birebir: PlayerBase.cpp:521-523
+            // qtRot.RotationAxis(0, 1, 0, m_fYawCur); m_Chr.RotSet(qtRot);
+            transform.rotation = Quaternion.Euler(0f, _fYawCur * Mathf.Rad2Deg, 0f);
+        }
+
+        /// <summary>
+        /// Open-KO birebir: CPlayerBase::InitChr sonrası AniCurSet(ANI_BREATH).
+        /// Model rebuild sonrası T-pose'u önlemek için idle animasyonu zorla başlatır.
+        /// </summary>
+        public void ForcePlayIdle()
+        {
+            _charAnim = null;
+            _currentAnim = null;
+            // Blend state'i sıfırla — ölüm/respawn sonrası eski bone referansları geçersiz
+            _blendBones = null;
+            _blendFromPos = null;
+            _blendFromRot = null;
+            _blendTime = 0f;
+            _blendTimeCur = 0f;
+            PlayCharAnim("breath");
+        }
+
+        // =============================================
+        // UPPER BODY ANIMATION — Open-KO birebir
+        // N3Chr.h:338-341: m_nJointPartStarts[1], m_nJointPartEnds[1]
+        // N3Chr.cpp:2291-2314: CN3Chr::AniUpperSet
+        // PlayerBase.cpp:972,1099-1100: bNeedUpperAnimationOnly
+        // =============================================
+
+        /// <summary>
+        /// Üst gövde root bone Transform referansı.
+        /// C++ karşılığı: m_JointRefs[m_nJointPartStarts[1]]
+        /// FindUpperBodyBone() ile lazy-init edilir.
+        /// </summary>
+        private Transform _upperBodyBone;
+        private bool _upperBodyBoneSearched = false;
+        private EntropyOnline.Import.N3AnimClipRegistry _animRegistry;
+
+        /// <summary>
+        /// Karakter animasyonu oynatır.
+        ///
+        /// Open-KO birebir: CN3Chr::AniCurSet(e_Ani eAni, bool bOnceAndFreeze, float fBlendTime, float fFreezeTime)
+        ///   bOnceAndFreeze=true → WrapMode.ClampForever (son frame'de don)
+        ///   bOnceAndFreeze=false → WrapMode.Loop veya CrossFade
+        ///   fBlendTime → CrossFade süresi (varsayılan 0.2f)
+        /// </summary>
+        private void PlayCharAnim(string animName, bool bOnceAndFreeze = false)
+        {
+            // Open-KO birebir: CN3Chr::AniCurSet (N3Chr.cpp:2233)
+            // if (iAni == m_FrmCtrl.iAni) return -1;
+            // Döngüsel animasyonlar (koşma, yürüme, nefes) için aynı animasyon tekrar istenirse atla
+            if (!bOnceAndFreeze && _currentAnim == animName) return;
+
+            // Lazy init — karakter modeli runtime'da yükleniyor
+            if (_charAnim == null)
+            {
+                _charAnim = GetComponentInChildren<Animation>();
+                if (_charAnim == null)
+                {
+                    Debug.LogWarning($"[T-POSE-DBG] Animation component bulunamadı! Player child count: {transform.childCount}");
+                    return;
+                }
+                // One-time diagnostic log
+                int clipCount = 0;
+                foreach (AnimationState s in _charAnim) clipCount++;
+            }
+
+            // Layer 1'deki upper body animasyonlarını temizle
+            StopUpperBodyLayer();
+
+            // Case-insensitive clip arama
+            string resolvedName = FindClipCaseInsensitive(animName);
+            if (resolvedName == null)
+            {
+                var clipNames = new System.Collections.Generic.List<string>();
+                foreach (AnimationState s in _charAnim) clipNames.Add(s.name);
+                Debug.LogWarning($"[PLAY-ANIM-FAIL] Clip bulunamadı: '{animName}' — " +
+                    $"mevcut {clipNames.Count} clip: [{string.Join(", ", clipNames.GetRange(0, System.Math.Min(20, clipNames.Count)))}]");
+                return;
+            }
+
+            // =====================================================
+            // C++ birebir: AniCurSet (N3Chr.cpp:2244)
+            //   m_FrmCtrl.Init();  ← TÜM frame state sıfırla
+            //   m_FrmCtrl.fFrmCur = pAniData->fFrmStart;  ← başa sar
+            //
+            // C++'ta aynı anda sadece TEK animasyon çalışır.
+            // Unity CrossFade ise birden fazla AnimationState'i paralel
+            // çalıştırır ve artık weight/state'ler bone bozulmasına
+            // neden olabilir. Bu yüzden Stop + Play kullanıyoruz.
+            // =====================================================
+
+            // C++ birebir: AniCurSet (N3Chr.cpp:2253-2258)
+            //   fBlendFrm = fFrmPrev → eski bone pozisyonlarını kaydet
+            //   fBlendTime = pAniData->fTimeBlend
+            // Model root HARIC — sadece bone joint'ler blend edilir
+            float blendTime = GetAnimBlendTime(resolvedName, 0.25f);
+            StartBlend(blendTime);
+
+            // C++ birebir: m_FrmCtrl.Init() → TÜM animasyonları durdur
+            _charAnim.Stop();
+
+            // 3. Yeni animasyonun WrapMode'unu ayarla
+            var clip = _charAnim.GetClip(resolvedName);
+            WrapMode wrapMode = bOnceAndFreeze
+                ? WrapMode.ClampForever   // Bir kez oynat, son frame'de don
+                : WrapMode.Loop;          // Sürekli tekrar
+            if (clip != null)
+                clip.wrapMode = wrapMode;
+            // AnimationState.wrapMode ayrı property — clip.wrapMode'dan bağımsız
+            AnimationState aniState = _charAnim[resolvedName];
+            if (aniState != null)
+            {
+                aniState.wrapMode = wrapMode;
+
+                // Büyü/yetenek animasyonu hızı ölçekleme (Mage vb. büyü sınıfları için, Okçular hariç)
+                if (IsActiveCast && resolvedName.ToLowerInvariant().Contains("magic_")
+                    && !resolvedName.ToLowerInvariant().Contains("shoot")
+                    && !resolvedName.ToLowerInvariant().Contains("arrow")
+                    && !resolvedName.ToLowerInvariant().Contains("bow")
+                    && ActiveCastDuration > 0f && clip != null)
+                {
+                    // Uzun büyülerde (örn. Nova 3.0 sn) animasyon hızını yavaşlatma, orijinal USKO gibi kalsın
+                    if (ActiveCastDuration < clip.length)
+                    {
+                        // Görsel algıdaki gecikmeyi telafi etmek için %15 (1.15f) hızlandırma çarpanı uyguluyoruz
+                        float targetSpeed = (clip.length / ActiveCastDuration) * 1.15f;
+                        aniState.speed = targetSpeed;
+                    }
+                    else
+                    {
+                        aniState.speed = 1.0f;
+                    }
+                }
+                else
+                {
+                    aniState.speed = 1.0f; // Okçular ve diğer animasyonlar için doğal 1.0x hız
+                }
+            }
+
+            // 4. Animasyonu baştan başlat ve oynat
+            // C++ birebir: fFrmCur = pAniData->fFrmStart
+            _charAnim.Rewind(resolvedName);
+            _charAnim.Play(resolvedName);
+
+                      // $"{(bOnceAndFreeze ? "ClampForever" : "Loop")}) prev='{_currentAnim}' " +
+                      // $"clipLen={clip?.length ?? -1:F2}s");
+
+            _currentAnim = animName;
+        }
+
+        /// <summary>
+        /// Diagnostic: kafa bone'unun localPosition/localRotation'ını logla.
+        /// Kafa kayması teşhisi için — hangi CrossFade anında kayıyor?
+        /// </summary>
+        private Transform _headBoneCache;
+        private bool _headBoneSearched;
+        private void LogHeadBonePosition(string context)
+        {
+            if (!_headBoneSearched)
+            {
+                _headBoneSearched = true;
+                // "head" isimli bone'u recursive ara
+                var allBones = GetComponentsInChildren<Transform>();
+                foreach (var b in allBones)
+                {
+                    if (b.name.IndexOf("head", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        _headBoneCache = b;
+                        break;
+                    }
+                }
+                if (_headBoneCache == null)
+                {
+                    // head bulunamadı, neck dene
+                    foreach (var b in allBones)
+                    {
+                        if (b.name.IndexOf("neck", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            _headBoneCache = b;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (_headBoneCache == null) return;
+            var lp = _headBoneCache.localPosition;
+            var lr = _headBoneCache.localRotation;
+        }
+
+        private string GetBonePath(Transform bone)
+        {
+            var path = bone.name;
+            var p = bone.parent;
+            int depth = 0;
+            while (p != null && p != transform && depth < 5)
+            {
+                path = p.name + "/" + path;
+                p = p.parent;
+                depth++;
+            }
+            return path;
+        }
+
+        /// <summary>
+        /// Open-KO birebir: CN3Chr::AniUpperSet (N3Chr.cpp:2291-2314)
+        /// Sadece üst gövde bone'larında animasyon oynatır.
+        ///
+        /// C++ mantık:
+        ///   m_FrmCtrlUpper.iAni = iAni
+        ///   m_FrmCtrlUpper.bOnceAndFreeze = false
+        ///   m_FrmCtrlUpper.fFreezeTime = fFreezeTime
+        ///   → TickAnimationKey'de m_nJointPartStarts[1]..m_nJointPartEnds[1] joint'leri
+        ///     m_FrmCtrlUpper.fFrmCur ile hesaplanır
+        ///
+        /// Unity karşılığı: AnimationState.AddMixingTransform(upperBodyBone, true)
+        /// → sadece o bone alt-ağacında animasyon uygulanır.
+        /// </summary>
+        private void PlayCharAnimUpper(string animName)
+        {
+            if (_charAnim == null)
+            {
+                _charAnim = GetComponentInChildren<Animation>();
+                if (_charAnim == null) return;
+            }
+
+            FindUpperBodyBone();
+            if (_upperBodyBone == null)
+            {
+                // Üst gövde bone bulunamadı — fallback: tüm gövde oynat
+                PlayCharAnim(animName, true);
+                return;
+            }
+
+            string resolvedName = FindClipCaseInsensitive(animName);
+            if (resolvedName == null) return;
+
+            // C++ birebir: m_FrmCtrlUpper.bOnceAndFreeze = false
+            // Ama animasyon bir kez oynar ve durur (once + freeze-time ile)
+            var clip = _charAnim.GetClip(resolvedName);
+            if (clip == null) return;
+
+            clip.wrapMode = WrapMode.Once;
+
+            // AnimationState'e mixing transform ekle — sadece üst gövde
+            _currentAnimUpper = animName;
+
+            var state = _charAnim[resolvedName];
+            if (state != null)
+            {
+                state.AddMixingTransform(_upperBodyBone, true);
+                state.layer = 1;     // Üst gövde layer'ı — C++ m_FrmCtrlUpper
+                state.weight = 1.0f;
+                state.blendMode = AnimationBlendMode.Blend;
+                state.time = 0f;
+            }
+
+            _charAnim.Rewind(resolvedName);
+
+            float blendTime = GetAnimBlendTime(resolvedName, 0.15f);
+            _charAnim.CrossFade(resolvedName, blendTime);
+        }
+
+        /// <summary>
+        /// Layer 1'deki üst gövde animasyonlarını durdur.
+        /// PlayCharAnimUpper, atak animasyonunu layer=1 + AddMixingTransform ile oynatır.
+        /// Full body animasyona (breath vb.) geçerken bu layer temizlenmezse
+        /// üst gövde bone'ları (head dahil) eski atak pozisyonunda takılı kalır.
+        /// </summary>
+        private void StopUpperBodyLayer()
+        {
+            _currentAnimUpper = null;
+            if (_charAnim == null) return;
+            foreach (AnimationState state in _charAnim)
+            {
+                if (state.layer == 1)
+                {
+                    state.enabled = false;
+                    state.weight = 0f;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Üst gövde root bone'unu bul.
+        /// C++ karşılığı: m_JointRefs[m_nJointPartStarts[1]]
+        /// N3ChrData.JointPartStarts[1] index'indeki bone Transform'u arar.
+        /// </summary>
+        private void FindUpperBodyBone()
+        {
+            if (_upperBodyBoneSearched) return;
+            _upperBodyBoneSearched = true;
+
+            // GameManager'dan karakter N3ChrData'sını al
+            var gm = GameManager.Instance;
+            if (gm == null) return;
+
+            // N3ChrData içindeki JointPartStarts[1] = üst gövde root joint index
+            var chrData = gm.PlayerChrData;
+            if (chrData == null) return;
+
+            int upperJointStart = chrData.JointPartStarts[1];
+            if (upperJointStart <= 0) return; // 0 veya negatif ise tanımsız
+
+            // Bone Transform'u bul — FindJointByIndex ile aynı mantık
+            // "Bone_{index}" isimli veya depth-first sırayla
+            Transform root = transform;
+            var allTransforms = root.GetComponentsInChildren<Transform>(true);
+            string boneName = $"Bone_{upperJointStart}";
+            foreach (var t in allTransforms)
+            {
+                if (t.name == boneName)
+                {
+                    _upperBodyBone = t;
+                    return;
+                }
+            }
+
+            // Fallback: depth-first index ile bul
+            var bones = new List<Transform>();
+            N3CharBuilder.CollectBoneTransformsByName(root, bones);
+            if (upperJointStart < bones.Count)
+            {
+                _upperBodyBone = bones[upperJointStart];
+            }
+        }
+
+        /// <summary>
+        /// Case-insensitive klip arama.
+        /// .n3anim dosyalarında isimler mixed-case: "SitDown", "StandUp", "Shoot_Arrow_A" vb.
+        /// Mevcut kod lowercase kullanıyor — bu helper eşleştirmeyi sağlar.
+        /// </summary>
+        private string FindClipCaseInsensitive(string animName)
+        {
+            if (_charAnim == null) return null;
+
+            // Önce exact match dene
+            if (_charAnim.GetClip(animName) != null)
+                return animName;
+
+            // Case-insensitive arama
+            string lower = animName.ToLowerInvariant();
+            foreach (AnimationState state in _charAnim)
+            {
+                if (state.name.ToLowerInvariant() == lower)
+                    return state.name;
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Animasyon adını kullanarak N3AnimClipRegistry'den fTimeBlend değerini sorgular.
+        /// Bulamazsa varsayılan geçiş süresini döner.
+        /// </summary>
+        private float GetAnimBlendTime(string resolvedName, float defaultBlend = 0.25f)
+        {
+            if (_animRegistry == null && _charAnim != null)
+            {
+                _animRegistry = _charAnim.GetComponent<EntropyOnline.Import.N3AnimClipRegistry>();
+            }
+
+            if (_animRegistry != null && _animRegistry.ClipNames != null && _animRegistry.BlendTimes != null)
+            {
+                for (int i = 0; i < _animRegistry.ClipNames.Length; i++)
+                {
+                    if (string.Equals(_animRegistry.ClipNames[i], resolvedName, System.StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (i < _animRegistry.BlendTimes.Length)
+                        {
+                            float bt = _animRegistry.BlendTimes[i];
+                            return bt >= 0f ? bt : defaultBlend;
+                        }
+                        break;
+                    }
+                }
+            }
+            return defaultBlend;
+        }
+
+        private void HandleNetworkSync()
+        {
+            _sendTimer -= Time.deltaTime;
+
+            if (_sendTimer <= 0f && (_wasMoving || _bTargetOrPosMove))
+            {
+                _sendTimer = _sendInterval;
+
+                float dist = Vector3.Distance(transform.position, _lastSentPosition);
+                if (dist > 0.1f) // Minimum hareket eşiği
+                {
+                    SendMovePacket();
+                    _lastSentPosition = transform.position;
+                }
+            }
+
+            // Rotasyon senkronizasyonu (WIZ_ROTATE)
+            float currentYaw = transform.rotation.eulerAngles.y;
+            float yawDiff = Mathf.Abs(Mathf.DeltaAngle(currentYaw, _lastSentYaw));
+            if (yawDiff > 3f && Time.time - _lastRotateSendTime > 0.15f)
+            {
+                if (KONetworkManager.Instance != null)
+                {
+                    KONetworkManager.Instance.SendRotate((short)currentYaw);
+                    _lastSentYaw = currentYaw;
+                    _lastRotateSendTime = Time.time;
+                }
+            }
+        }
+
+        private void SendMovePacket()
+        {
+            if (KONetworkManager.Instance == null) return;
+
+            // Open-KO birebir: WIZ_MOVE
+            // Wire: [WIZ_MOVE][x:2][z:2][y:2][speed:2][moveType:1]
+            using var pkt = new KOPacketWriter(WizOpcode.WIZ_MOVE);
+            var pos = transform.position;
+            // Güvenlik: negatif veya aşırı değerleri sunucuya gönderme — DB bozulur
+            float safeY = Mathf.Max(0f, pos.y);
+            pkt.WriteUInt16((ushort)(Mathf.Max(0f, pos.x) * 10f));  // x in decimetres
+            pkt.WriteUInt16((ushort)(Mathf.Max(0f, pos.z) * 10f));  // z in decimetres
+            pkt.WriteInt16((short)(safeY * 10f));     // y in decimetres
+            pkt.WriteInt16((short)(moveSpeed * 10f)); // speed
+            pkt.WriteByte(1); // moveType: 1=walk
+            KONetworkManager.Instance.SendPacket(pkt);
+        }
+
+        private void SendStopPacket()
+        {
+            if (KONetworkManager.Instance == null) return;
+
+            // Open-KO birebir: WIZ_MOVE with moveType=0 (stop)
+            using var pkt = new KOPacketWriter(WizOpcode.WIZ_MOVE);
+            var pos = transform.position;
+            float safeY = Mathf.Max(0f, pos.y);
+            pkt.WriteUInt16((ushort)(Mathf.Max(0f, pos.x) * 10f));
+            pkt.WriteUInt16((ushort)(Mathf.Max(0f, pos.z) * 10f));
+            pkt.WriteInt16((short)(safeY * 10f));
+            pkt.WriteInt16(0); // speed = 0 (stopped)
+            pkt.WriteByte(0);  // moveType: 0=stop
+            KONetworkManager.Instance.SendPacket(pkt);
+        }
+
+        /// <summary>
+        /// S2C_WARP: Sunucudan gelen anlık pozisyon warp (Gate, Random TP, Summon).
+        /// CharacterController devre dışı bırakılarak anlık teleport yapılır.
+        ///
+        /// Open-KO birebir: GameProcMain.cpp:454 — InitPlayerPosition(vPos)
+        ///   float fYTerrain = ACT_WORLD->GetHeightWithTerrain(vPos.x, vPos.z);
+        ///   vPos.y = fYTerrain;
+        /// C++ guard yok — terrain ne dönerse onu kullanır.
+        /// </summary>
+        private void HandleInstantWarp(float x, float z, float serverY)
+        {
+            if (_charController == null) return;
+
+            // Open-KO birebir: ACT_WORLD->GetHeightWithTerrain(x, z)
+            // C++ birebir: fYTerrain = GetHeightWithTerrain(x, z) — guard YOK
+            // Terrain yüksekliği 0 veya negatif olabilir, bu meşru bir değer.
+            // GetTerrainHeightAtPosition zaten sentinel kontrolü (-900f) ve fallback (10f) yapıyor.
+            float y = GetTerrainHeightAtPosition(x, z);
+
+            // CharacterController teleport için geçici devre dışı
+            _charController.enabled = false;
+            transform.position = new Vector3(x, y, z);
+            _charController.enabled = true;
+            
+            _lastSentPosition = transform.position;
+            _verticalVelocity = 0f;
+            
+            // Kamerayı anında snap et (Lerp dönme efektini önle)
+            var cam = Object.FindAnyObjectByType<EntropyOnline.Camera.CameraController>();
+            if (cam != null) cam.SnapToTarget();
+        }
+
+        public void SendInitialPositionReport()
+        {
+            _lastSentPosition = transform.position;
+            SendStopPacket();
+        }
+
+        /// <summary>
+        /// Open-KO birebir: ACT_WORLD->GetHeightWithTerrain(x, z)
+        /// Verilen dünya koordinatında terrain + collision yüksekliğini döndürür.
+        /// WorldBuilder.GetTerrainHeight veya raycast fallback kullanır.
+        /// </summary>
+        private static float GetTerrainHeightAtPosition(float x, float z)
+        {
+            // 1. Raycast downwards from high above to find the highest solid surface (stairs, rocks, terrain colliders)
+            // excluding Water, UI, and Ignore Raycast layers
+            Ray ray = new Ray(new Vector3(x, 500f, z), Vector3.down);
+            int layerMask = ~LayerMask.GetMask("Water", "UI", "Ignore Raycast");
+            if (UnityEngine.Physics.Raycast(ray, out RaycastHit hit, 1000f, layerMask, QueryTriggerInteraction.Ignore))
+                return hit.point.y + 0.1f;
+
+            // 2. Fallback to WorldBuilder terrain height if Raycast misses (e.g., if colliders are not active yet)
+            var wb = Object.FindAnyObjectByType<World.WorldBuilder>();
+            if (wb != null)
+            {
+                float h = wb.GetTerrainHeight(x, z);
+                if (h > -900f) // Geçerli değer kontrolü
+                    return h + 0.1f; // Minimal buffer — yere gömülmesin
+            }
+
+            // 3. Son çare — makul bir varsayılan
+            return 10f;
+        }
+
+        /// <summary>
+        /// Open-KO birebir: CPlayerMySelf::CheckCollision incline limit portu
+        /// Dik yamaçları (40 dereceden fazla) tırmanmayı engeller.
+        /// </summary>
+        private bool CheckClimbCollision(Vector3 moveDir, float speed)
+        {
+            // GM/Manager kontrolü: GM'ler engellenmez
+            var gm = GameManager.Instance;
+            if (gm != null && gm.Authority == 0)
+                return false;
+
+            // Indoor alanlarda arazi eğimi kontrol edilmez
+            if (WorldBuilder.Instance != null && WorldBuilder.Instance.IsIndoor)
+                return false;
+
+            Vector3 targetPos = transform.position + moveDir * speed;
+
+            // Karakterin hedef zeminini yukarıdan aşağı raycast ile tararız
+            Ray ray = new Ray(new Vector3(targetPos.x, targetPos.y + 10f, targetPos.z), Vector3.down);
+            int layerMask = ~LayerMask.GetMask("Water", "UI", "Ignore Raycast");
+
+            if (UnityEngine.Physics.Raycast(ray, out RaycastHit hit, 20f, layerMask, QueryTriggerInteraction.Ignore))
+            {
+                Vector3 normal = hit.normal.normalized;
+                Vector3 normalH = new Vector3(normal.x, 0f, normal.z);
+                float normalMag = normalH.magnitude;
+
+                // MAX_INCLINE_CLIMB = 0.6430f (40 derece eğim sine değeri)
+                const float MAX_INCLINE_CLIMB = 0.6430f;
+
+                // Tırmanma yönünde mi eğim kontrolü (Dot <= 0: yukarı tırmanıyor demektir)
+                if (normalMag > MAX_INCLINE_CLIMB && Vector3.Dot(normalH, moveDir) <= 0.0f)
+                {
+                    return true; // Hareketi engelle
+                }
+            }
+
+            return false;
+        }
+
+        // =============================================
+        // OTO-SALDIRI — Open-KO birebir
+        // =============================================
+
+        /// <summary>
+        /// Oto-saldırıyı başlat.
+        /// Open-KO birebir: GameProcMain::StartAutoAttack (GameProcMain.cpp:4688-4731)
+        ///   - CloseUIs()
+        ///   - RotateTo(target)
+        ///   - IsHostileTarget(target) — monster'lar her zaman hostile
+        ///   - m_bAttackContinous = true
+        ///   - Action(PSA_BASIC, true, target)
+        /// </summary>
+        public void StartAutoAttack(KOEntity target)
+        {
+            if (_bAttackContinous) return;          // PlayerMySelf.cpp:4691
+            if (target == null) return;
+            if (target.IsNpc) return;               // NPC'lere saldırılmaz
+            if (_bStun) return;                     // cpp:4697: if (s_pPlayer->m_bStun) return;
+
+            // Open-KO birebir: RotateTo(target) — GameProcMain.cpp:4700
+            // C++: s_pPlayer->RotateTo(target) → RotateTo(fYaw, false) — smooth
+            RotateToTarget(target.transform);
+
+            _bAttackContinous = true;               // PlayerMySelf.cpp:4719
+            _attackTarget = target;
+            _fAttackTimeRecent = 0f;
+
+            // Open-KO birebir: Action(PSA_BASIC, true, target) — GameProcMain.cpp:4731
+            Action(PlayerStateAction.PSA_BASIC, true, true);
+
+            // C++ birebir: GameProcMain.cpp:4724-4725 — IDS_MSG_ATTACK_START (3002)
+            // text_resources.h:175: "Beginning attack on %s"
+            // MsgOutput(szMsg, 0xff00ffff) — camgöbeği
+            var uiMgr = EntropyOnline.UI.KOUIManager.Instance;
+            if (uiMgr != null)
+                uiMgr.AddMsgOutput($"Beginning attack on {target.EntityName}", EntropyOnline.UI.KOUIManager.D3DColorToUnity(0xff00ffff));
+        }
+
+        /// <summary>
+        /// Oto-saldırıyı durdur.
+        /// Open-KO birebir: GameProcMain::StopAutoAttack (GameProcMain.cpp:4737-4758)
+        ///   - m_bAttackContinous = false
+        ///   - Action(PSA_BASIC) — idle'a dön
+        /// </summary>
+        public void StopAutoAttack()
+        {
+            if (!_bAttackContinous) return;          // PlayerMySelf.cpp:4740
+
+            _bAttackContinous = false;               // PlayerMySelf.cpp:4743
+            _attackTarget = null;
+
+            // Hedefe yürüme de iptal et — yoksa ölü hedef'e yürümeye devam eder
+            if (_bTargetOrPosMove)
+                CancelMoveToTarget();
+
+            // Devam eden Archery R-atağı casting'i varsa iptal et (ölü hedefe fazladan ok gitmesini önler)
+            var magicMgr = EntropyOnline.Combat.KOMagicSkillManager.Instance;
+            if (magicMgr != null && magicMgr.IsCastingTimerActive())
+            {
+                var castingSkill = magicMgr.GetCastingSkill();
+                if (castingSkill != null && castingSkill.Id == 102003)
+                {
+                    magicMgr.CancelCasting();
+                }
+            }
+
+            // Open-KO birebir: Action(PSA_BASIC) — idle'a dön (GameProcMain.cpp:4749)
+            Action(PlayerStateAction.PSA_BASIC, true, true);
+
+            // C++ birebir: GameProcMain.cpp:4748-4750 — IDS_MSG_ATTACK_STOP (3003)
+            // text_resources.h:176: "Stop Attack"
+            // MsgOutput(szMsg, 0xff00ffff) — camgöbeği
+            var uiMgr = EntropyOnline.UI.KOUIManager.Instance;
+            if (uiMgr != null)
+                uiMgr.AddMsgOutput("Stop Attack", EntropyOnline.UI.KOUIManager.D3DColorToUnity(0xff00ffff));
+        }
+
+        /// <summary>
+        /// Hareketi tamamen durdur — casting sırasında çağrılır.
+        /// Open-KO birebir: CommandMove(MD_STOP, true) (GameProcMain.cpp:1258)
+        /// </summary>
+        public void StopMovement()
+        {
+            // C++ birebir: CommandMove(MD_STOP, true) — GameProcMain.cpp:4644-4655
+            // Sadece hareketi durdurur. Auto-attack durdurulmaz!
+            // cpp:4657-4662: m_bAttackContinous ise saldırı devam eder.
+            if (_bTargetOrPosMove)
+                CancelMoveToTarget();
+
+            Action(PlayerStateAction.PSA_BASIC, true, true); // PSA_BASIC
+        }
+
+        /// <summary>
+        /// Her frame çağrılır — oto-saldırı tick döngüsü.
+        /// Open-KO birebir: PlayerMySelf::Tick (PlayerMySelf.cpp:168-276)
+        ///   - m_bAttackContinous ise:
+        ///     - pTarget = TargetPointerCheck(false)
+        ///     - pTarget null → StopAutoAttack
+        ///     - Melee dalı (silah yoksa veya melee silah):
+        ///       - fIntervalTable = 1.0f (varsayılan — PlayerMySelf.cpp:218)
+        ///       - Silah varsa: (siAttackInterval/100) * (siAttackIntervalPercentage/100)
+        ///       - fInterval = fIntervalTable / m_fAttackDelta
+        ///       - fTime > m_fAttackTimeRecent + fInterval → saldır:
+        ///         - IsAttackableTarget → MsgSend_Attack + Action(PSA_ATTACK)
+        ///         - Değilse → RotateTo + hedefe yürü
+        /// </summary>
+        private void AttackTick()
+        {
+            if (!_bAttackContinous) return;
+
+            // Open-KO birebir: TargetPointerCheck(false) — PlayerMySelf.cpp:170
+            if (_attackTarget == null || !_attackTarget.gameObject.activeInHierarchy || _attackTarget.IsDead)
+            {
+                Debug.LogWarning($"[ATTACK] Hedef geçersiz veya öldü: null={_attackTarget == null}, " +
+                    $"active={((_attackTarget != null) ? _attackTarget.gameObject.activeInHierarchy : false)}, " +
+                    $"dead={((_attackTarget != null) ? _attackTarget.IsDead : false)}, " +
+                    $"instanceId={_attackTarget?.ServerInstanceId ?? -1}");
+                StopAutoAttack();  // PlayerMySelf.cpp:173
+                return;
+            }
+
+            float fTime = Time.time;
+
+            // ================================================================
+            // Open-KO birebir: PlayerMySelf.cpp:179-200
+            // Archery auto-attack — bow/longbow sol elde, crossbow sağ elde
+            // ================================================================
+            var leftHandSlot = GetEquippedLeftHandItem();
+            var rightHandSlot = GetEquippedRightHandItem();
+            int leftClass = leftHandSlot?.itemClass ?? 0;
+            int rightClass = rightHandSlot?.itemClass ?? 0;
+
+            if (leftClass == 0 && leftHandSlot?.serverData != null)
+                leftClass = leftHandSlot.serverData.Type;
+            if (rightClass == 0 && rightHandSlot?.serverData != null)
+                rightClass = rightHandSlot.serverData.Type;
+
+            bool isBow = (leftClass == (int)KOItemClass.ITEM_CLASS_BOW || leftClass == (int)KOItemClass.ITEM_CLASS_BOW_LONG || rightClass == (int)KOItemClass.ITEM_CLASS_BOW || rightClass == (int)KOItemClass.ITEM_CLASS_BOW_LONG);
+            bool isBowCross = (rightClass == (int)KOItemClass.ITEM_CLASS_BOW_CROSS || leftClass == (int)KOItemClass.ITEM_CLASS_BOW_CROSS);
+
+            if (isBow || isBowCross)
+            {
+                // C++ birebir: PlayerMySelf.cpp:184
+                // __TABLE_UPC_SKILL* pSkill = s_pTbl_Skill.Find(102003);
+                var pSkill = KOImport.SkillTableParser.Find(102003); // basic bow skill
+                if (pSkill != null)
+                {
+                    // C++ birebir: PlayerMySelf.cpp:187
+                    if (!_attackTarget.IsDead)
+                    {
+
+                        // C++ birebir: PlayerMySelf.cpp:189-191
+                        // fInterval = (pSkill->iCastTime / 10.f) + 0.15f
+                        float fInterval = (pSkill.CastTime / 10f) + 0.15f;
+                        if (_fAttackDelta > 0)
+                            fInterval /= _fAttackDelta;
+
+                        // C++ birebir: PlayerMySelf.cpp:192
+                        if (fTime > _fAttackTimeRecent + fInterval)
+                        {
+                            // C++ birebir: MagicSkillMng.cpp:1179 — RotateTo(pTarget)
+                            // RotateTo(fYaw, false) — smooth. TickYaw aynı frame'de işler.
+                            RotateToTarget(_attackTarget.transform);
+                            // C++ birebir: PlayerMySelf.cpp:195
+                            // MsgSend_MagicProcess(m_iIDTarget, pSkill)
+                            var magicMgr = EntropyOnline.Combat.KOMagicSkillManager.Instance;
+                            if (magicMgr != null)
+                            {
+                                bool result = magicMgr.MsgSend_MagicProcess(
+                                    (int)_attackTarget.ServerInstanceId, pSkill);
+                                // Sadece başarılı cast'te timer güncelle —
+                                // IsCasting() (post-cast _fDelay) nedeniyle reddedilirse
+                                // bir sonraki frame'de tekrar denenecek.
+                                if (result)
+                                {
+                                    _fAttackTimeRecent = fTime; // PlayerMySelf.cpp:196
+                                }
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+            // ================================================================
+            // Open-KO birebir: PlayerMySelf.cpp:201-214
+            // Launcher (javelin) auto-attack — sağ elde launcher
+            // ================================================================
+            else if (rightClass == (int)KOItemClass.ITEM_CLASS_LAUNCHER)
+            {
+                // C++ birebir: PlayerMySelf.cpp:204
+                var pSkill = KOImport.SkillTableParser.Find(102009); // basic javelin skill
+                if (pSkill != null && fTime > _fAttackTimeRecent + (pSkill.CastTime / 10f))
+                {
+                    // C++ birebir: PlayerMySelf.cpp:207
+                    if (!_attackTarget.IsDead)
+                    {
+                        // C++ birebir: PlayerMySelf.cpp:209-211
+                        // MsgSend_MagicProcess(m_iIDTarget, pSkill) — 2 parametre!
+                        var magicMgr = EntropyOnline.Combat.KOMagicSkillManager.Instance;
+                        if (magicMgr != null)
+                        {
+                            magicMgr.MsgSend_MagicProcess(
+                                (int)_attackTarget.ServerInstanceId, pSkill);
+                        }
+                        _fAttackTimeRecent = fTime; // PlayerMySelf.cpp:211
+                    }
+                }
+            }
+            // ================================================================
+            // Open-KO birebir: PlayerMySelf.cpp:216-269
+            // Melee auto-attack
+            // ================================================================
+            else
+            {
+                // fIntervalTable: silah yoksa 1.0f, silah varsa (siAttackInterval/100) * (siAttackIntervalPercentage/100)
+                // PlayerMySelf.cpp:218-224
+                float fIntervalTable = 1.0f;
+                short weaponRange = 0;
+
+                // Open-KO birebir: m_pItemPlugBasics[PLUG_POS_RIGHTHAND] → giyili sağ el silahı
+                // C++ birebir: pItemBasic->siAttackInterval / 100.0f (PlayerMySelf.cpp:221-223)
+                var koInv = EntropyOnline.UI.KOInventory.Instance;
+                var rhSlot = koInv?.GetRightHandWeapon();
+                if (rhSlot != null && !rhSlot.IsEmpty)
+                {
+                    // Önce pItemBasic'ten oku (C++ birebir)
+                    short attackInterval = rhSlot.pItemBasic?.siAttackInterval ?? 0;
+                    short attackRange = rhSlot.pItemBasic?.siAttackRange ?? 0;
+                    
+                    // pItemBasic null ise serverData'dan dene
+                    if (attackInterval == 0 && rhSlot.serverData != null)
+                        attackInterval = rhSlot.serverData.Delay;
+                    if (attackRange == 0 && rhSlot.serverData != null)
+                        attackRange = rhSlot.serverData.Range;
+
+                    if (attackInterval > 0)
+                    {
+                        int itemDefId = rhSlot.serverData?.ItemDefId ?? rhSlot.itemId;
+                        short pctRaw = KOImport.ItemDataManager.GetAttackIntervalPct(itemDefId);
+                        float pct = pctRaw > 0 ? pctRaw / 100.0f : 1.0f;
+                        fIntervalTable = (attackInterval / 100.0f) * pct;
+                    }
+                    weaponRange = attackRange;
+                }
+                else
+                {
+                    // Legacy fallback
+                    var equippedWeapon = GetEquippedRightHandWeapon();
+                    if (equippedWeapon != null)
+                    {
+                        if (equippedWeapon.Delay > 0)
+                        {
+                            short pctRaw = KOImport.ItemDataManager.GetAttackIntervalPct(equippedWeapon.ItemDefId);
+                            float pct = pctRaw > 0 ? pctRaw / 100.0f : 1.0f;
+                            fIntervalTable = (equippedWeapon.Delay / 100.0f) * pct;
+                        }
+                        weaponRange = equippedWeapon.Range;
+                    }
+                }
+
+                // Open-KO birebir: fInterval = fIntervalTable / m_fAttackDelta — PlayerMySelf.cpp:226-229
+                float fInterval = fIntervalTable;
+                if (_fAttackDelta > 0)
+                    fInterval /= _fAttackDelta;
+
+                // Open-KO birebir: fTime > m_fAttackTimeRecent + fInterval — PlayerMySelf.cpp:231
+                if (fTime > _fAttackTimeRecent + fInterval)
+                {
+                    // Open-KO birebir: PlayerMySelf.cpp:234 — casting sırasında melee saldırı yapılamaz
+                    bool bCastingNow = EntropyOnline.Combat.KOMagicSkillManager.Instance?.IsCasting() ?? false;
+                    if (!bCastingNow)
+                    {
+                        // Open-KO birebir: IsAttackableTarget(pTarget) — PlayerMySelf.cpp:237
+                        float fD = Vector3.Distance(transform.position, _attackTarget.transform.position);
+
+                        // Open-KO birebir: AttackableDistance — PlayerMySelf.cpp:730-743
+                        float playerRadius = 0.5f;
+                        if (_charController != null)
+                            playerRadius = _charController.radius;
+
+                        float targetRadius = 0.5f;
+                        var targetCol = _attackTarget.GetComponent<CapsuleCollider>();
+                        if (targetCol != null)
+                            targetRadius = targetCol.radius * _attackTarget.transform.localScale.x;
+
+                        // Open-KO birebir: PlayerMySelf.cpp:735-740
+                        float fDistLimit = (playerRadius + targetRadius) / 2.0f;
+                        if (weaponRange > 0)
+                            fDistLimit += weaponRange / 10.0f;  // siAttackRange / 10.0f
+
+                        if (fD <= fDistLimit)
+                        {
+                            // Open-KO birebir: PlayerMySelf.cpp:239-246
+                            float fDistRadius = (playerRadius + targetRadius) / 2.0f;
+                            float fDistance = fD - fDistRadius;
+                            if (fDistance < 0) fDistance = 0;
+
+                            // Open-KO birebir: RotateTo(pTarget) — PlayerMySelf.cpp:239
+                            // C++ birebir: RotateTo(fYaw, false) — smooth
+                            RotateToTarget(_attackTarget.transform);
+
+                            MsgSend_AttackPacket(_attackTarget, fIntervalTable, fDistance);
+
+                            // C++ birebir satır 243: animasyon koşulu
+                            // if (PSA_SPELLMAGIC != m_eState && PSA_ATTACK != m_eState && m_fFlickeringFactor == 1.0f)
+                            if (_eState != PlayerStateAction.PSA_SPELLMAGIC &&
+                                _eState != PlayerStateAction.PSA_ATTACK &&
+                                _fFlickeringFactor == 1.0f)
+                            {
+                                Action(PlayerStateAction.PSA_ATTACK, false);
+                            }
+
+                            // Open-KO: m_bRenderTrace (N3Chr.cpp:1733-1736)
+                            SetWeaponTracing(true);
+                            StartCoroutine(DisableTrailAfterDelay(fInterval));
+
+                            _fAttackTimeRecent = fTime;  // PlayerMySelf.cpp:246
+                        }
+                        else
+                        {
+                            // Open-KO birebir: RotateTo(pTarget) — PlayerMySelf.cpp:252
+                            // Menzil dışında da hedefe dön — smooth yeterli
+                            RotateToTarget(_attackTarget.transform);
+
+                            if (!_bTargetOrPosMove)
+                                SetMoveTargetID(_attackTarget);
+
+                            // C++ birebir satır 264-266: attack animasyonu değilse idle'a dön
+                            // if (PSA_SPELLMAGIC != m_eState && PSA_SITDOWN != m_eState)
+                            //     this->Action(PSA_BASIC, true);
+                            if (_eState != PlayerStateAction.PSA_SPELLMAGIC &&
+                                _eState != PlayerStateAction.PSA_SITDOWN)
+                            {
+                                Action(PlayerStateAction.PSA_BASIC, true);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // C++ birebir satır 272-274: saldırı bu tick'te yapıldıysa → oturmayı kaldır
+            if (fTime == _fAttackTimeRecent)
+                CommandSitDown(false, false);
+        }
+
+        /// <summary>
+        /// Saldırı paketi gönder.
+        ///
+        /// Open-KO referans: GameProcMain::MsgSend_Attack (GameProcMain.cpp:1463-1484)
+        ///   MP_AddByte(WIZ_ATTACK)         — 0x08
+        ///   MP_AddByte(0x01)               — attack sub-type
+        ///   MP_AddByte(bySuccess=true)      — success flag
+        ///   MP_AddShort(iTargetID)          — hedef SID (short)
+        ///   MP_AddShort((fInterval+0.1)*100) — centisaniye
+        ///   MP_AddShort(fDistance*10)        — desimetre
+        ///
+        /// NOT: Bizim sunucu (CombatProcessor.ProcessBasicAttack) farklı format bekler:
+        ///   ReadInt64(targetId) + ReadBool(targetIsPlayer)
+        /// Open-KO short ID kullanır, bizim sunucu long ID kullanır.
+        /// Open-KO interval/distance gönderir, bizim sunucu cooldown'u kendi hesaplar.
+        /// </summary>
+        private void MsgSend_AttackPacket(KOEntity target, float fIntervalTable, float fDistance)
+        {
+            if (KONetworkManager.Instance == null || !KONetworkManager.Instance.IsConnected) return;
+
+            // ServerInstanceId atanmamışsa sunucu bu monster'ı bulamaz
+            if (target.ServerInstanceId < 0)
+            {
+                Debug.LogWarning($"[ATTACK] Hedef '{target.EntityName}' henüz sunucu ile eşleşmedi (ServerInstanceId=-1)");
+                return;
+            }
+
+            // Saldırı öncesi pozisyon güncelle — sunucu menzil kontrolü yapıyor
+            SendMovePacket();
+            _lastSentPosition = transform.position;
+
+            // Open-KO birebir: WIZ_ATTACK (GameProcMain.cpp:1474-1482)
+            // Wire: [WIZ_ATTACK][attackType:byte][bySuccess:byte][targetId:int16][interval:int16][distance:int16]
+            using var pkt = new KOPacketWriter(WizOpcode.WIZ_ATTACK);
+            pkt.WriteByte(1);    // cpp:1475 — attackType: 0x01 = melee
+            pkt.WriteByte(1);    // cpp:1476 — bySuccess: true (항상 성공으로 보냄)
+            pkt.WriteInt16((short)target.ServerInstanceId);
+            pkt.WriteInt16((short)((fIntervalTable + 0.1f) * 100f)); // centiseconds
+            pkt.WriteInt16((short)(fDistance * 10f)); // decimetres
+            KONetworkManager.Instance.SendPacket(pkt);
+        }
+
+        /// <summary>Oto-saldırı aktif mi?</summary>
+        public bool IsAutoAttacking => _bAttackContinous;
+
+        // =============================================
+        // MsgRecv_Attack — Open-KO birebir
+        // GameProcMain.cpp:3213-3328
+        // =============================================
+
+        /// <summary>
+        /// Sunucudan gelen saldırı sonucunu işle.
+        /// Open-KO birebir: CGameProcMain::MsgRecv_Attack (GameProcMain.cpp:3213-3328)
+        ///
+        /// C++ referanstan birebir:
+        ///   - cpp:3223-3224: bIAmTarget / bIAmAttacker kontrolü
+        ///   - cpp:3241-3253: Ben hedef isem → oturmaktan kaldır + casting interrupt
+        ///   - cpp:3268-3276: Saldırgan başkası ise → RotateTo + PSA_ATTACK animasyonu
+        ///   - cpp:3279-3295: Savaş sırasında çıkış iptal
+        ///   - cpp:3297-3305: iResult==0 (fail) → PSA_GUARD animasyonu
+        ///   - cpp:3313-3325: iResult==2 (dead) → m_fTimeAfterDeath + despawn
+        ///
+        /// NOT: Open-KO'da MsgRecv_Attack hasar değeri ALMAZ.
+        /// HP güncellemesi WIZ_HP_CHANGE ile ayrı paket olarak gelir.
+        /// Bizim S2C_ATTACK_RESULT paketi damage+targetHp içerir ama client
+        /// kendi HP'sini bu paketten güncellemez (çift düşüş önlenir).
+        /// </summary>
+        private void HandleAttackResult(long attackerId, long targetId, bool targetIsPlayer,
+            int damage, int targetHp, bool targetDied)
+        {
+            long myId = GameManager.Instance?.CharacterId ?? 0;
+            bool bIAmAttacker = (attackerId == myId);
+            bool bIAmTarget = (targetIsPlayer && targetId == myId);
+
+            // === Lider Saldırısı ise (Target Assist Takibi) ===
+            if (KOPartyManager.Instance != null && KOPartyManager.Instance.MemberCount > 0)
+            {
+                long leaderId = KOPartyManager.Instance.Members[0].CharacterId;
+                if (attackerId == leaderId && !targetIsPlayer)
+                {
+                    if (targetDied)
+                    {
+                        KOPartyManager.Instance.LeaderTargetId = 0;
+                    }
+                    else
+                    {
+                        KOPartyManager.Instance.LeaderTargetId = targetId;
+                    }
+                }
+            }
+
+            // Open-KO birebir: cpp:3279-3295 — savaş sırasında çıkış iptal
+            // (mobilde bu şimdilik geçildi)
+
+            // === Ben saldırgan isem ===
+            if (bIAmAttacker)
+            {
+                // Open-KO birebir: cpp:3313-3325 — iResult==2 (dead)
+                // m_fTimeAfterDeath = 0.1f → ActionDying() → entity dying anim
+                if (targetDied)
+                {
+                    // Open-KO: pTarget->m_fTimeAfterDeath = 0.1f + ActionDying(PSD_KEEP_POSITION)
+                    _attackTarget?.ActionDying();
+                    StopAutoAttack();
+                }
+                // Open-KO birebir: ProcessAttack (PlayerBase.cpp:1329-1368)
+                // pTarget->IsAlive() && !pTarget->m_bGuardSuccess (cpp:1329-1332):
+                //   D3DCOLORVALUE crHit = { 1.0f, 0.2f, 0.2f, 1.0f };  (cpp:1358)
+                //   pTarget->DurationColorSet(crHit, 0.3f);              (cpp:1359)
+                //   pTarget->Action(PSA_STRUCK, false);                   (cpp:1368)
+                else if (_attackTarget != null && !_attackTarget.IsDead)
+                {
+                    // Open-KO birebir: crHit = { 1.0f, 0.2f, 0.2f, 1.0f } (cpp:1358)
+                    Color crHit = new Color(1.0f, 0.2f, 0.2f, 1.0f);
+                    _attackTarget.DurationColorSet(crHit, 0.3f);  // cpp:1359
+                    _attackTarget.ActionStruck();                   // cpp:1368
+                }
+            }
+
+            // === Ben hedef isem ===
+            // Open-KO birebir: cpp:3241-3255
+            if (bIAmTarget)
+            {
+                // Open-KO birebir: cpp:3243 — CommandSitDown(false, false) — oturmaktan kaldır
+                CommandSitDown(false, false);
+
+                // Open-KO birebir: GameProcMain.cpp:3244-3253
+                // rand()%100 >= pSkill->iPercentSuccess ise casting iptal
+                var magicMgr = EntropyOnline.Combat.KOMagicSkillManager.Instance;
+                if (magicMgr != null && magicMgr.IsCasting())
+                {
+                    // C++ birebir: GameProcMain.cpp:3246-3253
+                    // pSkill = s_pTbl_Skill.Find(m_dwMagicID)
+                    // if (rand()%100 >= pSkill->iPercentSuccess) → FailCast
+                    var castingSkill = magicMgr.GetCastingSkill();
+                    int percentSuccess = castingSkill?.PercentSuccess ?? 0;
+                    int roll = UnityEngine.Random.Range(0, 100);
+
+                    if (roll >= percentSuccess)
+                    {
+                        magicMgr.CancelCasting();
+                    }
+                }
+
+                // NOT: Open-KO'da MsgRecv_Attack hasar değeri almaz.
+                // HP güncellemesi WIZ_HP_CHANGE (S2C_HP_CHANGE) ile ayrı paket olarak gelir.
+                // Bu yüzden burada GameManager.CurrentHp değiştirilmez.
+
+                // NOT: Open-KO'da MsgRecv_Attack target'a struck animasyonu çalmaz.
+                // cpp:3297-3305: sadece iResult==0 (fail) → PSA_GUARD animasyonu
+                // cpp:3313: iResult==2 (dead) → m_fTimeAfterDeath = 0.1f
+                // Normal hit'te (iResult==1) target animasyon değişmez.
+            }
+        }
+
+        /// <summary>
+        /// Sunucudan gelen ölüm paketi — hedef entity öldü.
+        ///
+        /// Open-KO referans: CGameProcMain::MsgRecv_Dead (GameProcMain.cpp:3330-3364)
+        ///   - iIDTarget okur (short)
+        ///   - Ben ölüyorsam → Regeneration dialog
+        ///   - Target → m_fTimeAfterDeath = 0.1f + ActionDying()
+        ///
+        /// Open-KO'da oto-saldırı, target entity kaldırılınca attack loop'ta
+        /// implicit olarak durur. Bizde explicit StopAutoAttack() çağrılır.
+        /// </summary>
+        private void HandleEntityDeath(long entityId, bool isPlayer)
+        {
+            // =============================================
+            // KENDİ ÖLÜMÜMÜZ — Open-KO birebir: MsgRecv_Dead (GameProcMain.cpp:3340-3348)
+            //   if (iIDTarget == s_pPlayer->IDNumber())
+            //       s_pPlayer->m_fTimeAfterDeath = 0.1f;
+            //       s_pPlayer->ActionDying(PSD_KEEP_POSITION, ...);
+            //       → Regeneration dialog açılır
+            // =============================================
+            long myId = GameManager.Instance?.CharacterId ?? 0;
+            if (isPlayer && entityId == myId)
+            {
+                _isDead = true;
+                StopAutoAttack();
+                if (_bTargetOrPosMove) CancelMoveToTarget();
+                _eStateMove = PlayerStateMove.PSM_STOP;
+
+                // openko-ref birebir: PlayerBase.cpp:1172-1175
+                //   ActionMove(PSM_STOP) + Action(PSA_DYING, false)
+                // JudgeAnimationDying() → ANI_DEAD_NEATLY(8) + rand()%3
+                Action(PlayerStateAction.PSA_DYING);
+
+                return;
+            }
+
+            // =============================================
+            // DİĞER ENTITY ÖLÜMÜ — Open-KO birebir: MsgRecv_Dead (GameProcMain.cpp:3350-3358)
+            // =============================================
+            KOEntity dyingEntity = null;
+
+            // Oto-saldırı hedefi ölen entity mi?
+            if (_bAttackContinous && _attackTarget != null && _attackTarget.ServerInstanceId == entityId)
+            {
+                dyingEntity = _attackTarget;
+                StopAutoAttack();
+            }
+
+            // Hedefe yürüme hedefi ölen entity mi?
+            if (_bTargetOrPosMove && _moveTarget != null && _moveTarget.ServerInstanceId == entityId)
+            {
+                CancelMoveToTarget();
+            }
+
+            // Entity bulunamadıysa sahne genelinde ara
+            if (dyingEntity == null)
+            {
+                var allEntities = FindObjectsByType<KOEntity>(FindObjectsInactive.Exclude);
+                foreach (var e in allEntities)
+                {
+                    if (e.ServerInstanceId == entityId)
+                    {
+                        dyingEntity = e;
+                        break;
+                    }
+                }
+            }
+
+            // Open-KO birebir: ActionDying (PlayerBase.cpp:1172-1203)
+            if (dyingEntity != null)
+            {
+                dyingEntity.ActionDying();
+            }
+        }
+
+        // PlayDeathAnimation() KALDIRILDI — openko-ref birebir:
+        // C++ ActionDying() → Action(PSA_DYING) → JudgeAnimationDying() → AniCurSet(eAni)
+        // İsim tabanlı arama YANLIŞ — C++ tamamen index-based çalışır.
+
+        /// <summary>
+        /// Respawn handler — ölüm state'ini sıfırla.
+        /// Open-KO birebir: Regene() → m_fTimeAfterDeath = 0 + Action(PSA_BASIC)
+        /// </summary>
+        private void HandlePlayerRespawn(long charId, float x, float y, float z,
+            int hp, int maxHp, int mp, int maxMp, long gold)
+        {
+            long myId = GameManager.Instance?.CharacterId ?? 0;
+            if (charId != myId) return;
+
+            _isDead = false;
+            _fTimeAfterDeath = 0f;
+            _bStun = false;
+            _fStunTime = 0f;
+
+            // Hareket state'lerini sıfırla
+            _wasMoving = false;
+            _eStateMove = PlayerStateMove.PSM_STOP;
+
+            // Oto-saldırı ve hedefe yürüme iptal
+            if (_bAttackContinous) StopAutoAttack();
+            if (_bTargetOrPosMove) CancelMoveToTarget();
+
+            // Pozisyonu güncelle
+            transform.position = new Vector3(x, y, z);
+
+            // State machine'i zorla sıfırla — PSA_DEATH → PSA_BASIC
+            _eState = PlayerStateAction.PSA_BASIC;
+            _eStateNext = PlayerStateAction.PSA_BASIC;
+            Action(PlayerStateAction.PSA_BASIC, true, true);
+            PlayCharAnim("breath");
+        }
+
+        /// <summary>
+        /// Open-KO birebir: CMagicSkillMng::MsgRecv_Effecting (MagicSkillMng.cpp:1866-1928)
+        ///
+        /// Open-KO'da bu handler:
+        ///   - dwMagicID, iSourceID, iTargetID okur
+        ///   - FX efektleri tetikler (s_pFX->TriggerBundle)
+        ///   - Type1/3/4 skill-specific efektler
+        ///   - Damage/HP bilgisi bu pakette YOKTUR (ayrı WIZ_HP_CHANGE ile gelir)
+        ///   - Ölüm bu pakette YOKTUR (ayrı WIZ_DEAD ile gelir)
+        /// </summary>
+        private void HandleMagicEffecting(int magicId, long sourceId, long targetId,
+            short data0, short data1, short data2, short data3, short data4, short data5)
+        {
+            // Open-KO birebir: MsgRecv_Effecting (MagicSkillMng.cpp:1866-1928)
+            long myId = GameManager.Instance?.CharacterId ?? 0;
+
+            // === Lider Büyüsü ise (Target Assist Takibi) ===
+            if (KOPartyManager.Instance != null && KOPartyManager.Instance.MemberCount > 0)
+            {
+                long leaderId = KOPartyManager.Instance.Members[0].CharacterId;
+                if (sourceId == leaderId)
+                {
+                    KOPartyManager.Instance.LeaderTargetId = targetId;
+                }
+            }
+
+            // Open-KO birebir: data[3] == SKILLMAGIC_FAIL_ATTACKZERO (-104) → skill ıskaladı
+            if (data3 == (short)MagicFailReason.AttackZero)
+            {
+                // C++ birebir: ıskalanan hedef → PSA_GUARD animasyonu
+                if (sourceId == myId && _attackTarget != null && _attackTarget.ServerInstanceId == targetId)
+                {
+                    _attackTarget.ActionGuard();
+                }
+                return;
+            }
+
+            // ================================================================
+            // C++ birebir: MagicSkillMng.cpp:1880-1886 — pPlayer + pSkill lookup
+            // ================================================================
+            var pSkill = KOImport.SkillTableParser.Find(magicId);
+            if (pSkill == null)
+            {
+                Debug.LogWarning($"[MAGIC] EFFECTING: Skill bulunamadı: {magicId}");
+                return;
+            }
+
+            var fxMgr = KO.KOFXManager.Instance;
+            int iSourceID = (int)sourceId;
+            int iTargetID = (int)targetId;
+
+            // ================================================================
+            // C++ birebir: MagicSkillMng.cpp:1890-1895
+            // Başka oyuncunun casting'i bittiyse → SelfAnimID2 animasyonu tetikle
+            // if (pPlayer != nullptr && iSourceID != s_pPlayer->IDNumber()
+            //     && pPlayer->State() == PSA_SPELLMAGIC)
+            //     pPlayer->m_iMagicAni = pSkill->iSelfAnimID2
+            //     pPlayer->m_fCastFreezeTime = 0.0f
+            //     pPlayer->Action(PSA_SPELLMAGIC, false)
+            // ================================================================
+            if (sourceId != myId)
+            {
+                // Diğer oyuncunun RemotePlayerEntity'sini bul ve animasyonu tetikle
+                var remotePlayers = FindObjectsByType<EntropyOnline.World.RemotePlayerEntity>(
+                    FindObjectsInactive.Exclude);
+                foreach (var rpe in remotePlayers)
+                {
+                    if (rpe.CharId == sourceId && pSkill.SelfAnimID2 >= 0)
+                    {
+                        // C++ birebir: pPlayer->m_iMagicAni = pSkill->iSelfAnimID2
+                        // MagicSkillMng.cpp:1892 — dönüşüm yok, ham değer kullanılır
+                        rpe.ActionSpellEffecting(pSkill.SelfAnimID2);
+                        break;
+                    }
+                }
+            }
+
+            // ================================================================
+            // C++ birebir: MagicSkillMng.cpp:1897-1898
+            // s_pFX->Stop(iSourceID, iSourceID, pSkill->iSelfFX1, -1, true)
+            // s_pFX->Stop(iSourceID, iSourceID, pSkill->iSelfFX1, -2, true)
+            // ================================================================
+            if (fxMgr != null && pSkill.SelfFX1 > 0)
+            {
+                fxMgr.Stop(iSourceID, iSourceID, pSkill.SelfFX1, -1, true);
+                fxMgr.Stop(iSourceID, iSourceID, pSkill.SelfFX1, -2, true);
+            }
+
+            // ================================================================
+            // C++ birebir: MagicSkillMng.cpp:1900-1903
+            // Type1 skill → EffectingType1 (combo anim + struck on target)
+            // if (pSkill->dw1stTableType == 1 || pSkill->dw2ndTableType == 1)
+            //     if (!EffectingType1(dwMagicID, iSourceID, iTargetID)) return;
+            // ================================================================
+            if (pSkill.FirstTableType == 1 || pSkill.SecondTableType == 1)
+            {
+                // Ben saldırgan isem: kendi struck tetikleme (zaten yukarıda yapılıyor)
+                // Başkası saldırgan ise: C++ EffectingType1 → combo anim + ProcessAttack
+                if (sourceId == myId)
+                {
+                    // Kendi skill'im — hedefte struck tetikle
+                    EntropyOnline.World.KOEntity targetEntityT1 = FindEntityByIdLocal(targetId);
+                    if (targetEntityT1 != null && !targetEntityT1.IsDead)
+                    {
+                        Color crHit = new Color(1.0f, 0.2f, 0.2f, 1.0f);
+                        targetEntityT1.DurationColorSet(crHit, 0.3f);
+                        targetEntityT1.ActionStruck();
+                    }
+                }
+            }
+
+            // ================================================================
+            // C++ birebir: MagicSkillMng.cpp:1906-1910
+            // Type4 buff → if (iTargetID == s_pPlayer->IDNumber()) EffectingType4(dwMagicID)
+            // ================================================================
+            if (pSkill.FirstTableType == 4 || pSkill.SecondTableType == 4)
+            {
+                if (targetId == myId)
+                {
+                    var magicMgr = EntropyOnline.Combat.KOMagicSkillManager.Instance;
+                    magicMgr?.EffectingType4(magicId);
+                }
+            }
+
+            // ================================================================
+            // C++ birebir: MagicSkillMng.cpp:1912-1916
+            // Type3 skill (DoT/HoT, stun, magic damage)
+            // ================================================================
+            bool isTargetLocalPlayer = (targetId == myId || targetId == 0 || (GameManager.Instance != null && targetId == GameManager.Instance.CharacterId));
+            if (pSkill.FirstTableType == 3 || pSkill.SecondTableType == 3)
+            {
+                if (isTargetLocalPlayer)
+                {
+                    var magicMgr = EntropyOnline.Combat.KOMagicSkillManager.Instance;
+                    magicMgr?.EffectingType3(magicId);
+                }
+            }
+
+            // ================================================================
+            // C++ birebir: MagicSkillMng.cpp:1921-1927 — TargetFX tetikleme
+            // if (iTargetID == -1)
+            //     vTargetPos(Data[0], Data[1], Data[2])
+            //     s_pFX->TriggerBundle(iSourceID, 0, pSkill->iTargetFX, vTargetPos)
+            // else
+            //     s_pFX->TriggerBundle(iSourceID, 0, pSkill->iTargetFX, iTargetID, pSkill->iTargetPart)
+            // ================================================================
+            if (fxMgr != null && pSkill.TargetFX > 0)
+            {
+                if (pSkill.Target >= 10 && pSkill.Target <= 13)
+                {
+                    var wb = World.WorldBuilder.Instance;
+                    float y = wb != null ? wb.GetTerrainHeight(data0, data2) : (float)data1;
+                    Vector3 vTargetPos = new Vector3(data0, y, data2);
+                    fxMgr.TriggerAreaTargetFX(iSourceID, pSkill.TargetFX, vTargetPos, pSkill.Id);
+                }
+                else
+                {
+                    if (targetId == -1)
+                    {
+                        // Pozisyon bazlı TargetFX (area skill)
+                        var wb = World.WorldBuilder.Instance;
+                        float y = wb != null ? wb.GetTerrainHeight(data0, data2) : (float)data1;
+                        Vector3 vTargetPos = new Vector3(data0, y, data2);
+                        fxMgr.TriggerBundle(iSourceID, 0, pSkill.TargetFX, vTargetPos);
+                    }
+                    else
+                    {
+                        // Hedef entity bazlı TargetFX
+                        fxMgr.TriggerBundle(iSourceID, 0, pSkill.TargetFX, iTargetID, pSkill.TargetPart);
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Entity'yi ID ile bul — local helper.
+        /// </summary>
+        private EntropyOnline.World.KOEntity FindEntityByIdLocal(long entityId)
+        {
+            var allEntities = FindObjectsByType<EntropyOnline.World.KOEntity>(
+                FindObjectsInactive.Exclude);
+            foreach (var e in allEntities)
+            {
+                if (e.ServerInstanceId == entityId)
+                    return e;
+            }
+            return null;
+        }
+
+        // =============================================
+        // HEDEFE YÜRÜME — Open-KO birebir
+        /// <summary>
+        /// Hedefe yürümeyi başlat.
+        /// Open-KO birebir: PlayerMySelf::SetMoveTargetID (PlayerMySelf.cpp:1100)
+        ///   - m_iMoveTarget = targetID
+        ///   - m_bTargetOrPosMove = true
+        /// </summary>
+        public void SetMoveTargetID(KOEntity target)
+        {
+            _moveTarget = target;
+            _bTargetOrPosMove = true;
+        }
+
+        /// <summary>
+        /// Hedefe yürümeyi iptal et.
+        /// </summary>
+        public void CancelMoveToTarget()
+        {
+            if (!_bTargetOrPosMove && _moveTarget == null) return;
+            _moveTarget = null;
+            _bTargetOrPosMove = false;
+            ActionMove(PlayerStateMove.PSM_STOP);
+        }
+
+        /// <summary>
+        /// Hedefe yürüme tick'i.
+        /// Open-KO birebir: PlayerMySelf::TargetOrPosMove (PlayerMySelf.cpp:1100-1151)
+        ///   - Her tick'te hedefin pozisyonuna doğru yürü
+        ///   - Hedefe döndür
+        ///   - Menzile girince → CommandEnableAttackContinous(true, pTarget) + dur
+        /// </summary>
+        private void TargetOrPosMove()
+        {
+            if (!_bTargetOrPosMove) return;
+
+            // Open-KO birebir: pTarget = CharacterGetByID(m_iMoveTarget) — cpp:1109
+            if (_moveTarget == null || !_moveTarget.gameObject.activeInHierarchy)
+            {
+                CancelMoveToTarget();
+                return;
+            }
+
+            // Open-KO birebir: vDir = m_vTargetPos - Position() — cpp:1121-1123
+            Vector3 dir = (_moveTarget.transform.position - transform.position);
+            dir.y = 0;
+            if (dir.sqrMagnitude < 0.001f) return;
+
+            // Open-KO birebir: RotateTo(fYaw, true) — cpp:1126
+            transform.rotation = Quaternion.LookRotation(dir.normalized);
+            // C++ birebir: RotateTo(fYaw, true) — bImmediately=true → yaw'ı anında set et
+            float fYawImm = Mathf.Atan2(dir.x, dir.z);
+            while (fYawImm > Mathf.PI) fYawImm -= 2f * Mathf.PI;
+            while (fYawImm < -Mathf.PI) fYawImm += 2f * Mathf.PI;
+            _fYawCur = fYawImm;
+            _fYawToReach = fYawImm;
+            _fYawDirty = false;
+
+            // Open-KO birebir: AttackableDistance hesapla — cpp:1132-1133
+            float fDist = dir.magnitude;
+            float playerRadius = _charController != null ? _charController.radius : 0.5f;
+            float targetRadius = 0.5f;
+            var targetCol = _moveTarget.GetComponent<CapsuleCollider>();
+            if (targetCol != null)
+                targetRadius = targetCol.radius * _moveTarget.transform.localScale.x;
+            float fDistLimit = (playerRadius + targetRadius) / 2.0f;  // PlayerMySelf.cpp:735
+            // Open-KO birebir: PlayerMySelf.cpp:736-740 — silah menzili ekle
+            var wpn = GetEquippedRightHandWeapon();
+            if (wpn != null && wpn.Range > 0)
+                fDistLimit += wpn.Range / 10.0f;                 // cpp:737 — sağ el silah range
+            else
+            {
+                // C++ birebir: PlayerMySelf.cpp:738-740
+                var lhSlot = GetEquippedLeftHandItem();
+                if (lhSlot != null && lhSlot.serverData != null && lhSlot.serverData.Range > 0)
+                    fDistLimit += lhSlot.serverData.Range / 10.0f;
+            }
+
+            // Open-KO birebir: fDist < fDistLimit → saldırı başlat + dur — cpp:1135-1140
+            if (fDist < fDistLimit)
+            {
+                KOEntity arrivedTarget = _moveTarget;  // referansı sakla
+                CancelMoveToTarget();
+                StartAutoAttack(arrivedTarget);
+                return;
+            }
+
+            // Hedefe doğru yürü
+            Vector3 moveDir = dir.normalized;
+            // Open-KO birebir: speed = baseSpeed * m_fMoveDelta (PlayerBase.h:143)
+            float hSpeed = moveSpeed * _fMoveDelta;
+            Vector3 horizontalMove = moveDir * hSpeed;
+
+            // Open-KO birebir: Dik yamaç tırmanma engeli (Slope Limit Check)
+            if (CheckClimbCollision(moveDir, hSpeed * Time.deltaTime))
+            {
+                horizontalMove = Vector3.zero;
+            }
+
+            Vector3 velocity = horizontalMove + Vector3.up * _verticalVelocity;
+            if (_charController != null && _charController.enabled)
+                _charController.Move(velocity * Time.deltaTime);
+            _wasMoving = true;
+
+            // Yürüme animasyonu
+            if (_eState == PlayerStateAction.PSA_ATTACK)
+            {
+                Action(PlayerStateAction.PSA_BASIC, true, true);
+            }
+            ActionMove(PlayerStateMove.PSM_RUN);
+        }
+
+        // =============================================
+        // SİLAH VERİSİ — Open-KO birebir
+        // PlayerMySelf.cpp: m_pItemPlugBasics[PLUG_POS_RIGHTHAND]
+        // =============================================
+
+        /// <summary>
+        /// Giyili sağ el silahını döndürür.
+        /// Open-KO birebir: m_pItemPlugBasics[PLUG_POS_RIGHTHAND]
+        ///   - ITEM_SLOT_HAND_RIGHT = 6 (GameDef.h:1004)
+        /// 
+        /// Öncelik: KOInventory (Open-KO birebir model) → Legacy flat array fallback
+        /// </summary>
+        private EntropyOnline.Network.InventoryItemData GetEquippedRightHandWeapon()
+        {
+            // Open-KO birebir: KOInventory.m_pMySlot[ITEM_SLOT_HAND_RIGHT=6]
+            var koInv = EntropyOnline.UI.KOInventory.Instance;
+            if (koInv != null)
+            {
+                var rhSlot = koInv.GetRightHandWeapon();
+                if (rhSlot?.serverData != null)
+                    return rhSlot.serverData;
+            }
+
+            // Legacy fallback — KOInventory henüz hazır değilse
+            var gm = GameManager.Instance;
+            if (gm?.Inventory == null) return null;
+
+            foreach (var item in gm.Inventory)
+            {
+                // Open-KO: ITEM_SLOT_HAND_RIGHT = 6
+                if (item.SlotType == 1 && item.SlotIndex == EntropyOnline.UI.KOInventory.ITEM_SLOT_HAND_RIGHT && item.IsWeapon)
+                    return item;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// C++ birebir: m_pItemPlugBasics[PLUG_POS_LEFTHAND]
+        /// Sol el slot'unu döndürür — bow/shield tespiti için byClass gerekir.
+        /// ITEM_SLOT_HAND_LEFT = 8 (GameDef.h:1006)
+        /// </summary>
+        private EntropyOnline.UI.KOInventory.ItemSlot GetEquippedLeftHandItem()
+        {
+            var koInv = EntropyOnline.UI.KOInventory.Instance;
+            if (koInv == null) return null;
+            var slot = koInv.GetLeftHandWeapon();
+            if (slot == null || slot.IsEmpty) return null;
+            return slot;
+        }
+
+        /// <summary>
+        /// C++ birebir: m_pItemPlugBasics[PLUG_POS_RIGHTHAND]
+        /// Sağ el slot'unu döndürür — weapon class tespiti için byClass gerekir.
+        /// ITEM_SLOT_HAND_RIGHT = 6 (GameDef.h:1004)
+        /// </summary>
+        private EntropyOnline.UI.KOInventory.ItemSlot GetEquippedRightHandItem()
+        {
+            var koInv = EntropyOnline.UI.KOInventory.Instance;
+            if (koInv == null) return null;
+            var slot = koInv.GetRightHandWeapon();
+            if (slot == null || slot.IsEmpty) return null;
+            return slot;
+        }
+
+        // =============================================
+        // SİLAH TRAIL — Open-KO birebir
+        // CN3CPlug::m_bRenderTrace (N3Chr.cpp:1733-1736)
+        // =============================================
+
+        /// <summary>
+        /// Tüm silah trail component'lerini aktifleştir/deaktifleştir.
+        /// Open-KO birebir: m_bRenderTrace = true/false
+        /// Saldırı animasyonu sırasında true, bitiminde false yapılır.
+        /// </summary>
+        private void SetWeaponTracing(bool active)
+        {
+            var trails = GetComponentsInChildren<KOWeaponTrail>();
+            foreach (var trail in trails)
+                trail.SetTracing(active);
+        }
+
+        /// <summary>
+        /// Belirli süre sonra trail'i kapat.
+        /// Open-KO birebir: fFrmPlugTraceEnd'e ulaşınca m_bRenderTrace = false
+        /// Unity'de frame kontrolü yerine süre bazlı.
+        /// </summary>
+        private IEnumerator DisableTrailAfterDelay(float delay)
+        {
+            yield return new WaitForSeconds(delay);
+            SetWeaponTracing(false);
+        }
+
+        // =============================================
+        // ACTION STATE MACHINE — Open-KO birebir
+        // PlayerBase.cpp satır 940-1112
+        // =============================================
+
+        /// <summary>
+        /// Open-KO birebir: CPlayerBase::Action (PlayerBase.cpp:940-1112)
+        ///
+        /// State Table doğrulaması yaparak state geçişi ve animasyon tetikler.
+        /// PSA_SPELLMAGIC case'inde:
+        ///   - m_eStateNext = PSA_BASIC
+        ///   - fFreezeTime = m_fCastFreezeTime
+        ///   - eAni = JudgetAnimationSpellMagic() = (e_Ani)(m_iMagicAni)
+        ///   - bOnceAndFreeze = true
+        ///   - AniCurSet(eAni, true, fBlendTime, fFreezeTime)
+        /// </summary>
+        public bool Action(PlayerStateAction eState, bool bLooping = false, bool bForceSet = false)
+        {
+            // C++ satır 942-968: State Table kontrol
+            if (!bForceSet)
+            {
+                if (!KOStateTable.CanTransition(_eState, eState))
+                    return false;
+
+                // Open-KO rule: cannot sit down while moving/running (m_eStateMove != PSM_STOP)
+                if (eState == PlayerStateAction.PSA_SITDOWN && IsMovingNow())
+                    return false;
+            }
+
+            PlayerStateAction eStatePrev = _eState;
+            _eStateNext = _eState = eState;  // cpp:978
+
+            KOAni eAni = KOAni.ANI_UNKNOWN;
+            KOAni eAniToRestore = KOAni.ANI_UNKNOWN;  // cpp:975 — animasyon bitince oynatılacak sonraki animasyon
+            bool bOnceAndFreeze = false;
+            float fFreezeTime = 0f;
+            bool bNeedUpperAnimationOnly = false;  // cpp:972 — üst gövde animasyon flag'i
+
+            switch (eState)
+            {
+                case PlayerStateAction.PSA_BASIC:  // cpp:982-1003
+                    if (eStatePrev == PlayerStateAction.PSA_SITDOWN)
+                    {
+                        if (KONetworkManager.Instance != null && KONetworkManager.Instance.IsConnected)
+                        {
+                            using (var packet = new KOPacketWriter(WizOpcode.WIZ_STATE_CHANGE))
+                            {
+                                packet.WriteByte(1);
+                                packet.WriteByte(1);
+                                KONetworkManager.Instance.SendPacket(packet);
+                            }
+                        }
+                    }
+
+                    if (_eStateMove == PlayerStateMove.PSM_STOP)
+                    {
+                        if (eStatePrev == PlayerStateAction.PSA_SITDOWN)
+                        {
+                            // cpp:987-990: ANI_STANDUP + eAniToRestore = JudgeAnimationBreath()
+                            eAni = KOAni.ANI_STANDUP;
+                            if (_eStateMove == PlayerStateMove.PSM_STOP)
+                                eAniToRestore = GetJudgeBreath();
+                            bOnceAndFreeze = true;
+                            break;
+                        }
+                        else
+                        {
+                            // cpp:993: JudgeAnimationBreath()
+                            eAni = GetJudgeBreath();
+                        }
+                    }
+                    else if (_eStateMove == PlayerStateMove.PSM_WALK)
+                        eAni = KOAnimJudge.JudgeAnimationWalk(false);
+                    else if (_eStateMove == PlayerStateMove.PSM_RUN)
+                        eAni = KOAnimJudge.JudgeAnimationRun(false);
+                    else if (_eStateMove == PlayerStateMove.PSM_WALK_BACKWARD)
+                        eAni = KOAnimJudge.JudgeAnimationWalkBackward(false);
+                    else
+                        eAni = GetJudgeBreath();
+                    break;
+
+                case PlayerStateAction.PSA_ATTACK:  // cpp:1005-1030
+                {
+                    // cpp:1012-1023: hareket durumuna ve silaha göre animasyon seçimi
+                    if (IsMovingNow())  // cpp:1012: !bNPC && IsMovingNow()
+                    {
+                        // cpp:1014-1017: Sağ elde silah var mı?
+                        var rhWpn = UI.KOInventory.Instance?.GetRightHandWeapon();
+                        if (rhWpn != null && !rhWpn.IsEmpty)  // cpp:1014: m_pItemPlugBasics[0]
+                            eAni = KOAni.ANI_ATTACK_WITH_WEAPON_WHEN_MOVE;  // cpp:1015
+                        else
+                            eAni = KOAni.ANI_ATTACK_WITH_NAKED_WHEN_MOVE;   // cpp:1017
+                        // cpp:1018: bNeedUpperAnimationOnly = true
+                        bNeedUpperAnimationOnly = true;
+                    }
+                    else  // cpp:1020-1023
+                    {
+                        eAni = GetJudgeAttack();  // cpp:1022: JudgeAnimationAttack()
+                    }
+
+                    if (!bLooping)  // cpp:1025-1028
+                    {
+                        _eStateNext = PlayerStateAction.PSA_BASIC;  // cpp:1027
+                    }
+                    bOnceAndFreeze = true;  // Saldırı animasyonu bir kere oynar
+                }
+                break;
+
+                case PlayerStateAction.PSA_GUARD:  // cpp:1032-1041
+                    _eStateNext = PlayerStateAction.PSA_BASIC;
+                    eAni = KOAnimJudge.JudgeAnimationGuard(false);  // cpp:1035
+                    bNeedUpperAnimationOnly = true;  // cpp:1038: if (!bNPC) bNeedUpperAnimationOnly = true
+                    fFreezeTime = 1.5f;  // cpp:1039
+                    break;
+
+                case PlayerStateAction.PSA_STRUCK:  // cpp:1043-1050
+                    _eStateNext = PlayerStateAction.PSA_BASIC;
+                    eAni = KOAnimJudge.JudgeAnimationStruck(false);  // cpp:1046
+                    bNeedUpperAnimationOnly = true;  // cpp:1048: if (!bNPC) bNeedUpperAnimationOnly = true
+                    break;
+
+                case PlayerStateAction.PSA_DYING:  // cpp:1052-1057
+                    _eStateNext = PlayerStateAction.PSA_DEATH;
+                    _eStateMove = PlayerStateMove.PSM_STOP;
+                    eAni = KOAnimJudge.JudgeAnimationDying(false);  // cpp:1055
+                    bOnceAndFreeze = true;  // cpp:1056
+                    break;
+
+                case PlayerStateAction.PSA_DEATH:  // cpp:1059-1067
+                    _eStateNext = PlayerStateAction.PSA_DEATH;
+                    return true;
+
+                case PlayerStateAction.PSA_SITDOWN:  // cpp:1069-1073
+                    eAni = KOAni.ANI_SITDOWN;           // cpp:1070
+                    eAniToRestore = KOAni.ANI_SITDOWN_BREATH;  // cpp:1071
+                    bOnceAndFreeze = true;              // cpp:1072
+
+                    if (KONetworkManager.Instance != null && KONetworkManager.Instance.IsConnected)
+                    {
+                        using (var packet = new KOPacketWriter(WizOpcode.WIZ_STATE_CHANGE))
+                        {
+                            packet.WriteByte(1);
+                            packet.WriteByte(2);
+                            KONetworkManager.Instance.SendPacket(packet);
+                        }
+                    }
+
+                    break;
+
+                // ===================================================
+                // PSA_SPELLMAGIC — C++ PlayerBase.cpp satır 1075-1080
+                // ===================================================
+                case PlayerStateAction.PSA_SPELLMAGIC:
+                    _eStateNext = PlayerStateAction.PSA_BASIC;  // cpp:1076
+                    fFreezeTime = CastFreezeTime;               // cpp:1077
+                    eAni = (KOAni)MagicAni;                     // cpp:1078: JudgetAnimationSpellMagic()
+                    bOnceAndFreeze = true;                       // cpp:1079
+                    bNeedUpperAnimationOnly = false;            // C++ birebir: spell/buff animations are played on whole body
+                    break;
+
+                default:
+                    return false;
+            }
+
+            // cpp:1086-1092: bForceSet → bNeedUpperAnimationOnly = false
+            if (bForceSet)
+                bNeedUpperAnimationOnly = false;  // cpp:1089
+
+            // cpp:1095-1097: AnimationClear + AnimationAdd(eAniToRestore)
+            // Open-KO birebir: önce deque'yu temizle, sonra restore animasyonu ekle
+            AnimationClear();  // cpp:1095
+            if (eAniToRestore != KOAni.ANI_UNKNOWN)
+                AnimationAdd(eAniToRestore, false);  // cpp:1096-1097
+
+            // cpp:1099-1104: Animasyon tetikleme
+            // bNeedUpperAnimationOnly → AniUpperSet (sadece üst gövde)
+            // else → AniCurSet (tüm gövde)
+            if (eAni != KOAni.ANI_UNKNOWN)
+            {
+                // Open-KO birebir: Effecting animasyonu yoksa (ANI_BREATH/0) ve freeze bittiyse (CastFreezeTime <= 0)
+                // Karakter durumu doğrudan PSA_BASIC'e döner.
+                if (eState == PlayerStateAction.PSA_SPELLMAGIC && eAni == KOAni.ANI_BREATH && fFreezeTime <= 0f)
+                {
+                    _eState = _eStateNext = PlayerStateAction.PSA_BASIC;
+                    _fFreezeTimeRemaining = 0f;
+                    EnsureAnimResolverInit();
+                    string breathClip = _animResolver?.GetClipName(GetJudgeBreath());
+                    if (!string.IsNullOrEmpty(breathClip))
+                        PlayCharAnim(breathClip, false);
+                    return true;
+                }
+
+                EnsureAnimResolverInit();
+                string clipName = _animResolver?.GetClipName(eAni);
+
+                // NOT: C++'da isim tabanlı fallback YOK.
+                // C++ tamamen index-based çalışır: JudgeAnimationAttack() → e_Ani → AniCurSet(eAni)
+                // KOAnimResolver index sırasını N3ChrImporter'dan alır — doğru sırada olmalı.
+
+                if (!string.IsNullOrEmpty(clipName))
+                {
+                    // Open-KO birebir: AniCurSet(eAni, bOnceAndFreeze, fBlendTime, fFreezeTime)
+                    // fFreezeTime > 0 → animasyon bittikten sonra bu süre boyunca IsAnimEnd()=false
+                    _fFreezeTimeRemaining = fFreezeTime;
+
+                    if (bNeedUpperAnimationOnly)
+                    {
+                        PlayCharAnimUpper(clipName);
+                    }
+                    else
+                    {
+                        PlayCharAnim(clipName, bOnceAndFreeze);
+                    }
+                }
+                else
+                {
+                    // Clip bulunamadı — mevcut animasyonu durdur ki IsAnimEnd() true
+                    // dönsün ve TickAnimation state dönüşü yapabilsin.
+                    // NOT: C++'ta AniCurSet geçersiz index alırsa return -1 döner ve
+                    // mevcut animasyon devam eder. Ama C++'ta bu durum asla olmaz
+                    // çünkü N3 modelde tüm animasyonlar index'le geçerlidir.
+                    // Bizde Unity modelinde clip eksik olabileceği için bu güvenlik
+                    // önlemi gerekli — aksi halde state sonsuza kadar sıkışır.
+                    if (_charAnim != null)
+                    {
+                        _charAnim.Stop();
+                        _currentAnim = null;
+                    }
+                        // $"KOAnimResolver'da {_animResolver?.ClipCount ?? 0} klip var, index aralık dışı. " +
+                        // "Animasyon durduruldu, IsAnimEnd()=true olacak.");
+                }
+            }
+
+            return true;
+        }
+
+        public void CommandSitDown(bool bSit, bool bImmediately = false)
+        {
+            if (bSit)
+            {
+                if (_eState == PlayerStateAction.PSA_SITDOWN) return;
+                Action(PlayerStateAction.PSA_SITDOWN, false, bImmediately);
+            }
+            else
+            {
+                if (_eState != PlayerStateAction.PSA_SITDOWN) return;
+                Action(PlayerStateAction.PSA_BASIC, true, bImmediately);
+            }
+        }
+
+        /// <summary>
+        /// Casting başlatma kısayolu.
+        /// Open-KO birebir: MagicSkillMng.cpp satır 1100-1111
+        ///   s_pPlayer->m_iMagicAni = pSkill->iSelfAnimID1;
+        ///   s_pPlayer->m_fCastFreezeTime = 10.0f;
+        ///   s_pPlayer->Action(PSA_SPELLMAGIC, false, nullptr);
+        /// </summary>
+        public void ActionSpellMagic(int iSelfAnimID, float fFreezeTime = 10.0f)
+        {
+            MagicAni = iSelfAnimID;           // cpp:1100
+            CastFreezeTime = fFreezeTime;      // cpp:1110
+
+            EnsureAnimResolverInit();
+            string resolvedClip = _animResolver?.GetClipName((KOAni)iSelfAnimID);
+            // Debug.LogWarning($"[SPELL-ANIM] ActionSpellMagic: MagicAni={iSelfAnimID} → " +
+            //     $"clip='{resolvedClip ?? "NULL"}', ClipCount={_animResolver?.ClipCount ?? 0}, " +
+            //     $"currentAnim='{_currentAnim}', state={_eState}");
+
+            Action(PlayerStateAction.PSA_SPELLMAGIC, false);  // cpp:1111
+        }
+
+        public void ActionSpellEffecting(int iSelfAnimID2)
+        {
+            // C++ birebir: MagicSkillMng.cpp:1594, 1550, 1892
+            //   s_pPlayer->m_iMagicAni = pSkill->iSelfAnimID2;
+            //   s_pPlayer->m_fCastFreezeTime = 0.0f;
+            //   s_pPlayer->Action(PSA_SPELLMAGIC, false);
+            MagicAni = iSelfAnimID2;
+            CastFreezeTime = 0f;
+            Action(PlayerStateAction.PSA_SPELLMAGIC, false);
+        }
+
+        public void ResetCastFreezeTime()
+        {
+            _fFreezeTimeRemaining = 0f;
+        }
+
+        /// <summary>
+        /// Casting iptal — idle'a dön.
+        /// Open-KO birebir: MagicSkillMng.cpp satır 1655-1660
+        /// </summary>
+        public void ActionCancelCasting()
+        {
+            _eState = PlayerStateAction.PSA_BASIC;
+            _eStateNext = PlayerStateAction.PSA_BASIC;
+            _fFreezeTimeRemaining = 0f;
+            StopUpperBodyLayer(); // Layer 1'deki atak animasyonunu durdur
+            _currentAnim = null;  // PlayCharAnim'in wrapMode'u Loop olarak doğru set etmesi için
+            PlayCharAnim("breath");
+        }
+
+        /// <summary>
+        /// KOAnimResolver'ı lazy initialize et.
+        /// Karakter modeli runtime'da yüklendiğinden,
+        /// Animation component ilk ihtiyaç anında bulunur.
+        /// </summary>
+        private void EnsureAnimResolverInit()
+        {
+            if (_animResolver == null)
+                _animResolver = new KOAnimResolver();
+
+            if (_animResolver.ClipCount == 0)
+            {
+                var anim = GetComponentInChildren<Animation>();
+                
+                // 1. En güvenilir kaynak: Karakter modelindeki N3AnimClipRegistry
+                if (_animRegistry == null && anim != null)
+                {
+                    _animRegistry = anim.GetComponent<EntropyOnline.Import.N3AnimClipRegistry>();
+                }
+                if (_animRegistry == null)
+                {
+                    _animRegistry = GetComponentInChildren<EntropyOnline.Import.N3AnimClipRegistry>();
+                }
+
+                if (_animRegistry != null && _animRegistry.ClipNames != null && _animRegistry.ClipNames.Length > 0)
+                {
+                    _animResolver.Initialize(_animRegistry.ClipNames, anim);
+                }
+                else
+                {
+                    // 2. İkinci kaynak: GameManager'daki sıralı list
+                    var gm = GameManager.Instance;
+                    bool hasOrderedClips = gm != null && gm.PlayerAnimClips != null && gm.PlayerAnimClips.Count > 0;
+                    
+                    if (hasOrderedClips)
+                    {
+                        _animResolver.Initialize(gm.PlayerAnimClips, anim);
+                    }
+                    else
+                    {
+                        // Fallback: Animation component'tan (sıra garantisiz!)
+                        if (anim != null)
+                        {
+                            Debug.LogWarning($"[EnsureAnimResolver] FALLBACK: AnimationState foreach kullanılıyor — sıra GARANTİSİZ! anim='{anim.gameObject.name}'");
+                            _animResolver.Initialize(anim);
+                        }
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// R-atak için Animation component'ta "attack" isimli klip ara.
+        /// KOAnimResolver index tabanlı olduğundan yanlış klip'e düşebilir —
+        /// bu isim tabanlı arama fallback olarak kullanılır.
+        /// </summary>
+        private string FindAttackClipByName()
+        {
+            var anim = GetComponentInChildren<Animation>();
+            if (anim == null) return null;
+
+            // Öncelik sırası: "attack" > "atk" > "hit"
+            string bestMatch = null;
+            foreach (AnimationState state in anim)
+            {
+                string lname = state.name.ToLower();
+                if (lname.Contains("attack"))
+                    return state.name; // En iyi eşleşme
+                if (bestMatch == null && lname.Contains("atk"))
+                    bestMatch = state.name;
+            }
+            return bestMatch;
+        }
+
+        /// <summary>
+        /// Open-KO birebir: CPlayerBase::IsMovingNow (PlayerBase.h:261-264)
+        /// PSM_WALK || PSM_RUN || PSM_WALK_BACKWARD → true
+        /// </summary>
+        private bool IsMovingNow()
+        {
+            return _eStateMove == PlayerStateMove.PSM_WALK ||
+                   _eStateMove == PlayerStateMove.PSM_RUN ||
+                   _eStateMove == PlayerStateMove.PSM_WALK_BACKWARD;
+        }
+
+        /// <summary>
+        /// Open-KO birebir: CPlayerBase::ActionMove (PlayerBase.cpp:1114-1169)
+        ///
+        /// State transition table ile hareket durumunu değiştirir:
+        ///   1. IsDead → false
+        ///   2. sStateTableMove[current][target] == 0 → aynı state, false
+        ///   3. m_eStateNext = m_eState (geri dönüş state'ini kaydet)
+        ///   4. m_eStateMove = eMove
+        ///   5. Hareket durumuna göre animasyon seç:
+        ///      PSM_STOP → JudgeAnimationBreath()
+        ///      PSM_WALK → JudgeAnimationWalk()
+        ///      PSM_RUN → JudgeAnimationRun()
+        ///      PSM_WALK_BACKWARD → JudgeAnimationWalkBackward()
+        ///   6. Action(PSA_BASIC, true)
+        ///   7. AnimationClear() + AniCurSet(eAni)
+        /// </summary>
+        public bool ActionMove(PlayerStateMove eMove)
+        {
+            if (_isDead) return false;  // cpp:1116-1117
+
+            // cpp:1119-1132: State transition table
+            // Aynı state'e geçiş engellenir (diagonal 0'lar)
+            if (_eStateMove == eMove) return false;  // cpp:1134
+
+            // cpp:1137-1138
+            _eStateNext = _eState;
+            _eStateMove = eMove;
+
+            // cpp:1140-1161: Hareket durumuna göre animasyon seç
+            KOAni eAni = KOAni.ANI_UNKNOWN;
+            switch (eMove)
+            {
+                case PlayerStateMove.PSM_STOP:
+                    eAni = GetJudgeBreath();  // cpp:1144
+                    break;
+                case PlayerStateMove.PSM_WALK:
+                    eAni = KOAnimJudge.JudgeAnimationWalk(false);  // cpp:1148
+                    break;
+                case PlayerStateMove.PSM_RUN:
+                    eAni = KOAnimJudge.JudgeAnimationRun(false);  // cpp:1152
+                    break;
+                case PlayerStateMove.PSM_WALK_BACKWARD:
+                    eAni = KOAnimJudge.JudgeAnimationWalkBackward(false);  // cpp:1156
+                    break;
+                default:
+                    return false;
+            }
+
+            // cpp:1163
+            Action(PlayerStateAction.PSA_BASIC, true);
+
+            // cpp:1166-1167: AnimationClear + AniCurSet
+            AnimationClear();
+            if (eAni != KOAni.ANI_UNKNOWN)
+            {
+                EnsureAnimResolverInit();
+                string clipName = _animResolver?.GetClipName(eAni);
+                if (!string.IsNullOrEmpty(clipName))
+                    PlayCharAnim(clipName);
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Open-KO birebir: this->JudgeAnimationBreath() kısayolu.
+        /// KOInventory'den sağ/sol el silah sınıfını okur ve KOAnimJudge'a devreder.
+        ///
+        /// C++ referans: PlayerBase.cpp:1451-1457
+        ///   pTarget = TargetPointerCheck(false)
+        ///   eICR = ItemClass_RightHand()
+        ///   eICL = ItemClass_LeftHand()
+        ///   fIWR = m_pItemPlugBasics[PLUG_POS_RIGHTHAND]->siWeight / 10.f
+        /// </summary>
+        private KOAni GetJudgeBreath()
+        {
+            var inv = UI.KOInventory.Instance;
+            KOItemClass eICR = KOItemClass.ITEM_CLASS_UNKNOWN;
+            KOItemClass eICL = KOItemClass.ITEM_CLASS_UNKNOWN;
+            float fWeightR = 0f;
+
+            if (inv != null)
+            {
+                var rightHand = inv.GetRightHandWeapon();
+                var leftHand  = inv.GetLeftHandWeapon();
+
+                if (rightHand != null && !rightHand.IsEmpty)
+                    eICR = (KOItemClass)rightHand.itemClass;
+                if (leftHand != null && !leftHand.IsEmpty)
+                    eICL = (KOItemClass)leftHand.itemClass;
+            }
+
+            // hasHostileTarget: oto-saldırı hedefi varsa true
+            // C++ birebir: pTarget = TargetPointerCheck(false) → pTarget != nullptr && IsHostileTarget
+            bool hasTarget = _attackTarget != null && !_attackTarget.IsDead;
+
+            return KOAnimJudge.JudgeAnimationBreath(false, hasTarget, eICR, eICL, fWeightR);
+        }
+
+        /// <summary>
+        /// Open-KO birebir: this->JudgeAnimationAttack() kısayolu.
+        /// KOInventory'den silah bilgilerini okur ve KOAnimJudge'a devreder.
+        ///
+        /// C++ referans: PlayerBase.cpp:1411-1436
+        ///   eICR = ItemClass_RightHand()
+        ///   Staff → ANI_DAGGER_ATTACK_A0
+        ///   Diğer → JudgeAnimationBreath() + 1 + rand()%2
+        /// </summary>
+        private KOAni GetJudgeAttack()
+        {
+            var inv = UI.KOInventory.Instance;
+            KOItemClass eICR = KOItemClass.ITEM_CLASS_UNKNOWN;
+            KOItemClass eICL = KOItemClass.ITEM_CLASS_UNKNOWN;
+            float fWeightR = 0f;
+
+            if (inv != null)
+            {
+                var rightHand = inv.GetRightHandWeapon();
+                var leftHand  = inv.GetLeftHandWeapon();
+
+                if (rightHand != null && !rightHand.IsEmpty)
+                    eICR = (KOItemClass)rightHand.itemClass;
+                if (leftHand != null && !leftHand.IsEmpty)
+                    eICL = (KOItemClass)leftHand.itemClass;
+            }
+
+            bool hasTarget = _attackTarget != null && !_attackTarget.IsDead;
+
+            return KOAnimJudge.JudgeAnimationAttack(false, hasTarget, eICR, eICL, fWeightR);
+        }
+
+        // =============================================
+        // ANIMATION DEQUE METOTLARI — Open-KO birebir
+        // PlayerBase.cpp:2083-2093, PlayerBase.h:268-276
+        // =============================================
+
+        /// <summary>
+        /// Open-KO birebir: PlayerBase::AnimationAdd (PlayerBase.cpp:2083-2093)
+        ///
+        /// bImmediately=true  → deque'yu temizle + doğrudan AniCurSet
+        /// bImmediately=false → deque'ya ekle (animasyon bitince oynatılır)
+        /// </summary>
+        public void AnimationAdd(KOAni eAni, bool bImmediately)
+        {
+            if (bImmediately)
+            {
+                AnimationClear();  // cpp:2087
+
+                // C++ birebir: AniCurSet (N3Chr.cpp:2233-2234)
+                //   if (iAni == m_FrmCtrl.iAni) return -1;  ← aynı anim kontrolü Init'ten ÖNCE
+                //   m_FrmCtrl.Init();  ← Init SONRA (satır 2244)
+                // Unity eşdeğeri: PlayCharAnim'deki _currentAnim == animName kontrolü
+                // aynı animasyonu tekrar istemeyi otomatik atlar.
+                // _currentAnim sıfırlanMAZ — aynı skill SuccessCast'ten gelince atlanır.
+
+                // C++ birebir: combo animasyonları AniCurSet ile oynatılır
+                // TickAnimation combo bittikten sonra Action(m_eStateNext) çağırır
+                // m_eStateNext combo başlamadan önceki state'in next'idir
+                _eState = PlayerStateAction.PSA_BASIC;
+                _eStateNext = PlayerStateAction.PSA_BASIC;
+
+                EnsureAnimResolverInit();
+                string clipName = _animResolver?.GetClipName(eAni);
+                if (!string.IsNullOrEmpty(clipName))
+                {
+                    PlayCharAnim(clipName, true);  // bOnceAndFreeze=true → IsAnimEnd çalışsın
+                }
+                else
+                {
+                    Debug.LogWarning($"[AnimationAdd] Clip bulunamadı! eAni={eAni}({(int)eAni}) — " +
+                        $"ClipCount={_animResolver?.ClipCount ?? 0}. " +
+                        "Karakter modelinde bu index'te animasyon yok.");
+                }
+            }
+            else
+            {
+                _animationDeque.Enqueue(eAni);  // cpp:2092
+            }
+        }
+
+        /// <summary>
+        /// Open-KO birebir: PlayerBase::AnimationClear (PlayerBase.h:268-271)
+        /// Animasyon kuyruğunu temizler.
+        /// </summary>
+        public void AnimationClear()
+        {
+            _animationDeque.Clear();
+        }
+
+        /// <summary>
+        /// Open-KO birebir: PlayerBase::TickAnimation (PlayerBase.cpp:535-553)
+        ///
+        /// Her frame çağrılır. Mevcut animasyon bittiyse:
+        ///   - Deque boş → Action(m_eStateNext) ile sonraki state'e geç
+        ///   - Deque dolu → sıradaki animasyonu oynat
+        /// </summary>
+        private void TickAnimation()
+        {
+            _bAnimationChanged = false;  // cpp:538
+
+            if (!IsAnimEnd()) return;    // cpp:539: m_Chr.IsAnimEnd()
+
+            _bAnimationChanged = true;   // cpp:541
+
+            if (_animationDeque.Count == 0)
+            {
+                // cpp:542-546: Deque boş → sonraki state'e geç
+                Action(_eStateNext, true);
+            }
+            else
+            {
+                // cpp:547-552: Deque'dan bir animasyon al ve oynat
+                KOAni eAniToSet = _animationDeque.Dequeue();  // cpp:549-550
+                // C++ birebir: AniCurSet aynı anim kontrolü Init'ten ÖNCE (satır 2233)
+                EnsureAnimResolverInit();
+                string clipName = _animResolver?.GetClipName(eAniToSet);
+                if (!string.IsNullOrEmpty(clipName))
+                {
+                    PlayCharAnim(clipName, true);  // bOnceAndFreeze=true → combo zincirleme çalışsın
+                }
+            }
+        }
+
+        /// <summary>
+        /// Mevcut animasyonun bitip bitmediğini kontrol eder.
+        /// Open-KO birebir: CN3Chr::IsAnimEnd() — animasyon son frame'e ulaştı mı?
+        ///
+        /// Unity legacy Animation: ClampForever (bOnceAndFreeze) modundaki klipler
+        /// normalizedTime >= 1.0 olduğunda bitmiştir.
+        /// Loop modundaki klipler asla bitmez (IsAnimEnd = false).
+        /// </summary>
+        private bool IsAnimEnd()
+        {
+            if (_charAnim == null)
+            {
+                _charAnim = GetComponentInChildren<Animation>();
+                if (_charAnim == null) return false;
+            }
+
+            // Hiç animasyon oynamıyorsa → bitti sayılır
+            if (!_charAnim.isPlaying) return true;
+
+            // Eğer üst gövde (Layer 1) animasyonu oynuyorsa ve onun bitişini bekliyorsak
+            if (!string.IsNullOrEmpty(_currentAnimUpper))
+            {
+                string resolvedUpper = FindClipCaseInsensitive(_currentAnimUpper);
+                if (resolvedUpper != null)
+                {
+                    AnimationState stateUpper = _charAnim[resolvedUpper];
+                    if (stateUpper != null)
+                    {
+                        if (stateUpper.normalizedTime >= 1.0f || !stateUpper.enabled)
+                        {
+                            StopUpperBodyLayer();
+                            return true;
+                        }
+                        return false;
+                    }
+                }
+            }
+
+            // Mevcut oynatılan klibin WrapMode'unu kontrol et
+            if (string.IsNullOrEmpty(_currentAnim)) return false;
+
+            // Case-insensitive resolve
+            string resolvedName = FindClipCaseInsensitive(_currentAnim);
+            if (resolvedName == null) return false;
+
+            AnimationState state = _charAnim[resolvedName];
+            if (state == null) return false;
+
+            // Loop modundaki animasyonlar asla "bitmez"
+            if (state.wrapMode == WrapMode.Loop || state.wrapMode == WrapMode.PingPong)
+                return false;
+
+            // ClampForever / Once: normalizedTime >= 1.0 → bitti
+            if (state.normalizedTime < 1.0f)
+                return false;
+
+            // Open-KO birebir: CN3Chr fFreezeTime — animasyon bittikten sonra
+            // fFreezeTime süresince IsAnimEnd()=false döner.
+            // C++ N3Chr.cpp:2250-2255: if (m_FrmCtrl.fFreezeTime > 0) → countdown
+            if (_fFreezeTimeRemaining > 0f)
+            {
+                _fFreezeTimeRemaining -= Time.deltaTime;
+                return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Oynayan bir kombo/skill animasyonunun (veya sıradaki kombo animasyonlarının)
+        /// henüz bitmediğini kontrol eder.
+        /// </summary>
+        public bool IsComboAnimPlaying()
+        {
+            if (_animationDeque != null && _animationDeque.Count > 0)
+            {
+                return true;
+            }
+
+            if (_charAnim == null || string.IsNullOrEmpty(_currentAnim))
+            {
+                return false;
+            }
+            string resolved = FindClipCaseInsensitive(_currentAnim);
+            if (resolved == null)
+            {
+                return false;
+            }
+            AnimationState state = _charAnim[resolved];
+            if (state == null)
+            {
+                return false;
+            }
+
+            bool isClampOrOnce = (state.wrapMode == WrapMode.ClampForever || state.wrapMode == WrapMode.Once);
+            bool isBasic = (_eState == PlayerStateAction.PSA_BASIC);
+            bool isTimeRemaining = (state.normalizedTime < 1.0f);
+
+
+            if (isClampOrOnce && isBasic)
+            {
+                return isTimeRemaining;
+            }
+            return false;
+        }
+
+        #region Blindness / Fog / Targeting Restriction
+        private bool _isBlinded = false;
+        private bool _savedFog = false;
+        private Color _savedFogColor = Color.white;
+        private float _savedFogDensity = 0.01f;
+        private FogMode _savedFogMode = FogMode.Exponential;
+        private Coroutine _blindCoroutine;
+
+        public bool IsBlinded
+        {
+            get => _isBlinded;
+            set
+            {
+                if (_isBlinded == value) return;
+                _isBlinded = value;
+
+                if (_isBlinded)
+                {
+                    // Save current fog settings
+                    _savedFog = RenderSettings.fog;
+                    _savedFogColor = RenderSettings.fogColor;
+                    _savedFogDensity = RenderSettings.fogDensity;
+                    _savedFogMode = RenderSettings.fogMode;
+
+                    // Apply blindness white/fog overlay
+                    RenderSettings.fog = true;
+                    RenderSettings.fogColor = new Color(0.85f, 0.85f, 0.85f, 1f);
+                    RenderSettings.fogMode = FogMode.ExponentialSquared;
+                    RenderSettings.fogDensity = 0.08f;
+
+                    // Clear active target
+                    KOTargetSelector.Instance?.ClearTarget();
+                }
+                else
+                {
+                    // Restore saved fog settings
+                    RenderSettings.fog = _savedFog;
+                    RenderSettings.fogColor = _savedFogColor;
+                    RenderSettings.fogDensity = _savedFogDensity;
+                    RenderSettings.fogMode = _savedFogMode;
+                }
+            }
+        }
+
+        public void StartBlindEffect(float duration)
+        {
+            if (_blindCoroutine != null) StopCoroutine(_blindCoroutine);
+            _blindCoroutine = StartCoroutine(BlindRoutine(duration));
+        }
+
+        public void StopBlindEffect()
+        {
+            if (_blindCoroutine != null) StopCoroutine(_blindCoroutine);
+            IsBlinded = false;
+        }
+
+        private IEnumerator BlindRoutine(float duration)
+        {
+            IsBlinded = true;
+
+            float fadeTime = 1.0f;
+            float solidTime = duration - fadeTime;
+            if (solidTime < 0f) solidTime = 0f;
+
+            yield return new WaitForSeconds(solidTime);
+
+            // Smooth fade-out in final 1.0s
+            float elapsed = 0f;
+            float startDensity = 0.08f;
+            float targetDensity = _savedFogDensity;
+
+            while (elapsed < fadeTime)
+            {
+                elapsed += Time.deltaTime;
+                float t = elapsed / fadeTime;
+                RenderSettings.fogDensity = Mathf.Lerp(startDensity, targetDensity, t);
+                yield return null;
+            }
+
+            IsBlinded = false;
+            _blindCoroutine = null;
+        }
+        #endregion
+
+    }
+}

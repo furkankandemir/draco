@@ -1,0 +1,285 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: ae31ec299da68d54abad23308ef3ed63, type: 3}
+  m_Name: battlezone
+  m_EditorClassIdentifier: Assembly-CSharp::KOSkyDataAsset
+  SunTextures:
+  - misc\sky\sundisk.bmp
+  - misc\sky\sunglow.bmp
+  - misc\sky\sunflare.bmp
+  CloudTextures:
+  - misc\sky\wisps.tga
+  - misc\sky\puffs.tga
+  - misc\sky\tatters.tga
+  - misc\sky\streaks.tga
+  - misc\sky\dense.tga
+  - misc\sky\overcast.tga
+  MoonTexture: misc\sky\phases.tga
+  DayChanges:
+  - Name: SunRise - SkyColor
+    ChangeType: 0
+    When: 18000
+    Param1: 4282671712
+    Param2: 0
+    HowLong: 180
+  - Name: SunRise - FogColor
+    ChangeType: 1
+    When: 18000
+    Param1: 4290279502
+    Param2: 0
+    HowLong: 180
+  - Name: SunRise - SunColor
+    ChangeType: 4
+    When: 18000
+    Param1: 4291267636
+    Param2: 120
+    HowLong: 150
+  - Name: SunRise - GlowColor
+    ChangeType: 5
+    When: 18000
+    Param1: 4293511587
+    Param2: 500
+    HowLong: 150
+  - Name: SunRise - FlareColor
+    ChangeType: 6
+    When: 18000
+    Param1: 4293045886
+    Param2: 500
+    HowLong: 150
+  - Name: SunRise - Cloud1Color
+    ChangeType: 7
+    When: 18000
+    Param1: 4291403634
+    Param2: 0
+    HowLong: 150
+  - Name: SunRise - Cloud2Color
+    ChangeType: 8
+    When: 18000
+    Param1: 4293310837
+    Param2: 0
+    HowLong: 150
+  - Name: SunRise - Light0
+    ChangeType: 10
+    When: 18000
+    Param1: 4292062849
+    Param2: 4282400832
+    HowLong: 150
+  - Name: SunRise - Light1
+    ChangeType: 11
+    When: 18000
+    Param1: 4280628282
+    Param2: 4280492835
+    HowLong: 150
+  - Name: SunRise - Light2
+    ChangeType: 12
+    When: 18000
+    Param1: 4283053094
+    Param2: 0
+    HowLong: 150
+  - Name: Noon - Light0
+    ChangeType: 10
+    When: 21600
+    Param1: 4294967295
+    Param2: 4278190080
+    HowLong: 150
+  - Name: Noon - Cloud2Color
+    ChangeType: 8
+    When: 21600
+    Param1: 4294967295
+    Param2: 0
+    HowLong: 150
+  - Name: Noon - Cloud1Color
+    ChangeType: 7
+    When: 21600
+    Param1: 4294967295
+    Param2: 0
+    HowLong: 150
+  - Name: Noon - FlareColor
+    ChangeType: 6
+    When: 21600
+    Param1: 4293909440
+    Param2: 180
+    HowLong: 150
+  - Name: Noon - StarCount
+    ChangeType: 2
+    When: 21600
+    Param1: 0
+    Param2: 0
+    HowLong: 300
+  - Name: Noon - SunColor
+    ChangeType: 4
+    When: 21600
+    Param1: 4293844929
+    Param2: 70
+    HowLong: 150
+  - Name: Noon - FogColor
+    ChangeType: 1
+    When: 21600
+    Param1: 4290233802
+    Param2: 0
+    HowLong: 180
+  - Name: Noon - SkyColor
+    ChangeType: 0
+    When: 21600
+    Param1: 4282216621
+    Param2: 0
+    HowLong: 180
+  - Name: Noon - Light1
+    ChangeType: 11
+    When: 21600
+    Param1: 4294967295
+    Param2: 4286611584
+    HowLong: 150
+  - Name: Noon - GlowColor
+    ChangeType: 5
+    When: 21600
+    Param1: 4292927680
+    Param2: 250
+    HowLong: 150
+  - Name: Noon - Light2
+    ChangeType: 12
+    When: 21600
+    Param1: 4280163870
+    Param2: 4278190080
+    HowLong: 150
+  - Name: Noon - MoonPhase
+    ChangeType: 3
+    When: 43200
+    Param1: 0
+    Param2: 0
+    HowLong: 0
+  - Name: SunSet - SkyColor
+    ChangeType: 0
+    When: 61200
+    Param1: 4284177303
+    Param2: 0
+    HowLong: 180
+  - Name: SunSet - FogColor
+    ChangeType: 1
+    When: 61200
+    Param1: 4290546541
+    Param2: 0
+    HowLong: 180
+  - Name: SunSet - SunColor
+    ChangeType: 4
+    When: 61200
+    Param1: 4291527765
+    Param2: 100
+    HowLong: 150
+  - Name: SunSet - GlowColor
+    ChangeType: 5
+    When: 61200
+    Param1: 4290805888
+    Param2: 500
+    HowLong: 150
+  - Name: SunSet - FlareColor
+    ChangeType: 6
+    When: 61200
+    Param1: 4291592232
+    Param2: 300
+    HowLong: 150
+  - Name: SunSet - Cloud1Color
+    ChangeType: 7
+    When: 61200
+    Param1: 4290289010
+    Param2: 0
+    HowLong: 150
+  - Name: SunSet - Cloud2Color
+    ChangeType: 8
+    When: 61200
+    Param1: 4288844139
+    Param2: 0
+    HowLong: 150
+  - Name: SunSet - Light0
+    ChangeType: 10
+    When: 61200
+    Param1: 4293048214
+    Param2: 4285221437
+    HowLong: 150
+  - Name: SunSet - Light1
+    ChangeType: 11
+    When: 61200
+    Param1: 4285690522
+    Param2: 4280690214
+    HowLong: 150
+  - Name: SunSet - Light2
+    ChangeType: 12
+    When: 61200
+    Param1: 4281742902
+    Param2: 0
+    HowLong: 150
+  - Name: MidNight - Light0
+    ChangeType: 10
+    When: 75600
+    Param1: 4288454078
+    Param2: 4282137660
+    HowLong: 150
+  - Name: MidNight - Cloud2Color
+    ChangeType: 8
+    When: 75600
+    Param1: 4283387484
+    Param2: 0
+    HowLong: 150
+  - Name: MidNight - Cloud1Color
+    ChangeType: 7
+    When: 75600
+    Param1: 4288123040
+    Param2: 0
+    HowLong: 150
+  - Name: MidNight - FlareColor
+    ChangeType: 6
+    When: 75600
+    Param1: 4294106054
+    Param2: 500
+    HowLong: 150
+  - Name: MidNight - SkyColor
+    ChangeType: 0
+    When: 75600
+    Param1: 4279180849
+    Param2: 0
+    HowLong: 180
+  - Name: MidNight - SunColor
+    ChangeType: 4
+    When: 75600
+    Param1: 4293116565
+    Param2: 90
+    HowLong: 150
+  - Name: MidNight - StarCount
+    ChangeType: 2
+    When: 75600
+    Param1: 100000
+    Param2: 0
+    HowLong: 300
+  - Name: MidNight - FogColor
+    ChangeType: 1
+    When: 75600
+    Param1: 4282865005
+    Param2: 0
+    HowLong: 180
+  - Name: MidNight - Light1
+    ChangeType: 11
+    When: 75600
+    Param1: 4284775336
+    Param2: 4279905613
+    HowLong: 150
+  - Name: MidNight - GlowColor
+    ChangeType: 5
+    When: 75600
+    Param1: 4293708955
+    Param2: 500
+    HowLong: 150
+  - Name: MidNight - Light2
+    ChangeType: 12
+    When: 75600
+    Param1: 4281747022
+    Param2: 0
+    HowLong: 150

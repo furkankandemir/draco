@@ -1,0 +1,2162 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 80218a3b83934fd499d329392c929419, type: 3}
+  m_Name: zone_48
+  m_EditorClassIdentifier: Assembly-CSharp::EntropyOnline.Import.KOZoneAsset
+  terrainData: {fileID: 15600000, guid: 751bfdfadbfdf1d469feff84c1806db4, type: 2}
+  compositeTexture: {fileID: 2800000, guid: 66e323d1a9293d049b4b3e19147840f0, type: 2}
+  terrainBaseY: -1
+  terrainSizeY: 4.997079
+  worldSize: 256
+  shapes:
+  - name: obj_mora_arena01
+    position: {x: 192, y: 0, z: 179.72588}
+    rotation: {x: 0, y: 0.924606, z: 0, w: 0.380925}
+    scale: {x: 1, y: 1, z: 1}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: 4b339a072a029654bb611c3dbe8f20f5, type: 2}
+      material: {fileID: 2100000, guid: 259c3a95e54ce1a41a1aeee2639d05ab, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 0d0c5d434e33fbf4fb764bd6701fb5c2, type: 2}
+      material: {fileID: 2100000, guid: 2838863f79c5a4c4d95fcb38c62c3149, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: c035ce8ef8f61cb4a9421647b84d19ba, type: 2}
+      material: {fileID: 2100000, guid: 5eed38b372bf4264491d93d0ac087f7c, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: da0b757ecc7436b4dbf27684802999fa, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 7e8c9891bbd8d6f4a9a0e90feb038503, type: 2}
+      material: {fileID: 2100000, guid: 886188b0a3c41bc40bd0bbe25aeea73e, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 4
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 80f2dca63681d354ebd93c4429e8e8b8, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 052e7bc43961c334d9d0b92b76d12d1c, type: 2}
+      material: {fileID: 2100000, guid: 37a1d0b8f154db4498392eaeabdb441e, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 3f132aaf1f838a74eb30c971ea91d2b0, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 85e43d0294b512e45917b21eaca7dbd6, type: 2}
+      material: {fileID: 2100000, guid: 886188b0a3c41bc40bd0bbe25aeea73e, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 4
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 8e936e7d882131745b5fca4382c4c50f, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 61fa8e881ebbb174cbd78e96fd59ebbb, type: 2}
+      material: {fileID: 2100000, guid: 37a1d0b8f154db4498392eaeabdb441e, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 79f0cd6d73798ed4e9151e2755888c8f, type: 2}
+      material: {fileID: 2100000, guid: 1f39511051c119d42911f42d70cfe02a, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 21185b4f8adfd0748b27e17558baeaba, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 84ed2a8b1012f774caef73c97146c94b, type: 2}
+      material: {fileID: 2100000, guid: 886188b0a3c41bc40bd0bbe25aeea73e, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 4
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: f18aca1e96b48b048bc7365383cdef6e, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 7357069c1fa75094bb9dee9a7ecdd716, type: 2}
+      material: {fileID: 2100000, guid: 37a1d0b8f154db4498392eaeabdb441e, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: e8c236c6d1fd37446a3977f7ae389554, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: aa9a4fb5a0fa54e4abd8bac1b1ba050a, type: 2}
+      material: {fileID: 2100000, guid: 886188b0a3c41bc40bd0bbe25aeea73e, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 4
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: d1c8e738671c15a4ea3e61e48de39e2c, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 25a9012279ccf3c4aa41bf9ef456c63e, type: 2}
+      material: {fileID: 2100000, guid: 37a1d0b8f154db4498392eaeabdb441e, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: b3227405dc1f17044870c1b626e2e5c0, type: 2}
+      material: {fileID: 2100000, guid: 1f39511051c119d42911f42d70cfe02a, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 5b8f6e7c37ac1ae42bf90fa388caa7c5, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 07d6cf513de18964ba5afae1644e936b, type: 2}
+      material: {fileID: 2100000, guid: 886188b0a3c41bc40bd0bbe25aeea73e, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 4
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 1f51d0ffa8edcc746b285663f6c63bce, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: a6da62bd29c83284ba0c9ddac2a5e86d, type: 2}
+      material: {fileID: 2100000, guid: 37a1d0b8f154db4498392eaeabdb441e, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: bddd186dfec2379409a525b1ca9534b4, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 09c7e493869f0f843be405341643af7b, type: 2}
+      material: {fileID: 2100000, guid: 886188b0a3c41bc40bd0bbe25aeea73e, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 4
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: a1ad445e8ff695447b39fa3ec6a12e7b, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 1d2f9853e947e6947b0ca8b89f86a22b, type: 2}
+      material: {fileID: 2100000, guid: 37a1d0b8f154db4498392eaeabdb441e, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 080afa1447f3d8e48a6930e1bf53646e, type: 2}
+      material: {fileID: 2100000, guid: 1f39511051c119d42911f42d70cfe02a, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 4d5043f2b8895d742985465e33d55e26, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 3a11e01e34e146f459f0745aeaa38d5b, type: 2}
+      material: {fileID: 2100000, guid: 886188b0a3c41bc40bd0bbe25aeea73e, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 4
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 25aee1f57af1d6b4fbc4afc0fa7bdaa4, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: d1b6ecce3aaa04e44aa227f34ce4200f, type: 2}
+      material: {fileID: 2100000, guid: 37a1d0b8f154db4498392eaeabdb441e, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 6a1b8716329a1c5458bf76f70ecd5706, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 5df35915c975cf243946e75823b290af, type: 2}
+      material: {fileID: 2100000, guid: 886188b0a3c41bc40bd0bbe25aeea73e, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 4
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: a47ea89584b382746886510f48328659, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 1405214dff85df749a597645e86d1082, type: 2}
+      material: {fileID: 2100000, guid: 37a1d0b8f154db4498392eaeabdb441e, type: 2}
+      pivot: {x: 36.284065, y: 16.28505, z: -36.124718}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: ae8a7b46efe7b0b4cbb9f952be26e77d, type: 2}
+      material: {fileID: 2100000, guid: 1f39511051c119d42911f42d70cfe02a, type: 2}
+      pivot: {x: 36.467854, y: 6.014373, z: -36.10686}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_arena02
+    position: {x: 185.52779, y: 0.000008, z: 64}
+    rotation: {x: 0, y: -0.923651, z: 0, w: 0.383235}
+    scale: {x: 1, y: 1, z: 1}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: 3f4a2e28fb08c6241a79245f73827b84, type: 2}
+      material: {fileID: 2100000, guid: 08d275e0ab88006449cf604a4281ec70, type: 2}
+      pivot: {x: 35.62286, y: 12.516492, z: -0.025076903}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: f931ccb301eeb3d439c8681f91104b13, type: 2}
+      material: {fileID: 2100000, guid: 37a1d0b8f154db4498392eaeabdb441e, type: 2}
+      pivot: {x: 35.45347, y: 13.838972, z: -0.055960085}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: b17059b8240229e41af768011c1454e0, type: 2}
+      material: {fileID: 2100000, guid: 08d275e0ab88006449cf604a4281ec70, type: 2}
+      pivot: {x: 25.243174, y: 12.516492, z: 25.165564}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: ed274843ef0f7924682351732ac6a247, type: 2}
+      material: {fileID: 2100000, guid: e20c92a579c542844919f7d2f7cc08d6, type: 2}
+      pivot: {x: 25.166729, y: 19.372847, z: 25.229923}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 5
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: f4f1fe2229605ee409f18da26d90906f, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 23.877686, y: 15.356297, z: 23.937225}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: fd4fda43cb6b8774d905a6f5e48d5539, type: 2}
+      material: {fileID: 2100000, guid: 08d275e0ab88006449cf604a4281ec70, type: 2}
+      pivot: {x: -0.06819214, y: 12.516492, z: 35.68764}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 8f1ed30e2d25535428be569fbc555b04, type: 2}
+      material: {fileID: 2100000, guid: e20c92a579c542844919f7d2f7cc08d6, type: 2}
+      pivot: {x: -0.16776246, y: 19.372847, z: 35.679066}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 5
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 04d91db425bc8564686dbb851df4dda4, type: 2}
+      material: {fileID: 2100000, guid: 37a1d0b8f154db4498392eaeabdb441e, type: 2}
+      pivot: {x: -0.03731323, y: 13.838972, z: 35.518246}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 98b063e8bd2269040bfec9ef0cb3e4fd, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: -0.16494995, y: 15.356297, z: 33.706245}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: b587782c14e7a5d42ad6685ea193a528, type: 2}
+      material: {fileID: 2100000, guid: 08d275e0ab88006449cf604a4281ec70, type: 2}
+      pivot: {x: -25.24374, y: 12.516492, z: 25.165564}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 3f4c20814d7792140ac3bfbb6f00d5c5, type: 2}
+      material: {fileID: 2100000, guid: e20c92a579c542844919f7d2f7cc08d6, type: 2}
+      pivot: {x: -25.167274, y: 19.372847, z: 25.229923}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 5
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 8af1b88004fa7324882ef990d3119ad7, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: -23.878212, y: 15.356297, z: 23.937225}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 972c9e0b927388b4b93c89c7958f3ae8, type: 2}
+      material: {fileID: 2100000, guid: 08d275e0ab88006449cf604a4281ec70, type: 2}
+      pivot: {x: -35.62341, y: 12.516492, z: 0.014759521}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: eb48fb0771410c64991d83fe9307534f, type: 2}
+      material: {fileID: 2100000, guid: e20c92a579c542844919f7d2f7cc08d6, type: 2}
+      pivot: {x: -35.614834, y: 19.372847, z: -0.08481048}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 5
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 9f3937cef8ff7e946a850c7daefffef1, type: 2}
+      material: {fileID: 2100000, guid: 37a1d0b8f154db4498392eaeabdb441e, type: 2}
+      pivot: {x: -35.454014, y: 13.838972, z: 0.0456427}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 597e6e16cd6f311499715c1645a0b257, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: -33.64202, y: 15.356297, z: -0.08201049}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: b4976159729d0244b96499243d7c3b59, type: 2}
+      material: {fileID: 2100000, guid: 08d275e0ab88006449cf604a4281ec70, type: 2}
+      pivot: {x: -25.24374, y: 12.516492, z: -25.175882}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 797d6dd20711db548875ad6ab7d769dd, type: 2}
+      material: {fileID: 2100000, guid: e20c92a579c542844919f7d2f7cc08d6, type: 2}
+      pivot: {x: -25.167274, y: 19.372847, z: -25.240242}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 5
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: c6000742479c106478d5f07d7e49807e, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: -23.878212, y: 15.356297, z: -23.947544}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: c9c28af355d7b704191d22e7d333c38f, type: 2}
+      material: {fileID: 2100000, guid: 08d275e0ab88006449cf604a4281ec70, type: 2}
+      pivot: {x: -0.06680542, y: 12.516492, z: -35.689617}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: ddd83507fd739b444a05b3624a924a4c, type: 2}
+      material: {fileID: 2100000, guid: e20c92a579c542844919f7d2f7cc08d6, type: 2}
+      pivot: {x: 0.03274536, y: 19.372847, z: -35.68104}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 5
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 30d604625c9872d428357dc35a6f7603, type: 2}
+      material: {fileID: 2100000, guid: 37a1d0b8f154db4498392eaeabdb441e, type: 2}
+      pivot: {x: -0.097684324, y: 13.838972, z: -35.52022}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 1335e034234f24d44a301c044e48f84c, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.029952392, y: 15.356297, z: -33.708218}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: deaa24decc0101e498ed57178e74d1b9, type: 2}
+      material: {fileID: 2100000, guid: 08d275e0ab88006449cf604a4281ec70, type: 2}
+      pivot: {x: 25.243174, y: 12.516492, z: -25.175882}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 4646e49872596d442807d4fe15fe8936, type: 2}
+      material: {fileID: 2100000, guid: e20c92a579c542844919f7d2f7cc08d6, type: 2}
+      pivot: {x: 25.166729, y: 19.372847, z: -25.240242}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 5
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: c78ea7eca87b01c4dbf389474cd7ad40, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 23.877666, y: 15.356297, z: -23.947544}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 94a78d1a4f785ae478648f0998da4f73, type: 2}
+      material: {fileID: 2100000, guid: 5eed38b372bf4264491d93d0ac087f7c, type: 2}
+      pivot: {x: 35.729717, y: 16.939247, z: -0.073663935}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 05df1c357a9f50148813177c45e758d5, type: 2}
+      material: {fileID: 2100000, guid: 2838863f79c5a4c4d95fcb38c62c3149, type: 2}
+      pivot: {x: 35.620636, y: 15.853498, z: -0.07457519}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: c02e933f5b1142943b881c85ef3dfb00, type: 2}
+      material: {fileID: 2100000, guid: 259c3a95e54ce1a41a1aeee2639d05ab, type: 2}
+      pivot: {x: 35.605106, y: 11.93815, z: -0.075360104}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_arena02
+    position: {x: 70.27049, y: 0.000008, z: 64}
+    rotation: {x: 0, y: -0.384808, z: 0, w: 0.922997}
+    scale: {x: 1, y: 1, z: 1}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: 3f4a2e28fb08c6241a79245f73827b84, type: 2}
+      material: {fileID: 2100000, guid: 08d275e0ab88006449cf604a4281ec70, type: 2}
+      pivot: {x: 35.62286, y: 12.516492, z: -0.025076903}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: f931ccb301eeb3d439c8681f91104b13, type: 2}
+      material: {fileID: 2100000, guid: 37a1d0b8f154db4498392eaeabdb441e, type: 2}
+      pivot: {x: 35.45347, y: 13.838972, z: -0.055960085}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: b17059b8240229e41af768011c1454e0, type: 2}
+      material: {fileID: 2100000, guid: 08d275e0ab88006449cf604a4281ec70, type: 2}
+      pivot: {x: 25.243174, y: 12.516492, z: 25.165564}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: ed274843ef0f7924682351732ac6a247, type: 2}
+      material: {fileID: 2100000, guid: e20c92a579c542844919f7d2f7cc08d6, type: 2}
+      pivot: {x: 25.166729, y: 19.372847, z: 25.229923}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 5
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: f4f1fe2229605ee409f18da26d90906f, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 23.877686, y: 15.356297, z: 23.937225}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: fd4fda43cb6b8774d905a6f5e48d5539, type: 2}
+      material: {fileID: 2100000, guid: 08d275e0ab88006449cf604a4281ec70, type: 2}
+      pivot: {x: -0.06819214, y: 12.516492, z: 35.68764}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 8f1ed30e2d25535428be569fbc555b04, type: 2}
+      material: {fileID: 2100000, guid: e20c92a579c542844919f7d2f7cc08d6, type: 2}
+      pivot: {x: -0.16776246, y: 19.372847, z: 35.679066}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 5
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 04d91db425bc8564686dbb851df4dda4, type: 2}
+      material: {fileID: 2100000, guid: 37a1d0b8f154db4498392eaeabdb441e, type: 2}
+      pivot: {x: -0.03731323, y: 13.838972, z: 35.518246}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 98b063e8bd2269040bfec9ef0cb3e4fd, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: -0.16494995, y: 15.356297, z: 33.706245}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: b587782c14e7a5d42ad6685ea193a528, type: 2}
+      material: {fileID: 2100000, guid: 08d275e0ab88006449cf604a4281ec70, type: 2}
+      pivot: {x: -25.24374, y: 12.516492, z: 25.165564}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 3f4c20814d7792140ac3bfbb6f00d5c5, type: 2}
+      material: {fileID: 2100000, guid: e20c92a579c542844919f7d2f7cc08d6, type: 2}
+      pivot: {x: -25.167274, y: 19.372847, z: 25.229923}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 5
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 8af1b88004fa7324882ef990d3119ad7, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: -23.878212, y: 15.356297, z: 23.937225}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 972c9e0b927388b4b93c89c7958f3ae8, type: 2}
+      material: {fileID: 2100000, guid: 08d275e0ab88006449cf604a4281ec70, type: 2}
+      pivot: {x: -35.62341, y: 12.516492, z: 0.014759521}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: eb48fb0771410c64991d83fe9307534f, type: 2}
+      material: {fileID: 2100000, guid: e20c92a579c542844919f7d2f7cc08d6, type: 2}
+      pivot: {x: -35.614834, y: 19.372847, z: -0.08481048}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 5
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 9f3937cef8ff7e946a850c7daefffef1, type: 2}
+      material: {fileID: 2100000, guid: 37a1d0b8f154db4498392eaeabdb441e, type: 2}
+      pivot: {x: -35.454014, y: 13.838972, z: 0.0456427}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 597e6e16cd6f311499715c1645a0b257, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: -33.64202, y: 15.356297, z: -0.08201049}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: b4976159729d0244b96499243d7c3b59, type: 2}
+      material: {fileID: 2100000, guid: 08d275e0ab88006449cf604a4281ec70, type: 2}
+      pivot: {x: -25.24374, y: 12.516492, z: -25.175882}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 797d6dd20711db548875ad6ab7d769dd, type: 2}
+      material: {fileID: 2100000, guid: e20c92a579c542844919f7d2f7cc08d6, type: 2}
+      pivot: {x: -25.167274, y: 19.372847, z: -25.240242}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 5
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: c6000742479c106478d5f07d7e49807e, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: -23.878212, y: 15.356297, z: -23.947544}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: c9c28af355d7b704191d22e7d333c38f, type: 2}
+      material: {fileID: 2100000, guid: 08d275e0ab88006449cf604a4281ec70, type: 2}
+      pivot: {x: -0.06680542, y: 12.516492, z: -35.689617}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: ddd83507fd739b444a05b3624a924a4c, type: 2}
+      material: {fileID: 2100000, guid: e20c92a579c542844919f7d2f7cc08d6, type: 2}
+      pivot: {x: 0.03274536, y: 19.372847, z: -35.68104}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 5
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 30d604625c9872d428357dc35a6f7603, type: 2}
+      material: {fileID: 2100000, guid: 37a1d0b8f154db4498392eaeabdb441e, type: 2}
+      pivot: {x: -0.097684324, y: 13.838972, z: -35.52022}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 1335e034234f24d44a301c044e48f84c, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.029952392, y: 15.356297, z: -33.708218}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: deaa24decc0101e498ed57178e74d1b9, type: 2}
+      material: {fileID: 2100000, guid: 08d275e0ab88006449cf604a4281ec70, type: 2}
+      pivot: {x: 25.243174, y: 12.516492, z: -25.175882}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 4646e49872596d442807d4fe15fe8936, type: 2}
+      material: {fileID: 2100000, guid: e20c92a579c542844919f7d2f7cc08d6, type: 2}
+      pivot: {x: 25.166729, y: 19.372847, z: -25.240242}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 5
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: c78ea7eca87b01c4dbf389474cd7ad40, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 23.877666, y: 15.356297, z: -23.947544}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 94a78d1a4f785ae478648f0998da4f73, type: 2}
+      material: {fileID: 2100000, guid: 5eed38b372bf4264491d93d0ac087f7c, type: 2}
+      pivot: {x: 35.729717, y: 16.939247, z: -0.073663935}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 05df1c357a9f50148813177c45e758d5, type: 2}
+      material: {fileID: 2100000, guid: 2838863f79c5a4c4d95fcb38c62c3149, type: 2}
+      pivot: {x: 35.620636, y: 15.853498, z: -0.07457519}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: c02e933f5b1142943b881c85ef3dfb00, type: 2}
+      material: {fileID: 2100000, guid: 259c3a95e54ce1a41a1aeee2639d05ab, type: 2}
+      pivot: {x: 35.605106, y: 11.93815, z: -0.075360104}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_arena01
+    position: {x: 64, y: 0.000008, z: 179.72588}
+    rotation: {x: 0, y: 0.3825, z: 0, w: 0.923956}
+    scale: {x: 1, y: 1, z: 1}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: 4b339a072a029654bb611c3dbe8f20f5, type: 2}
+      material: {fileID: 2100000, guid: 259c3a95e54ce1a41a1aeee2639d05ab, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 0d0c5d434e33fbf4fb764bd6701fb5c2, type: 2}
+      material: {fileID: 2100000, guid: 2838863f79c5a4c4d95fcb38c62c3149, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: c035ce8ef8f61cb4a9421647b84d19ba, type: 2}
+      material: {fileID: 2100000, guid: 5eed38b372bf4264491d93d0ac087f7c, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: da0b757ecc7436b4dbf27684802999fa, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 7e8c9891bbd8d6f4a9a0e90feb038503, type: 2}
+      material: {fileID: 2100000, guid: 886188b0a3c41bc40bd0bbe25aeea73e, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 4
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 80f2dca63681d354ebd93c4429e8e8b8, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 052e7bc43961c334d9d0b92b76d12d1c, type: 2}
+      material: {fileID: 2100000, guid: 37a1d0b8f154db4498392eaeabdb441e, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 3f132aaf1f838a74eb30c971ea91d2b0, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 85e43d0294b512e45917b21eaca7dbd6, type: 2}
+      material: {fileID: 2100000, guid: 886188b0a3c41bc40bd0bbe25aeea73e, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 4
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 8e936e7d882131745b5fca4382c4c50f, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 61fa8e881ebbb174cbd78e96fd59ebbb, type: 2}
+      material: {fileID: 2100000, guid: 37a1d0b8f154db4498392eaeabdb441e, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 79f0cd6d73798ed4e9151e2755888c8f, type: 2}
+      material: {fileID: 2100000, guid: 1f39511051c119d42911f42d70cfe02a, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 21185b4f8adfd0748b27e17558baeaba, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 84ed2a8b1012f774caef73c97146c94b, type: 2}
+      material: {fileID: 2100000, guid: 886188b0a3c41bc40bd0bbe25aeea73e, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 4
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: f18aca1e96b48b048bc7365383cdef6e, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 7357069c1fa75094bb9dee9a7ecdd716, type: 2}
+      material: {fileID: 2100000, guid: 37a1d0b8f154db4498392eaeabdb441e, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: e8c236c6d1fd37446a3977f7ae389554, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: aa9a4fb5a0fa54e4abd8bac1b1ba050a, type: 2}
+      material: {fileID: 2100000, guid: 886188b0a3c41bc40bd0bbe25aeea73e, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 4
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: d1c8e738671c15a4ea3e61e48de39e2c, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 25a9012279ccf3c4aa41bf9ef456c63e, type: 2}
+      material: {fileID: 2100000, guid: 37a1d0b8f154db4498392eaeabdb441e, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: b3227405dc1f17044870c1b626e2e5c0, type: 2}
+      material: {fileID: 2100000, guid: 1f39511051c119d42911f42d70cfe02a, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 5b8f6e7c37ac1ae42bf90fa388caa7c5, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 07d6cf513de18964ba5afae1644e936b, type: 2}
+      material: {fileID: 2100000, guid: 886188b0a3c41bc40bd0bbe25aeea73e, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 4
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 1f51d0ffa8edcc746b285663f6c63bce, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: a6da62bd29c83284ba0c9ddac2a5e86d, type: 2}
+      material: {fileID: 2100000, guid: 37a1d0b8f154db4498392eaeabdb441e, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: bddd186dfec2379409a525b1ca9534b4, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 09c7e493869f0f843be405341643af7b, type: 2}
+      material: {fileID: 2100000, guid: 886188b0a3c41bc40bd0bbe25aeea73e, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 4
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: a1ad445e8ff695447b39fa3ec6a12e7b, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 1d2f9853e947e6947b0ca8b89f86a22b, type: 2}
+      material: {fileID: 2100000, guid: 37a1d0b8f154db4498392eaeabdb441e, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 080afa1447f3d8e48a6930e1bf53646e, type: 2}
+      material: {fileID: 2100000, guid: 1f39511051c119d42911f42d70cfe02a, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 4d5043f2b8895d742985465e33d55e26, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 3a11e01e34e146f459f0745aeaa38d5b, type: 2}
+      material: {fileID: 2100000, guid: 886188b0a3c41bc40bd0bbe25aeea73e, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 4
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 25aee1f57af1d6b4fbc4afc0fa7bdaa4, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: d1b6ecce3aaa04e44aa227f34ce4200f, type: 2}
+      material: {fileID: 2100000, guid: 37a1d0b8f154db4498392eaeabdb441e, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 6a1b8716329a1c5458bf76f70ecd5706, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 5df35915c975cf243946e75823b290af, type: 2}
+      material: {fileID: 2100000, guid: 886188b0a3c41bc40bd0bbe25aeea73e, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 4
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: a47ea89584b382746886510f48328659, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.49244142, y: 2.7006207, z: 0.0000024414062}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 1405214dff85df749a597645e86d1082, type: 2}
+      material: {fileID: 2100000, guid: 37a1d0b8f154db4498392eaeabdb441e, type: 2}
+      pivot: {x: 36.284065, y: 16.28505, z: -36.124718}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: ae8a7b46efe7b0b4cbb9f952be26e77d, type: 2}
+      material: {fileID: 2100000, guid: 1f39511051c119d42911f42d70cfe02a, type: 2}
+      pivot: {x: 36.467854, y: 6.014373, z: -36.10686}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+  - name: bat_el_woodctl01_gate
+    position: {x: 127.894325, y: 9.333018, z: 50.07108}
+    rotation: {x: 0, y: 0, z: 0, w: 1}
+    scale: {x: 3.1345, y: 2.519694, z: 4.142515}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: 562c71783278981458e76b20922be5ab, type: 2}
+      material: {fileID: 2100000, guid: f343a145524cd9544af93bc53ec42152, type: 2}
+      pivot: {x: -1.4785517, y: 0, z: 0}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 1a524c1ad8c0de74c9f4e6af9f65f0ca, type: 2}
+      material: {fileID: 2100000, guid: f343a145524cd9544af93bc53ec42152, type: 2}
+      pivot: {x: 1.4665692, y: 0, z: 0}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_castl_wal2
+    position: {x: 127.12492, y: -12.225459, z: 158.8382}
+    rotation: {x: 0, y: 1, z: 0, w: 0.000796}
+    scale: {x: 0.61291, y: 0.94, z: 0.37}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: 5804e9e8a3ec965499a294a35950cbbb, type: 2}
+      material: {fileID: 2100000, guid: 0401308596dfaa94986974d56eaa321a, type: 2}
+      pivot: {x: -1.5894012, y: 23.204853, z: -0.18062973}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_castl_wal2
+    position: {x: 129.59026, y: -12.225459, z: 49.37288}
+    rotation: {x: 0, y: 0, z: 0, w: 1}
+    scale: {x: 1.037366, y: 0.94, z: 0.37}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: 5804e9e8a3ec965499a294a35950cbbb, type: 2}
+      material: {fileID: 2100000, guid: 0401308596dfaa94986974d56eaa321a, type: 2}
+      pivot: {x: -1.5894012, y: 23.204853, z: -0.18062973}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_castl_wal2
+    position: {x: 170.81947, y: -12.225459, z: 115.28019}
+    rotation: {x: 0, y: 0.707951, z: 0, w: -0.706262}
+    scale: {x: 0.673527, y: 0.94, z: 0.37}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: 5804e9e8a3ec965499a294a35950cbbb, type: 2}
+      material: {fileID: 2100000, guid: 0401308596dfaa94986974d56eaa321a, type: 2}
+      pivot: {x: -1.5894012, y: 23.204853, z: -0.18062973}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_castl_wal2
+    position: {x: 84.77942, y: -12.225459, z: 113.21787}
+    rotation: {x: 0, y: 0.706825, z: 0, w: 0.707388}
+    scale: {x: 0.673527, y: 0.94, z: 0.37}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: 5804e9e8a3ec965499a294a35950cbbb, type: 2}
+      material: {fileID: 2100000, guid: 0401308596dfaa94986974d56eaa321a, type: 2}
+      pivot: {x: -1.5894012, y: 23.204853, z: -0.18062973}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_stair2
+    position: {x: 128, y: 2.816886, z: 57.988853}
+    rotation: {x: 0, y: 0.708592, z: 0, w: 0.705619}
+    scale: {x: 1.003691, y: 1.218091, z: 0.990318}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: d294b27c8d06b8940b7a690466fca75b, type: 2}
+      material: {fileID: 2100000, guid: 65932034c9cafbf4193794f38f55a55a, type: 2}
+      pivot: {x: 0.025948524, y: -0.42254257, z: -0.22812557}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: d2df2853da8940b41a03dc15a7cf519b, type: 2}
+      material: {fileID: 2100000, guid: 37bcfeb8966602247be873e41dae7a52, type: 2}
+      pivot: {x: 0.0621109, y: -0.09388256, z: -0.05554676}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+  - name: fire_a_big
+    position: {x: 95.44333, y: 18.85483, z: 89.34252}
+    rotation: {x: 0, y: 0, z: 0, w: 1}
+    scale: {x: 4.030035, y: 4.030035, z: 4.030035}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: 62d4b8284c7594546a8d643363ea474c, type: 2}
+      material: {fileID: 2100000, guid: e094192217c40a143bee0b66f2135c28, type: 2}
+      pivot: {x: 0, y: 0, z: 0}
+      texFPS: 10
+      animTextures:
+      - {fileID: 2800000, guid: 4f7510861355232438d72edd15e193f4, type: 3}
+      - {fileID: 2800000, guid: c4e35205396d7d04ca3435ec8eccf88d, type: 3}
+      - {fileID: 2800000, guid: 2493ecf492b5dab429604b377ecf355e, type: 3}
+      - {fileID: 2800000, guid: 31c3a705201b96740980d3c786e8aeb5, type: 3}
+      - {fileID: 2800000, guid: 7dd3ef179ef444d40bff74ade096d0b0, type: 3}
+      - {fileID: 2800000, guid: a8c289146c9883341b8a41f50fcf746c, type: 3}
+      - {fileID: 2800000, guid: 9cafe208da72209409d89eed2b3f7288, type: 3}
+      - {fileID: 2800000, guid: 5c6539f86c5b88446b456ff9ad709934, type: 3}
+      - {fileID: 2800000, guid: 636e1a011d6a3f440ac0d78e83849836, type: 3}
+      - {fileID: 2800000, guid: 10d9eb949c133b245a25a9c84619b156, type: 3}
+      - {fileID: 2800000, guid: 1446bf33d9019b04a882af8971e0f21a, type: 3}
+      - {fileID: 2800000, guid: 7e67d78354794b34cad4dfadf5b17b79, type: 3}
+      - {fileID: 2800000, guid: e9a571be648c95543bdec4f09b7f8ec8, type: 3}
+      - {fileID: 2800000, guid: 8dd189000044a1d459b8a683d24da00d, type: 3}
+      - {fileID: 2800000, guid: c93f18e8af891b3449ac32cd0880b8e9, type: 3}
+      renderFlags: 73
+      srcBlend: 5
+      destBlend: 6
+  - name: fire_a_big
+    position: {x: 160.32169, y: 18.85483, z: 89.338165}
+    rotation: {x: 0, y: 0, z: 0, w: 1}
+    scale: {x: 4.030035, y: 4.030035, z: 4.030035}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: 62d4b8284c7594546a8d643363ea474c, type: 2}
+      material: {fileID: 2100000, guid: e094192217c40a143bee0b66f2135c28, type: 2}
+      pivot: {x: 0, y: 0, z: 0}
+      texFPS: 10
+      animTextures:
+      - {fileID: 2800000, guid: 4f7510861355232438d72edd15e193f4, type: 3}
+      - {fileID: 2800000, guid: c4e35205396d7d04ca3435ec8eccf88d, type: 3}
+      - {fileID: 2800000, guid: 2493ecf492b5dab429604b377ecf355e, type: 3}
+      - {fileID: 2800000, guid: 31c3a705201b96740980d3c786e8aeb5, type: 3}
+      - {fileID: 2800000, guid: 7dd3ef179ef444d40bff74ade096d0b0, type: 3}
+      - {fileID: 2800000, guid: a8c289146c9883341b8a41f50fcf746c, type: 3}
+      - {fileID: 2800000, guid: 9cafe208da72209409d89eed2b3f7288, type: 3}
+      - {fileID: 2800000, guid: 5c6539f86c5b88446b456ff9ad709934, type: 3}
+      - {fileID: 2800000, guid: 636e1a011d6a3f440ac0d78e83849836, type: 3}
+      - {fileID: 2800000, guid: 10d9eb949c133b245a25a9c84619b156, type: 3}
+      - {fileID: 2800000, guid: 1446bf33d9019b04a882af8971e0f21a, type: 3}
+      - {fileID: 2800000, guid: 7e67d78354794b34cad4dfadf5b17b79, type: 3}
+      - {fileID: 2800000, guid: e9a571be648c95543bdec4f09b7f8ec8, type: 3}
+      - {fileID: 2800000, guid: 8dd189000044a1d459b8a683d24da00d, type: 3}
+      - {fileID: 2800000, guid: c93f18e8af891b3449ac32cd0880b8e9, type: 3}
+      renderFlags: 73
+      srcBlend: 5
+      destBlend: 6
+  - name: fire_a_big
+    position: {x: 156.02957, y: 22.845106, z: 143.88591}
+    rotation: {x: 0, y: 0, z: 0, w: 1}
+    scale: {x: 4.030035, y: 4.030035, z: 4.030035}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: 62d4b8284c7594546a8d643363ea474c, type: 2}
+      material: {fileID: 2100000, guid: e094192217c40a143bee0b66f2135c28, type: 2}
+      pivot: {x: 0, y: 0, z: 0}
+      texFPS: 10
+      animTextures:
+      - {fileID: 2800000, guid: 4f7510861355232438d72edd15e193f4, type: 3}
+      - {fileID: 2800000, guid: c4e35205396d7d04ca3435ec8eccf88d, type: 3}
+      - {fileID: 2800000, guid: 2493ecf492b5dab429604b377ecf355e, type: 3}
+      - {fileID: 2800000, guid: 31c3a705201b96740980d3c786e8aeb5, type: 3}
+      - {fileID: 2800000, guid: 7dd3ef179ef444d40bff74ade096d0b0, type: 3}
+      - {fileID: 2800000, guid: a8c289146c9883341b8a41f50fcf746c, type: 3}
+      - {fileID: 2800000, guid: 9cafe208da72209409d89eed2b3f7288, type: 3}
+      - {fileID: 2800000, guid: 5c6539f86c5b88446b456ff9ad709934, type: 3}
+      - {fileID: 2800000, guid: 636e1a011d6a3f440ac0d78e83849836, type: 3}
+      - {fileID: 2800000, guid: 10d9eb949c133b245a25a9c84619b156, type: 3}
+      - {fileID: 2800000, guid: 1446bf33d9019b04a882af8971e0f21a, type: 3}
+      - {fileID: 2800000, guid: 7e67d78354794b34cad4dfadf5b17b79, type: 3}
+      - {fileID: 2800000, guid: e9a571be648c95543bdec4f09b7f8ec8, type: 3}
+      - {fileID: 2800000, guid: 8dd189000044a1d459b8a683d24da00d, type: 3}
+      - {fileID: 2800000, guid: c93f18e8af891b3449ac32cd0880b8e9, type: 3}
+      renderFlags: 73
+      srcBlend: 5
+      destBlend: 6
+  - name: fire_a_big
+    position: {x: 100.05849, y: 22.845106, z: 143.81848}
+    rotation: {x: 0, y: 0, z: 0, w: 1}
+    scale: {x: 4.030035, y: 4.030035, z: 4.030035}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: 62d4b8284c7594546a8d643363ea474c, type: 2}
+      material: {fileID: 2100000, guid: e094192217c40a143bee0b66f2135c28, type: 2}
+      pivot: {x: 0, y: 0, z: 0}
+      texFPS: 10
+      animTextures:
+      - {fileID: 2800000, guid: 4f7510861355232438d72edd15e193f4, type: 3}
+      - {fileID: 2800000, guid: c4e35205396d7d04ca3435ec8eccf88d, type: 3}
+      - {fileID: 2800000, guid: 2493ecf492b5dab429604b377ecf355e, type: 3}
+      - {fileID: 2800000, guid: 31c3a705201b96740980d3c786e8aeb5, type: 3}
+      - {fileID: 2800000, guid: 7dd3ef179ef444d40bff74ade096d0b0, type: 3}
+      - {fileID: 2800000, guid: a8c289146c9883341b8a41f50fcf746c, type: 3}
+      - {fileID: 2800000, guid: 9cafe208da72209409d89eed2b3f7288, type: 3}
+      - {fileID: 2800000, guid: 5c6539f86c5b88446b456ff9ad709934, type: 3}
+      - {fileID: 2800000, guid: 636e1a011d6a3f440ac0d78e83849836, type: 3}
+      - {fileID: 2800000, guid: 10d9eb949c133b245a25a9c84619b156, type: 3}
+      - {fileID: 2800000, guid: 1446bf33d9019b04a882af8971e0f21a, type: 3}
+      - {fileID: 2800000, guid: 7e67d78354794b34cad4dfadf5b17b79, type: 3}
+      - {fileID: 2800000, guid: e9a571be648c95543bdec4f09b7f8ec8, type: 3}
+      - {fileID: 2800000, guid: 8dd189000044a1d459b8a683d24da00d, type: 3}
+      - {fileID: 2800000, guid: c93f18e8af891b3449ac32cd0880b8e9, type: 3}
+      renderFlags: 73
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_clanfgt01_mask
+    position: {x: 85.67225, y: 4.883846, z: 114.03474}
+    rotation: {x: 0, y: 0.382499, z: 0, w: 0.923956}
+    scale: {x: 1.1, y: 0.968, z: 1.1}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: f293178ba9ff18146b2af6a5ed62b101, type: 2}
+      material: {fileID: 2100000, guid: a4e83bc4e499bee40823d462fd6715ad, type: 2}
+      pivot: {x: -0.28432083, y: 8.379984, z: -0.2592144}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 64
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_clanfgt01_mask
+    position: {x: 128, y: 4.883846, z: 157.59676}
+    rotation: {x: 0, y: 0.923652, z: 0, w: 0.383235}
+    scale: {x: 1.1, y: 0.968, z: 1.1}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: f293178ba9ff18146b2af6a5ed62b101, type: 2}
+      material: {fileID: 2100000, guid: a4e83bc4e499bee40823d462fd6715ad, type: 2}
+      pivot: {x: -0.28432083, y: 8.379984, z: -0.2592144}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 64
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_clanfgt01_mask
+    position: {x: 169.47322, y: 4.883846, z: 114.03474}
+    rotation: {x: 0, y: -0.923651, z: 0, w: 0.383235}
+    scale: {x: 1.1, y: 0.968, z: 1.1}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: f293178ba9ff18146b2af6a5ed62b101, type: 2}
+      material: {fileID: 2100000, guid: a4e83bc4e499bee40823d462fd6715ad, type: 2}
+      pivot: {x: -0.28432083, y: 8.379984, z: -0.2592144}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 64
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_gisa
+    position: {x: 140.23445, y: 0.346637, z: 58.34396}
+    rotation: {x: 0, y: 0.999999, z: 0, w: -0.001704}
+    scale: {x: 3.16, y: 3.16, z: 3.16}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: 3b68bd59d38011249a28a20a8dc18ac0, type: 2}
+      material: {fileID: 2100000, guid: 574d54e24425db34c9ad98b7227382b7, type: 2}
+      pivot: {x: 0, y: 2.9384208, z: 0.07467711}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 4
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 0a0c9e97cac1e774bb2e6624ec4d539c, type: 2}
+      material: {fileID: 2100000, guid: 2838863f79c5a4c4d95fcb38c62c3149, type: 2}
+      pivot: {x: 0.003477782, y: 0.36564365, z: -0.012962341}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_gisa
+    position: {x: 116.22383, y: 0.346637, z: 58.32797}
+    rotation: {x: 0, y: 0.999999, z: 0, w: -0.001704}
+    scale: {x: 3.16, y: 3.16, z: 3.16}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: 3b68bd59d38011249a28a20a8dc18ac0, type: 2}
+      material: {fileID: 2100000, guid: 574d54e24425db34c9ad98b7227382b7, type: 2}
+      pivot: {x: 0, y: 2.9384208, z: 0.07467711}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 4
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 0a0c9e97cac1e774bb2e6624ec4d539c, type: 2}
+      material: {fileID: 2100000, guid: 2838863f79c5a4c4d95fcb38c62c3149, type: 2}
+      pivot: {x: 0.003477782, y: 0.36564365, z: -0.012962341}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_clanfgt01_scul
+    position: {x: 30.198418, y: 13.45432, z: 213.64151}
+    rotation: {x: 0, y: -0.979407, z: 0, w: 0.201899}
+    scale: {x: 1.26, y: 1.26, z: 1.26}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: 4a11fa99f3adf21498eb51e20c93e91d, type: 2}
+      material: {fileID: 2100000, guid: 86b99e49e06098c409916269b7edd1a7, type: 2}
+      pivot: {x: 0.46645355, y: 4.909812, z: -0.0008087158}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 4
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: ee657b95956b20b46a1096b6ccb2fdbf, type: 2}
+      material: {fileID: 2100000, guid: ebb366d663550134fbe24bd74ca80a0e, type: 2}
+      pivot: {x: -0.8213234, y: 4.141608, z: 0.58553505}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 4fbb42d31a714244a88c1665c8c79c1e, type: 2}
+      material: {fileID: 2100000, guid: ebb366d663550134fbe24bd74ca80a0e, type: 2}
+      pivot: {x: 0.50387573, y: 7.360523, z: 0}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 6fd4afbd43de7dd48977bd0e106195ec, type: 2}
+      material: {fileID: 2100000, guid: 7467b51f8f839b942bc04a0c2c007e4d, type: 2}
+      pivot: {x: -1.9448166, y: 7.428752, z: 0.55639267}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 64
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_clanfgt01_scul
+    position: {x: 226.44012, y: 13.45432, z: 213.49507}
+    rotation: {x: 0, y: -0.5522, z: 0, w: 0.833712}
+    scale: {x: 1.26, y: 1.26, z: 1.26}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: 4a11fa99f3adf21498eb51e20c93e91d, type: 2}
+      material: {fileID: 2100000, guid: 86b99e49e06098c409916269b7edd1a7, type: 2}
+      pivot: {x: 0.46645355, y: 4.909812, z: -0.0008087158}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 4
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: ee657b95956b20b46a1096b6ccb2fdbf, type: 2}
+      material: {fileID: 2100000, guid: ebb366d663550134fbe24bd74ca80a0e, type: 2}
+      pivot: {x: -0.8213234, y: 4.141608, z: 0.58553505}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 4fbb42d31a714244a88c1665c8c79c1e, type: 2}
+      material: {fileID: 2100000, guid: ebb366d663550134fbe24bd74ca80a0e, type: 2}
+      pivot: {x: 0.50387573, y: 7.360523, z: 0}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 6fd4afbd43de7dd48977bd0e106195ec, type: 2}
+      material: {fileID: 2100000, guid: 7467b51f8f839b942bc04a0c2c007e4d, type: 2}
+      pivot: {x: -1.9448166, y: 7.428752, z: 0.55639267}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 64
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_sign_drug
+    position: {x: 128, y: 0.000008, z: 114.03474}
+    rotation: {x: 0, y: 0, z: 0, w: 1}
+    scale: {x: 0.5, y: 0.5, z: 0.5}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: 88e0424001389554b842f4162238118a, type: 2}
+      material: {fileID: 2100000, guid: 850b0cda5bdab4a45906dd468b1396ce, type: 2}
+      pivot: {x: 0, y: 5.9213715, z: 0}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 40d5e030b6845654cb176ac41b28cdf9, type: 2}
+      material: {fileID: 2100000, guid: 850b0cda5bdab4a45906dd468b1396ce, type: 2}
+      pivot: {x: 0.007843018, y: 14.544979, z: -0.028357267}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 5669061e7f7a9374eaf894d14f724d98, type: 2}
+      material: {fileID: 2100000, guid: 57382822804e1df4fb1bad784bb44173, type: 2}
+      pivot: {x: 0.00783062, y: 13.7791395, z: -0.02835679}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 64
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_arena_centapo
+    position: {x: 128.01927, y: -0.074112, z: 114.00834}
+    rotation: {x: 0, y: 0, z: 0, w: 1}
+    scale: {x: 1, y: 1, z: 1}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: 010c6ade7b6a64f4795d98556bf3b4fd, type: 2}
+      material: {fileID: 2100000, guid: da6546990e7976744910fa330c83d81c, type: 2}
+      pivot: {x: 0.00026794433, y: 2.78602, z: -0.0064172363}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 64
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: dfd9569d19f6190488b66a285a03373a, type: 2}
+      material: {fileID: 2100000, guid: 91a162549ddb77c4193dca94322bb6af, type: 2}
+      pivot: {x: -0.000001220702, y: 1.0466367, z: -0.00000061036553}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_clanfgt_ring
+    position: {x: 70.02121, y: 0.358183, z: 64}
+    rotation: {x: 0, y: 0, z: 0, w: 1}
+    scale: {x: 0.727168, y: 0.727168, z: 0.727168}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: 2fd66d202a6d1fe498945767f0d08b12, type: 2}
+      material: {fileID: 2100000, guid: 5eed38b372bf4264491d93d0ac087f7c, type: 2}
+      pivot: {x: 0, y: 1.5102625, z: 0}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 4b613a9f9a724dc4bba49763e8ab94fb, type: 2}
+      material: {fileID: 2100000, guid: 1f39511051c119d42911f42d70cfe02a, type: 2}
+      pivot: {x: 0, y: 1.5470036, z: 0}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: f7110841b392e7945a7897b2b08b9c17, type: 2}
+      material: {fileID: 2100000, guid: 5eed38b372bf4264491d93d0ac087f7c, type: 2}
+      pivot: {x: -0.006849289, y: 1.4886842, z: 0.010700703}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 8485e96859c57c9418351a9232699348, type: 2}
+      material: {fileID: 2100000, guid: 37a1d0b8f154db4498392eaeabdb441e, type: 2}
+      pivot: {x: -0.117278576, y: 14.496519, z: 11.491247}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 764b3648f06e9594fada759b84bf783f, type: 2}
+      material: {fileID: 2100000, guid: 37a1d0b8f154db4498392eaeabdb441e, type: 2}
+      pivot: {x: 0.20367146, y: 14.496519, z: -11.562862}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 7f07f07302b745a41b81615ef5b69605, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: -0.14577198, y: 21.07076, z: 11.501236}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 709292b2f07e3c7458309097ad3e211c, type: 2}
+      material: {fileID: 2100000, guid: 1b47a2eb0bb68904280993fdbcb7dbd7, type: 2}
+      pivot: {x: 0.18954706, y: 21.07076, z: -11.545515}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_clanfgt_post01
+    position: {x: 192, y: 0, z: 179.72588}
+    rotation: {x: 0, y: 0, z: 0, w: 1}
+    scale: {x: 1.294197, y: 1.289537, z: 1.294197}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: 42608dc634441914faaf6b7ec443433e, type: 2}
+      material: {fileID: 2100000, guid: 37a1d0b8f154db4498392eaeabdb441e, type: 2}
+      pivot: {x: 0, y: 10.585674, z: -11.543773}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 6b09f3a409a862d4899197a0037f7b9c, type: 2}
+      material: {fileID: 2100000, guid: 37a1d0b8f154db4498392eaeabdb441e, type: 2}
+      pivot: {x: 0, y: 10.585674, z: 11.543774}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_flag03
+    position: {x: 119.71997, y: 7.373886, z: 157.84254}
+    rotation: {x: 0, y: 0, z: 0, w: 1}
+    scale: {x: 1.68, y: 1.68, z: 1.68}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: b8391bb1f0201204da6d1a023ed7e7da, type: 2}
+      material: {fileID: 2100000, guid: e06113bcb012c6847b7ccbb24f45174a, type: 2}
+      pivot: {x: 0, y: 0, z: 0}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 5
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_flag03
+    position: {x: 136.31853, y: 7.373886, z: 157.87674}
+    rotation: {x: 0, y: 0, z: 0, w: 1}
+    scale: {x: 1.68, y: 1.68, z: 1.68}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: b8391bb1f0201204da6d1a023ed7e7da, type: 2}
+      material: {fileID: 2100000, guid: e06113bcb012c6847b7ccbb24f45174a, type: 2}
+      pivot: {x: 0, y: 0, z: 0}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 5
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_flag03
+    position: {x: 169.8146, y: 7.40787, z: 122.816895}
+    rotation: {x: 0, y: 0.706825, z: 0, w: 0.707389}
+    scale: {x: 1.68, y: 1.68, z: 1.68}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: b8391bb1f0201204da6d1a023ed7e7da, type: 2}
+      material: {fileID: 2100000, guid: e06113bcb012c6847b7ccbb24f45174a, type: 2}
+      pivot: {x: 0, y: 0, z: 0}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 5
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_flag03
+    position: {x: 169.87515, y: 7.40787, z: 105.09973}
+    rotation: {x: 0, y: 0.706825, z: 0, w: 0.707389}
+    scale: {x: 1.68, y: 1.68, z: 1.68}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: b8391bb1f0201204da6d1a023ed7e7da, type: 2}
+      material: {fileID: 2100000, guid: e06113bcb012c6847b7ccbb24f45174a, type: 2}
+      pivot: {x: 0, y: 0, z: 0}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 5
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_flag03
+    position: {x: 85.87251, y: 7.401412, z: 122.85614}
+    rotation: {x: 0, y: -0.706825, z: 0, w: 0.707388}
+    scale: {x: 1.68, y: 1.68, z: 1.68}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: b8391bb1f0201204da6d1a023ed7e7da, type: 2}
+      material: {fileID: 2100000, guid: e06113bcb012c6847b7ccbb24f45174a, type: 2}
+      pivot: {x: 0, y: 0, z: 0}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 5
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_flag03
+    position: {x: 85.74315, y: 7.506469, z: 105.03965}
+    rotation: {x: 0, y: -0.706825, z: 0, w: 0.707388}
+    scale: {x: 1.68, y: 1.68, z: 1.68}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: b8391bb1f0201204da6d1a023ed7e7da, type: 2}
+      material: {fileID: 2100000, guid: e06113bcb012c6847b7ccbb24f45174a, type: 2}
+      pivot: {x: 0, y: 0, z: 0}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 5
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_arena_signa
+    position: {x: 92.91571, y: 0.657387, z: 94.143654}
+    rotation: {x: 0, y: -0.924606, z: 0, w: 0.380925}
+    scale: {x: 2.938675, y: 2.938675, z: 2.938675}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: 8d31bcf24a1f8e145ac20c1444d0e3c5, type: 2}
+      material: {fileID: 2100000, guid: 9ba7527e8146ab2429328ff5beb2fc12, type: 2}
+      pivot: {x: 0, y: 0.7730155, z: -0.0011081696}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 69
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 0ad9ea4554d7bea41b5385a2c6441d8d, type: 2}
+      material: {fileID: 2100000, guid: 51ddbd764eeb4eb40a2bf7d5b3acaf2a, type: 2}
+      pivot: {x: 0.0034585, y: 0.68177724, z: 0}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 64
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_arena_signa
+    position: {x: 100.331345, y: 0.657387, z: 86.81018}
+    rotation: {x: 0, y: -0.924606, z: 0, w: 0.380925}
+    scale: {x: 2.938675, y: 2.938675, z: 2.938675}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: 8d31bcf24a1f8e145ac20c1444d0e3c5, type: 2}
+      material: {fileID: 2100000, guid: 9ba7527e8146ab2429328ff5beb2fc12, type: 2}
+      pivot: {x: 0, y: 0.7730155, z: -0.0011081696}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 69
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 0ad9ea4554d7bea41b5385a2c6441d8d, type: 2}
+      material: {fileID: 2100000, guid: 51ddbd764eeb4eb40a2bf7d5b3acaf2a, type: 2}
+      pivot: {x: 0.0034585, y: 0.68177724, z: 0}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 64
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_arena_signa
+    position: {x: 162.91026, y: 0.657387, z: 94.19979}
+    rotation: {x: 0, y: 0.924608, z: 0, w: 0.380926}
+    scale: {x: 2.938675, y: 2.938675, z: 2.938675}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: 8d31bcf24a1f8e145ac20c1444d0e3c5, type: 2}
+      material: {fileID: 2100000, guid: 9ba7527e8146ab2429328ff5beb2fc12, type: 2}
+      pivot: {x: 0, y: 0.7730155, z: -0.0011081696}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 69
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 0ad9ea4554d7bea41b5385a2c6441d8d, type: 2}
+      material: {fileID: 2100000, guid: 51ddbd764eeb4eb40a2bf7d5b3acaf2a, type: 2}
+      pivot: {x: 0.0034585, y: 0.68177724, z: 0}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 64
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_arena_signa
+    position: {x: 155.50525, y: 0.657387, z: 86.80918}
+    rotation: {x: 0, y: 0.924608, z: 0, w: 0.380926}
+    scale: {x: 2.938675, y: 2.938675, z: 2.938675}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: 8d31bcf24a1f8e145ac20c1444d0e3c5, type: 2}
+      material: {fileID: 2100000, guid: 9ba7527e8146ab2429328ff5beb2fc12, type: 2}
+      pivot: {x: 0, y: 0.7730155, z: -0.0011081696}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 69
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 0ad9ea4554d7bea41b5385a2c6441d8d, type: 2}
+      material: {fileID: 2100000, guid: 51ddbd764eeb4eb40a2bf7d5b3acaf2a, type: 2}
+      pivot: {x: 0.0034585, y: 0.68177724, z: 0}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 64
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_arena_signb
+    position: {x: 158.89812, y: 0.885449, z: 138.00272}
+    rotation: {x: 0, y: 0.382499, z: 0, w: 0.923956}
+    scale: {x: 3.591355, y: 3.591355, z: 3.591355}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: ced2d1df5c4361d4f813d837a65c155b, type: 2}
+      material: {fileID: 2100000, guid: 1cbcc8dd12376054a951d47885690f58, type: 2}
+      pivot: {x: 0.0034582615, y: 0.68177724, z: 0}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 2f598c98b95529841b88457d8216bd60, type: 2}
+      material: {fileID: 2100000, guid: 9ba7527e8146ab2429328ff5beb2fc12, type: 2}
+      pivot: {x: 0, y: 0.7730155, z: -0.0011081696}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 69
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_arena_signb
+    position: {x: 149.90749, y: 0.885449, z: 147.07893}
+    rotation: {x: 0, y: 0.384808, z: 0, w: 0.922997}
+    scale: {x: 3.591355, y: 3.591355, z: 3.591355}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: ced2d1df5c4361d4f813d837a65c155b, type: 2}
+      material: {fileID: 2100000, guid: 1cbcc8dd12376054a951d47885690f58, type: 2}
+      pivot: {x: 0.0034582615, y: 0.68177724, z: 0}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 2f598c98b95529841b88457d8216bd60, type: 2}
+      material: {fileID: 2100000, guid: 9ba7527e8146ab2429328ff5beb2fc12, type: 2}
+      pivot: {x: 0, y: 0.7730155, z: -0.0011081696}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 69
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_arena_signb
+    position: {x: 105.852325, y: 0.90565, z: 146.81165}
+    rotation: {x: 0, y: -0.3825, z: 0, w: 0.923957}
+    scale: {x: 3.591355, y: 3.591355, z: 3.591355}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: ced2d1df5c4361d4f813d837a65c155b, type: 2}
+      material: {fileID: 2100000, guid: 1cbcc8dd12376054a951d47885690f58, type: 2}
+      pivot: {x: 0.0034582615, y: 0.68177724, z: 0}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 2f598c98b95529841b88457d8216bd60, type: 2}
+      material: {fileID: 2100000, guid: 9ba7527e8146ab2429328ff5beb2fc12, type: 2}
+      pivot: {x: 0, y: 0.7730155, z: -0.0011081696}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 69
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_arena_signb
+    position: {x: 96.84369, y: 0.90565, z: 137.7952}
+    rotation: {x: 0, y: -0.3825, z: 0, w: 0.923957}
+    scale: {x: 3.591355, y: 3.591355, z: 3.591355}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: ced2d1df5c4361d4f813d837a65c155b, type: 2}
+      material: {fileID: 2100000, guid: 1cbcc8dd12376054a951d47885690f58, type: 2}
+      pivot: {x: 0.0034582615, y: 0.68177724, z: 0}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 0
+      srcBlend: 5
+      destBlend: 6
+    - mesh: {fileID: 4300000, guid: 2f598c98b95529841b88457d8216bd60, type: 2}
+      material: {fileID: 2100000, guid: 9ba7527e8146ab2429328ff5beb2fc12, type: 2}
+      pivot: {x: 0, y: 0.7730155, z: -0.0011081696}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 69
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_flag03
+    position: {x: 115.9377, y: 7.413568, z: 50.394325}
+    rotation: {x: 0, y: 1, z: 0, w: 0.000796}
+    scale: {x: 1.68, y: 1.68, z: 1.68}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: b8391bb1f0201204da6d1a023ed7e7da, type: 2}
+      material: {fileID: 2100000, guid: e06113bcb012c6847b7ccbb24f45174a, type: 2}
+      pivot: {x: 0, y: 0, z: 0}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 5
+      srcBlend: 5
+      destBlend: 6
+  - name: obj_mora_flag03
+    position: {x: 139.66269, y: 7.413568, z: 50.410175}
+    rotation: {x: 0, y: 1, z: 0, w: 0.000796}
+    scale: {x: 1.68, y: 1.68, z: 1.68}
+    shapeType: 1051
+    eventID: 0
+    eventType: 0
+    npcID: 0
+    npcStatus: 0
+    belong: 0
+    parts:
+    - mesh: {fileID: 4300000, guid: b8391bb1f0201204da6d1a023ed7e7da, type: 2}
+      material: {fileID: 2100000, guid: e06113bcb012c6847b7ccbb24f45174a, type: 2}
+      pivot: {x: 0, y: 0, z: 0}
+      texFPS: 10
+      animTextures: []
+      renderFlags: 5
+      srcBlend: 5
+      destBlend: 6
+  collisionMesh: {fileID: 4300000, guid: 744e27c9ad9f359408d56b7b636e6848, type: 2}
+  mapWidth: 256
+  mapLength: 256
+  rivers: []
+  ponds: []
+  lights:
+  - name: 
+    type: 1
+    position: {x: 128.00563, y: 10.194085, z: 114.075}
+    rotation: {x: 0, y: 0, z: 0, w: 1}
+    diffuse: {r: 0, g: 1, b: 0.5019608, a: 0}
+    specular: {r: 0, g: 0, b: 0, a: 0}
+    ambient: {r: 0, g: 0.7, b: 0.35137257, a: 0}
+    direction: {x: 0, y: 0, z: 0}
+    range: 24
+    falloff: 1
+    attenuation0: 0.6
+    attenuation1: 0.06666666
+    attenuation2: 0.01111111
+    theta: 0
+    phi: 0
+    isOn: 0
+  skyboxMaterial: {fileID: 0}

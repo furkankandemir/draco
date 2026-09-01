@@ -1,0 +1,2291 @@
+using System;
+using System.Collections.Generic;
+using UnityEngine;
+using EntropyOnline.Import;
+using EntropyOnline.Network;
+using EntropyOnline.Network.KO;
+using EntropyOnline.World;
+using EntropyOnline.Core;
+namespace EntropyOnline.UI
+{
+    /// <summary>
+    /// Open-KO CUIInventory veri modeli birebir portu.
+    ///
+    /// C++ referans: UIInventory.h satır 14-79, UIInventory.cpp satır 577-698
+    /// GameDef.h satır 996-1014 (e_ItemSlot), satır 1247 (MAX_ITEM_INVENTORY=28)
+    /// UIInventory.h satır 29-44 (ITEM_ATTACH_POS_*)
+    ///
+    /// m_pMySlot[ITEM_SLOT_COUNT=14]     → Equipment slot'ları
+    /// m_pMyInvWnd[MAX_ITEM_INVENTORY=28] → Bag slot'ları
+    /// </summary>
+    public class KOInventory : MonoBehaviour
+    {
+        public static KOInventory Instance { get; private set; }
+        public Action<int, int, int> OnSlotSelectedForAH; // slotIndex, itemId, count
+        // ================================================
+        // Open-KO birebir: CGameBase::s_pTbl_Items_Basic (GameBase.h:19)
+        // Client başlangıçta Item_Org_us.tbl'den yükleniyor
+        // ================================================
+        public static Dictionary<uint, KOTableReader.TableItemBasic> s_pTbl_Items_Basic;
+        /// <summary>
+        /// Open-KO birebir: CGameBase::s_pTbl_Help (GameBase.h:28)
+        /// help_us.tbl — Seviye Kılavuzu görev rehber tablosu
+        /// </summary>
+        public static Dictionary<uint, KOTableReader.TableHelp> s_pTbl_Help;
+
+        /// <summary>
+        /// Open-KO birebir: CGameBase::s_pTbl_Items_Exts[MAX_ITEM_EXTENSION] (GameBase.h:20)
+        /// 24 adet Item_Ext tablosu - stat gereksinimleri burada
+        /// </summary>
+        public static Dictionary<uint, KOTableReader.TableItemExt>[] s_pTbl_Items_Exts;
+        /// <summary>Oyuncunun race'i - Open-KO: CGameBase::s_pPlayer->m_InfoBase.eRace</summary>
+        public byte PlayerRace
+        {
+            get => Core.GameManager.Instance != null ? Core.GameManager.Instance.Race : (byte)0;
+            set { } // GameManager'dan okunuyor, setter uyumluluk için
+        }
+        /// <summary>Oyuncunun class'ı - Open-KO: CGameBase::s_pPlayer->m_InfoBase.eClass</summary>
+        public ushort PlayerClass
+        {
+            get => Core.GameManager.Instance != null ? Core.GameManager.Instance.CharClass : (ushort)0;
+            set { } // GameManager'dan okunuyor, setter uyumluluk için
+        }
+        // Open-KO birebir: __InfoPlayerMySelf stat alanları (GameDef.h:473-500)
+        // C++: s_pPlayer->m_InfoExt.iStrength vb. - global player info'dan okunur
+        // IsValidRaceAndClass stat kontrolleri için gerekli
+        public int PlayerLevel
+        {
+            get => Core.GameManager.Instance != null ? Core.GameManager.Instance.Level : 0;
+            set { }
+        }
+        public int PlayerRank { get; set; } // Sunucudan gelmiyor, varsayılan 0
+        public int PlayerTitle { get; set; } // Sunucudan gelmiyor, varsayılan 0
+        public int PlayerStrength
+        {
+            get => Core.GameManager.Instance != null ? Core.GameManager.Instance.StatStr : 0;
+            set { }
+        }
+        public int PlayerStamina
+        {
+            get => Core.GameManager.Instance != null ? Core.GameManager.Instance.StatSta : 0;
+            set { }
+        }
+        public int PlayerDexterity
+        {
+            get => Core.GameManager.Instance != null ? Core.GameManager.Instance.StatDex : 0;
+            set { }
+        }
+        public int PlayerIntelligence
+        {
+            get => Core.GameManager.Instance != null ? Core.GameManager.Instance.StatInt : 0;
+            set { }
+        }
+        public int PlayerMagicAttack
+        {
+            get => Core.GameManager.Instance != null ? Core.GameManager.Instance.StatCha : 0;
+            set { }
+        }
+        // ================================================
+        // Open-KO Sabitler — GameDef.h birebir
+        // ================================================
+        public const int ITEM_SLOT_COUNT = 14;
+        public const int MAX_ITEM_INVENTORY = 28;
+        // ================================================
+        // Open-KO: e_ItemSlot enum (GameDef.h:996-1014) birebir
+        // ================================================
+        public const int ITEM_SLOT_EAR_RIGHT  = 0;
+        public const int ITEM_SLOT_HEAD       = 1;
+        public const int ITEM_SLOT_EAR_LEFT   = 2;
+        public const int ITEM_SLOT_NECK       = 3;
+        public const int ITEM_SLOT_UPPER      = 4;
+        public const int ITEM_SLOT_SHOULDER   = 5;
+        public const int ITEM_SLOT_HAND_RIGHT = 6;
+        public const int ITEM_SLOT_BELT       = 7;
+        public const int ITEM_SLOT_HAND_LEFT  = 8;
+        public const int ITEM_SLOT_RING_RIGHT = 9;
+        public const int ITEM_SLOT_LOWER      = 10;
+        public const int ITEM_SLOT_RING_LEFT  = 11;
+        public const int ITEM_SLOT_GLOVES     = 12;
+        public const int ITEM_SLOT_SHOES      = 13;
+        // ================================================
+        // Open-KO: ITEM_ATTACH_POS_* (UIInventory.h:29-44) birebir
+        // ================================================
+        public const int ITEM_ATTACH_POS_DUAL          = 0;
+        public const int ITEM_ATTACH_POS_HAND_RIGHT    = 1;
+        public const int ITEM_ATTACH_POS_HAND_LEFT     = 2;
+        public const int ITEM_ATTACH_POS_TWOHAND_RIGHT = 3;
+        public const int ITEM_ATTACH_POS_TWOHAND_LEFT  = 4;
+        public const int ITEM_ATTACH_POS_UPPER         = 5;
+        public const int ITEM_ATTACH_POS_LOWER         = 6;
+        public const int ITEM_ATTACH_POS_HEAD          = 7;
+        public const int ITEM_ATTACH_POS_ARM           = 8;
+        public const int ITEM_ATTACH_POS_FOOT          = 9;
+        public const int ITEM_ATTACH_POS_EAR           = 10;
+        public const int ITEM_ATTACH_POS_NECK          = 11;
+        public const int ITEM_ATTACH_POS_FINGER        = 12;
+        public const int ITEM_ATTACH_POS_CLOAK         = 13;
+        public const int ITEM_ATTACH_POS_BELT          = 14;
+        public const int ITEM_ATTACH_POS_INVENTORY     = 15;
+        public const int ITEM_ATTACH_POS_GOLD          = 16; // e_ItemPosition::ITEM_POS_GOLD (GameDef.h:991)
+        public const int ITEM_ATTACH_POS_SONGPYUN      = 17; // e_ItemPosition::ITEM_POS_SONGPYUN (GameDef.h:992)
+        // ================================================
+        // Open-KO birebir: e_ItemType (GameDef.h:963-971)
+        // ================================================
+        public const int ITEM_TYPE_UNKNOWN  = -1;
+        public const int ITEM_TYPE_PLUG     = 1;  // Silah (.n3cplug)
+        public const int ITEM_TYPE_PART     = 2;  // Zırh (.n3cpart)
+        public const int ITEM_TYPE_ICONONLY = 3;  // Aksesuar (sadece ikon)
+        public const int ITEM_TYPE_GOLD     = 9;
+        public const int ITEM_TYPE_SONGPYUN = 10;
+        // ================================================
+        // Open-KO birebir: e_PartPosition (GameDef.h:361-371)
+        // ================================================
+        public const int PART_POS_UNKNOWN      = -1;
+        public const int PART_POS_UPPER        = 0;
+        public const int PART_POS_LOWER        = 1;
+        public const int PART_POS_FACE         = 2;
+        public const int PART_POS_HANDS        = 3;
+        public const int PART_POS_FEET         = 4;
+        public const int PART_POS_HAIR_HELMET  = 5;
+        // ================================================
+        // Open-KO birebir: e_PlugPosition (GameDef.h)
+        // ================================================
+        public const int PLUG_POS_RIGHTHAND = 0;
+        public const int PLUG_POS_LEFTHAND  = 1;
+        public const int PLUG_POS_BACK      = 2;
+        public const int PLUG_POS_KNIGHTS_GRADE = 3;
+        public const int PLUG_POS_COUNT     = 4;
+        public const int PLUG_POS_UNKNOWN   = -1;
+
+        // ================================================
+        // Open-KO: s_sRecoveryJobInfo move directions (openko_gamedefine.h)
+        // ================================================
+        public const byte ITEM_MOVE_INV_TO_ARM = 1;
+        public const byte ITEM_MOVE_ARM_TO_INV = 2;
+        public const byte ITEM_MOVE_INV_TO_INV = 3;
+        public const byte ITEM_MOVE_ARM_TO_ARM = 4;
+        // ================================================
+        // Open-KO veri modeli: __IconItemSkill birebir (IconItemSkill.h:16-32)
+        // ================================================
+        /// <summary>
+        /// Open-KO __IconItemSkill yapısı birebir.
+        /// C++ referans: IconItemSkill.h satır 16-32
+        /// </summary>
+        [Serializable]
+        public class ItemSlot
+        {
+            /// <summary>C++: pItemBasic->dwID + pItemExt->dwID = tam item ID</summary>
+            public int   itemId;
+            /// <summary>C++: iDurability — internal durability counter</summary>
+            public int   durability;
+            /// <summary>C++: iCount — stack count (potions vs.)</summary>
+            public int   count;
+            /// <summary>
+            /// C++ birebir: __IconItemSkill->pItemBasic pointer.
+            /// Item tablosuna referans — attachPoint, byClass vb. her zaman buradan okunmalı.
+            /// C++'da pItem->pItemBasic->byAttachPoint şeklinde erişilir.
+            /// </summary>
+            public KOTableReader.TableItemBasic pItemBasic;
+            /// <summary>C++: pItemBasic->byAttachPoint — pItemBasic varsa oradan, yoksa stored değer</summary>
+            public int attachPoint
+            {
+                get
+                {
+                    if (itemId == 800085000) return 15;
+                    return pItemBasic != null ? pItemBasic.byAttachPoint : _attachPoint;
+                }
+                set => _attachPoint = value;
+            }
+            private int _attachPoint;
+            /// <summary>C++: pItemBasic->byClass — pItemBasic varsa oradan, yoksa stored değer</summary>
+            public int itemClass
+            {
+                get => pItemBasic != null ? pItemBasic.byClass : _itemClass;
+                set => _itemClass = value;
+            }
+            private int _itemClass;
+            /// <summary>C++: szIconFN — ikon dosya adı/referansı</summary>
+            public string iconFN;
+            /// <summary>Server-side InstanceId (bizim sunucumuza özgü — Open-KO'da yok)</summary>
+            public long  instanceId;
+            /// <summary>Sunucudan gelen tam InventoryItemData referansı</summary>
+            public InventoryItemData serverData;
+            public byte byFlag;
+            public short sTimeRemaining;
+            public bool IsEmpty => itemId == 0;
+        }
+        // ================================================
+        // Open-KO: m_pMySlot[ITEM_SLOT_COUNT] + m_pMyInvWnd[MAX_ITEM_INVENTORY]
+        // UIInventory.h satır 78-79 birebir
+        // ================================================
+        /// <summary>
+        /// Equipment slot'ları — Open-KO: m_pMySlot[ITEM_SLOT_COUNT]
+        /// C++ referans: UIInventory.h satır 78
+        /// Index → ITEM_SLOT_* sabitleri ile eşleşir
+        /// </summary>
+        public readonly ItemSlot[] m_pMySlot = new ItemSlot[ITEM_SLOT_COUNT];
+        /// <summary>
+        /// Bag slot'ları — Open-KO: m_pMyInvWnd[MAX_ITEM_INVENTORY]
+        /// C++ referans: UIInventory.h satır 79
+        /// </summary>
+        public readonly ItemSlot[] m_pMyInvWnd = new ItemSlot[MAX_ITEM_INVENTORY];
+        /// <summary>
+        /// Sunucudan cevap bekleniyor mu?
+        /// Open-KO: s_bWaitFromServer (N3UIWndBase.h)
+        /// </summary>
+        public bool WaitFromServer { get; set; }
+        // ================================================
+        // Open-KO: s_sRecoveryJobInfo (N3UIWndBase.h) birebir
+        // Pending move bilgisi — sunucu yanıtına göre commit/revert
+        // ================================================
+        /// <summary>
+        /// Open-KO: __RecoveryJobInfo — pending item move tracking.
+        /// C++ referans: N3UIWndBase.h satır 38-58
+        /// </summary>
+        private struct PendingMoveInfo
+        {
+            public bool   IsActive;
+            public byte   Direction;     // ITEM_MOVE_* direction code
+            public int    SrcSlotType;   // 0=inv, 1=equip
+            public int    SrcIndex;
+            public int    DstSlotType;   // 0=inv, 1=equip
+            public int    DstIndex;
+            // C++ birebir: __RecoveryJobInfo.pItemTarget — displacement tracking
+            // 2H weapon equip edildiğinde diğer elden çıkarılması gereken item.
+            // C++ UIWndTargetStart.iOrder = displaced equip slot index
+            // C++ UIWndTargetEnd.iOrder = hedef inv slot (= UIWndSourceStart.iOrder = SrcIndex)
+            public int    DisplacedSlotIdx;  // -1 = displacement yok
+        }
+        private PendingMoveInfo _pendingMove;
+        /// <summary>
+        /// C++ birebir: IsValidPosFromInvToArm tarafından set edilir.
+        /// </summary>
+        private int _pendingDisplacedSlot = -1;
+        // Open-KO: Pending item destroy tracking
+        // UIInventory.cpp ItemDestroyOK() satır 2678-2709 birebir
+        // ================================================
+        /// <summary>
+        /// Pending item remove bilgisi — sunucu yanıtını beklerken.
+        /// C++ referans: s_sRecoveryJobInfo + s_sSelectedIconInfo
+        /// </summary>
+        private struct PendingRemoveInfo
+        {
+            public bool IsActive;
+            public byte District;     // 0x01=equip, 0x02=inv
+            public int  Index;
+            public int  ItemId;
+        }
+        private PendingRemoveInfo _pendingRemove;
+        // Son pending move direction — event handler sırası nedeniyle
+        // KOInventory _pendingMove'u temizledikten SONRA KOEquipmentVisualizer
+        // çalışabilir. Bu field son direction'ı tutar.
+        private byte _lastPendingDirection = 0xFF;
+        /// <summary>
+        /// Pending/son move direction — KOEquipmentVisualizer Inv→Inv kontrolü için.
+        /// </summary>
+        public byte GetPendingMoveDirection()
+        {
+            if (_pendingMove.IsActive)
+                return _pendingMove.Direction;
+            return _lastPendingDirection;
+        }
+        // ================================================
+        // Unity Lifecycle
+        // ================================================
+        private void Awake()
+        {
+            if (Instance != null && Instance != this) { Destroy(gameObject); return; }
+            Instance = this;
+            // Open-KO birebir: CGameBase::StaticMemberInit (GameBase.cpp satır 59-60)
+            // s_pTbl_Items_Basic.LoadFromFile("Data\Item_Org_us.tbl")
+            string dataDir = System.IO.Path.Combine(Application.streamingAssetsPath, "ko-assets", "Data");
+            #if UNITY_EDITOR
+            dataDir = "c:\\_dev\\knightonline-mobil\\ko-assets\\Data";
+            #endif
+
+            if (s_pTbl_Items_Basic == null)
+            {
+                // Open-KO birebir: s_pTbl_Items_Basic.LoadFromFile (GameBase.cpp:59-60)
+                string tblPath = System.IO.Path.Combine(dataDir, "Item_Org_us.tbl");
+                s_pTbl_Items_Basic = KOTableReader.LoadItemBasicTable(tblPath);
+            }
+
+            if (s_pTbl_Items_Exts == null)
+            {
+                // Open-KO birebir: s_pTbl_Items_Exts[].LoadFromFile (GameBase.cpp:72-77)
+                s_pTbl_Items_Exts = KOTableReader.LoadItemExtTables(dataDir);
+            }
+
+            if (s_pTbl_Help == null)
+            {
+                // Open-KO birebir: s_pTbl_Help.LoadFromFile (GameBase.cpp:68-69)
+                string helpPath = System.IO.Path.Combine(dataDir, "help_us.tbl");
+                s_pTbl_Help = KOTableReader.LoadHelpTable(helpPath);
+            }
+
+
+        }
+        private void OnEnable()
+        {
+            KOPacketHandler.OnInventoryData += HandleInventoryData_KO;
+            KOPacketHandler.OnItemMove += HandleItemMoveResult_KO;
+            KOPacketHandler.OnItemRemoveResult += HandleItemRemoveResult_KO;
+            KOPacketHandler.OnMyInfo += HandleMyInfo_KO;
+            KOPacketHandler.OnLevelChange += HandleLevelChange_KO;
+            KOPacketHandler.OnStatChange += HandleStatChange_KO;
+        }
+        private void OnDisable()
+        {
+            KOPacketHandler.OnInventoryData -= HandleInventoryData_KO;
+            KOPacketHandler.OnItemMove -= HandleItemMoveResult_KO;
+            KOPacketHandler.OnItemRemoveResult -= HandleItemRemoveResult_KO;
+            KOPacketHandler.OnMyInfo -= HandleMyInfo_KO;
+            KOPacketHandler.OnLevelChange -= HandleLevelChange_KO;
+            KOPacketHandler.OnStatChange -= HandleStatChange_KO;
+        }
+        private void OnDestroy()
+        {
+            if (Instance == this) Instance = null;
+        }
+        private void HandleMyInfoForStats(long charId, string name, byte nation, byte race, byte charClass,
+            short level, long exp, short str, short sta, short dex, short intel, short cha,
+            short statPoints, short skillPoints, int currentHp, int maxHp, int currentMp, int maxMp,
+            float posX, float posY, float posZ, long gold, byte authority)
+        {
+            PlayerRace         = race;
+            PlayerClass        = charClass;
+            PlayerLevel        = level;
+            PlayerStrength     = str;
+            PlayerStamina      = sta;
+            PlayerDexterity    = dex;
+            PlayerIntelligence = intel;
+            PlayerMagicAttack  = cha; // C++: byNeedMagicAttack → m_bCha (Open-KO'da CHA = MagicAttack)
+            // Rank ve Title sunucu MyInfo paketinde gönderilmiyor — varsayılan 0
+        }
+
+        private void HandleLevelUpForStats(long charId, byte level, short statPoints, byte skillPoints,
+            int maxExp, int exp, short maxHp, short hp, short maxMp, short mp)
+        {
+            PlayerLevel = level;
+        }
+
+        private void HandleStatChangeForStats(byte success, short str, short sta, short dex, short intel, short cha, short statPoints, long gold)
+        {
+            if (success != 1) return;
+            PlayerStrength     = str;
+            PlayerStamina      = sta;
+            PlayerDexterity    = dex;
+            PlayerIntelligence = intel;
+            PlayerMagicAttack  = cha;
+        }
+
+        // ================================================
+        // Open-KO: ReleaseItem() — UIInventory.cpp satır 98-133 birebir
+        // ================================================
+
+        /// <summary>
+        /// Tüm slot'ları temizle.
+        /// C++ referans: UIInventory.cpp ReleaseItem() satır 98-133
+        /// </summary>
+        public void ReleaseItem()
+        {
+            for (int i = 0; i < ITEM_SLOT_COUNT; i++)
+                m_pMySlot[i] = null;
+
+            for (int i = 0; i < MAX_ITEM_INVENTORY; i++)
+                m_pMyInvWnd[i] = null;
+        }
+
+        // ================================================
+        // Open-KO: MsgRecv_MyInfo → slot/inv dolumu
+        // GameProcMain.cpp satır 1949-2134 birebir akış
+        // ================================================
+
+        /// <summary>
+        /// Sunucudan gelen envanter verisini Open-KO veri modeline dönüştür.
+        ///
+        /// C++ referans: GameProcMain.cpp MsgRecv_MyInfo_All satır 2013-2134
+        /// → m_pUIInventory->ReleaseItem()
+        /// → ITEM_SLOT_COUNT (14) slot doldur
+        /// → MAX_ITEM_INVENTORY (28) bag doldur
+        /// → m_pUIInventory->InitIconUpdate()
+        /// </summary>
+        /// <summary>KO wrapper — WIZ_MYINFO</summary>
+        private void HandleMyInfo_KO(byte[] rawData)
+        {
+            // WIZ_MYINFO is a very large packet — GameSceneController handles the full parse.
+            // Here we just log receipt for debugging.
+        }
+
+        /// <summary>KO wrapper — WIZ_INVENTORY_DATA</summary>
+        private void HandleInventoryData_KO(byte[] rawData)
+        {
+            // C++ birebir: GameProcMain.cpp:3587 — MsgRecv_ItemCountChange
+            // Wire: [opcode][count:int16][{district:byte, index:byte, itemId:uint32, itemCount:uint32, isNew:byte, durability:uint16} × count]
+            var r = new KOPacketReader(rawData);
+            short count = r.ReadInt16();
+
+            for (int i = 0; i < count; i++)
+            {
+                byte district   = r.ReadByte();     // 0=equip, 1=inventory
+                byte index      = r.ReadByte();     // slot index
+                uint itemId     = r.ReadUInt32();    // item ID (0=removed)
+                uint itemCount  = r.ReadUInt32();    // stack count
+                byte isNew      = r.ReadByte();      // new item flag
+                ushort durability = r.ReadUInt16();   // durability
+
+                if (district == 0) // equip slot
+                {
+                    if (index < ITEM_SLOT_COUNT)
+                    {
+                        if (itemId == 0 || itemCount == 0)
+                        {
+                            m_pMySlot[index] = null;
+                        }
+                        else
+                        {
+                            // C++ birebir: pItemBasic referansını bul
+                            KOTableReader.TableItemBasic basicEq = null;
+                            if (s_pTbl_Items_Basic != null)
+                                s_pTbl_Items_Basic.TryGetValue(itemId / 1000 * 1000, out basicEq);
+
+                            m_pMySlot[index] = new ItemSlot
+                            {
+                                itemId     = (int)itemId,
+                                durability = durability,
+                                count      = (int)itemCount,
+                                pItemBasic = basicEq,
+                                iconFN     = ResolveItemIcon(itemId, basicEq)
+                            };
+                            // serverData oluştur — tooltip'te item bilgisi gösterilsin
+                            m_pMySlot[index].serverData = new InventoryItemData
+                            {
+                                ItemDefId = (int)itemId,
+                                StackCount = (short)itemCount,
+                                Durability = (short)durability,
+                                SlotType = 1, // EQUIPPED
+                                SlotIndex = index,
+                                IconId = m_pMySlot[index].iconFN ?? "",
+                                AttachPoint = (byte)m_pMySlot[index].attachPoint,
+                                Type = (byte)m_pMySlot[index].itemClass,
+                                Delay = basicEq?.siAttackInterval ?? 0,
+                                Range = basicEq?.siAttackRange ?? 0
+                            };
+                        }
+                    }
+                }
+                else // inventory slot
+                {
+                    if (index < MAX_ITEM_INVENTORY)
+                    {
+                        if (itemId == 0 || itemCount == 0)
+                        {
+                            m_pMyInvWnd[index] = null;
+                            if (EntropyOnline.Trade.KOMerchantManager.Instance != null && EntropyOnline.Trade.KOMerchantManager.Instance.IsSelling)
+                            {
+                                EntropyOnline.Trade.KOMerchantManager.Instance.SyncSellingItemCount(index, 0);
+                            }
+                        }
+                        else
+                        {
+                            // C++ birebir: pItemBasic referansını bul
+                            KOTableReader.TableItemBasic basicBag = null;
+                            if (s_pTbl_Items_Basic != null)
+                                s_pTbl_Items_Basic.TryGetValue(itemId / 1000 * 1000, out basicBag);
+
+                            m_pMyInvWnd[index] = new ItemSlot
+                            {
+                                itemId     = (int)itemId,
+                                durability = durability,
+                                count      = (int)itemCount,
+                                pItemBasic = basicBag,
+                                iconFN     = ResolveItemIcon(itemId, basicBag)
+                            };
+                            // serverData oluştur — tooltip'te item bilgisi gösterilsin
+                            m_pMyInvWnd[index].serverData = new InventoryItemData
+                            {
+                                ItemDefId = (int)itemId,
+                                StackCount = (short)itemCount,
+                                Durability = (short)durability,
+                                SlotType = 0, // INVENTORY
+                                SlotIndex = index,
+                                IconId = m_pMyInvWnd[index].iconFN ?? "",
+                                AttachPoint = (byte)m_pMyInvWnd[index].attachPoint,
+                                Type = (byte)m_pMyInvWnd[index].itemClass,
+                                Delay = basicBag?.siAttackInterval ?? 0,
+                                Range = basicBag?.siAttackRange ?? 0
+                            };
+
+                            if (EntropyOnline.Trade.KOMerchantManager.Instance != null && EntropyOnline.Trade.KOMerchantManager.Instance.IsSelling)
+                            {
+                                EntropyOnline.Trade.KOMerchantManager.Instance.SyncSellingItemCount(index, (int)itemCount);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ================================================================
+            // C++ birebir: UIInventory.cpp ItemCountChange (satır 2427-2676)
+            // C++'ta ItemCountChange kendi içinde icon (CN3UIIcon) oluşturarak
+            // UI'ı anında günceller. Bizde data model ayrı olduğu için
+            // UI refresh'i ayrıca tetiklememiz gerekiyor.
+            // ================================================================
+            var uiMgr = KOUIManager.Instance;
+            if (uiMgr != null)
+                uiMgr.RefreshInventoryUI();
+        }
+
+        /// <summary>KO wrapper — WIZ_ITEM_MOVE result</summary>
+        private void HandleItemMoveResult_KO(byte[] rawData)
+        {
+            // C++ birebir: GameProcMain.cpp:3366-3427 — MsgRecv_ItemMove
+            // Wire: [opcode][result:byte]
+            //   if result != 0:
+            //     [attack:int16][guard:int16][weightMax:int16]
+            //     [maxHp:int16][maxMp:int16]
+            //     [str_delta:uint16][sta_delta:uint16][dex_delta:uint16][int_delta:uint16][magic_delta:uint16]
+            //     [fire:uint16][cold:uint16][light:uint16][magic_reg:uint16][curse:uint16][poison:uint16]
+            var r = new KOPacketReader(rawData);
+            byte result = r.ReadByte();
+
+            if (result != 0)
+            {
+                short attack      = r.ReadInt16();   // iAttack
+                short guard       = r.ReadInt16();   // iGuard
+                short weightMax   = r.ReadInt16();   // iWeightMax
+                short maxHp       = r.ReadInt16();   // iHPMax
+                short maxMp       = r.ReadInt16();   // iMSPMax
+                ushort strDelta   = r.ReadUInt16();  // str delta
+                ushort staDelta   = r.ReadUInt16();  // sta delta
+                ushort dexDelta   = r.ReadUInt16();  // dex delta
+                ushort intDelta   = r.ReadUInt16();  // int delta
+                ushort magicDelta = r.ReadUInt16();  // magic attack delta
+                ushort fireR      = r.ReadUInt16();  // fire resistance
+                ushort coldR      = r.ReadUInt16();  // cold resistance
+                ushort lightR     = r.ReadUInt16();  // lightning resistance
+                ushort magicR     = r.ReadUInt16();  // magic resistance
+                ushort curseR     = r.ReadUInt16();  // curse/disease resistance
+                ushort poisonR    = r.ReadUInt16();  // poison resistance
+
+                HandleItemMoveResult(result, attack, guard, weightMax,
+                    maxHp, maxMp,
+                    (short)strDelta, (short)staDelta, (short)dexDelta, (short)intDelta, (short)magicDelta,
+                    (short)fireR, (short)coldR, (short)lightR, (short)magicR, (short)curseR, (short)poisonR);
+            }
+            else
+            {
+                // Failed — just receive result, do not overwrite stats to zero
+                ReceiveResultFromServer(result);
+            }
+        }
+
+        /// <summary>KO wrapper — WIZ_LEVEL_CHANGE</summary>
+        private void HandleLevelChange_KO(byte[] rawData)
+        {
+            // C++ birebir: GameProcMain.cpp MsgRecv_LevelChange
+            // Wire: [opcode][id:int16][level:byte][bonusPt:byte][skillPt:byte]
+            //        [expNext:int32][exp:int32][maxHp:int16][hp:int16][maxMp:int16][mp:int16]
+            //        [maxWeight:int16][weight:int16]
+            var r = new KOPacketReader(rawData);
+            short id       = r.ReadInt16();
+            byte level     = r.ReadByte();
+            short bonusPt   = r.ReadInt16();
+            byte skillPt   = r.ReadByte();
+            int expNext    = r.ReadInt32();
+            int exp        = r.ReadInt32();
+            short maxHp    = r.ReadInt16();
+            short hp       = r.ReadInt16();
+            short maxMp    = r.ReadInt16();
+            short mp       = r.ReadInt16();
+            // maxWeight, weight — read but not used
+            r.ReadInt16(); // maxWeight
+            r.ReadInt16(); // weight
+
+            HandleLevelUpForStats(id, level, bonusPt, skillPt, expNext, exp, maxHp, hp, maxMp, mp);
+        }
+
+        /// <summary>
+        /// KO wrapper — WIZ_POINT_CHANGE (WIZ_STAT_CHANGE alias)
+        /// C++ birebir: GameProcMain.cpp MsgRecv_MyInfo_PointChange (satır 3829-3882)
+        /// Wire: [type:byte][value:int16][hpMax:int16][mspMax:int16][attack:int16][weightMax:uint16]
+        /// value = ABSOLUTE (SET, not ADD) — C++ satır 3849: "받을때... s(절대수치)"
+        /// </summary>
+        private void HandleStatChange_KO(byte[] rawData)
+        {
+            var r = new KOPacketReader(rawData);
+            byte type       = r.ReadByte();       // cpp:3831
+            short value     = r.ReadInt16();       // cpp:3832 — ABSOLUTE value!
+            short hpMax     = r.ReadInt16();       // cpp:3834 — iHPMax
+            short mspMax    = r.ReadInt16();       // cpp:3835 — iMSPMax
+            short attack    = r.ReadInt16();       // cpp:3836 — iAttack
+            ushort weightMax = r.ReadUInt16();     // cpp:3837 — iWeightMax (uint16_t)
+
+            var gm = Core.GameManager.Instance;
+            if (gm == null) return;
+
+            // C++ birebir satır 3839-3843: hpMax, mspMax, attack, weightMax güncelle
+            gm.MaxHp = hpMax;
+            gm.MaxMp = mspMax;
+            gm.TotalHit = attack;
+
+            // C++ birebir: cpp:3851-3875 — value MUTLAK değer olarak ATAR (SET)
+            switch (type)
+            {
+                case 1: gm.StatStr = value; break; // cpp:3853: iStrength = iVal
+                case 2: gm.StatSta = value; break; // cpp:3858: iStamina = iVal
+                case 3: gm.StatDex = value; break; // cpp:3863: iDexterity = iVal
+                case 4: gm.StatInt = value; break; // cpp:3868: iIntelligence = iVal
+                case 5: gm.StatCha = value; break; // cpp:3873: iMagicAttak = iVal
+            }
+
+            // C++ birebir satır 3878-3879: iBonusPointRemain--
+            if (type >= 1 && type <= 5)
+            {
+                gm.StatPoints--;
+            }
+
+            // C++ birebir satır 3839-3840: HP/MP bar güncelle
+            var uiMgr = KOUIManager.Instance;
+            if (uiMgr != null)
+            {
+                float hpRatio = gm.MaxHp > 0 ? (float)gm.CurrentHp / gm.MaxHp : 0f;
+                uiMgr.UpdateHP(hpRatio);
+                float mpRatio = gm.MaxMp > 0 ? (float)gm.CurrentMp / gm.MaxMp : 0f;
+                uiMgr.UpdateMP(mpRatio);
+            }
+        }
+
+        private void HandleInventoryData(InventoryItemData[] items)
+        {
+            // C++ satır 2013: m_pUIInventory->ReleaseItem()
+            ReleaseItem();
+
+            if (items == null) return;
+
+            for (int i = 0; i < items.Length; i++)
+            {
+                var item = items[i];
+
+                // C++ birebir: pItemBasic referansını bul
+                KOTableReader.TableItemBasic basicLeg = null;
+                if (s_pTbl_Items_Basic != null)
+                    s_pTbl_Items_Basic.TryGetValue((uint)item.ItemDefId / 1000 * 1000, out basicLeg);
+
+                var slot = new ItemSlot
+                {
+                    itemId      = item.ItemDefId,
+                    durability  = item.Durability,
+                    count       = item.StackCount,
+                    pItemBasic  = basicLeg,
+                    attachPoint = item.AttachPoint,
+                    itemClass   = item.Type,
+                    iconFN      = item.IconId,
+                    instanceId  = item.InstanceId,
+                    serverData  = item
+                };
+
+                if (item.IsEquipped)
+                {
+                    // C++ satır 2090-2098: m_pUIInventory->m_pMySlot[i] = spItem
+                    int slotIndex = item.SlotIndex;
+                    if (slotIndex >= 0 && slotIndex < ITEM_SLOT_COUNT)
+                    {
+                        m_pMySlot[slotIndex] = slot;
+                    }
+                    else
+                    {
+                        Debug.LogWarning($"[KOINV] Geçersiz equip slot index: {slotIndex} for item {item.ItemDefId}");
+                    }
+                }
+                else
+                {
+                    // C++ satır 2126-2133: m_pUIInventory->m_pMyInvWnd[i] = spItem
+                    int invIndex = item.SlotIndex;
+                    if (invIndex >= 0 && invIndex < MAX_ITEM_INVENTORY)
+                    {
+                        m_pMyInvWnd[invIndex] = slot;
+                    }
+                    else
+                    {
+                        // Slot index yoksa ilk boş yere koy
+                        int freeIdx = GetInvDestinationIndex();
+                        if (freeIdx >= 0)
+                            m_pMyInvWnd[freeIdx] = slot;
+                        else
+                            Debug.LogWarning($"[KOINV] Bag dolu! Item kaybedildi: {item.ItemDefId}");
+                    }
+                }
+            }
+        }
+
+        // ================================================
+        // Open-KO: SendInvMsg — UIInventory.cpp satır 577-588 birebir
+        // ================================================
+
+        /// <summary>
+        /// WIZ_ITEM_MOVE paketi gönder.
+        ///
+        /// C++ referans: UIInventory.cpp SendInvMsg() satır 577-588
+        /// Paket formatı:
+        ///   [WIZ_ITEM_MOVE: byte] [bDir: byte] [iItemID: dword] [SrcPos: byte] [DestPos: byte]
+        /// </summary>
+        public void SendInvMsg(byte bDir, int iItemID, int srcPos, int destPos)
+        {
+            var netMgr = KONetworkManager.Instance;
+            if (netMgr == null) return;
+
+            // Open-KO birebir: WIZ_ITEM_MOVE
+            using var pkt = new KOPacketWriter(WizOpcode.WIZ_ITEM_MOVE);
+            pkt.WriteByte(bDir);
+            pkt.WriteInt32(iItemID);
+            pkt.WriteByte((byte)srcPos);
+            pkt.WriteByte((byte)destPos);
+            netMgr.SendPacket(pkt);
+
+            // Open-KO: s_sRecoveryJobInfo — pending move bilgisi kaydet
+            _pendingMove = new PendingMoveInfo
+            {
+                IsActive    = true,
+                Direction   = bDir,
+                SrcSlotType = (bDir == ITEM_MOVE_INV_TO_ARM || bDir == ITEM_MOVE_INV_TO_INV) ? 0 : 1,
+                SrcIndex    = srcPos,
+                DstSlotType = (bDir == ITEM_MOVE_ARM_TO_INV || bDir == ITEM_MOVE_INV_TO_INV) ? 0 : 1,
+                DstIndex    = destPos,
+                // C++ birebir: pItemTarget displacement — IsValidPosFromInvToArm'dan gelen bilgi
+                DisplacedSlotIdx = _pendingDisplacedSlot
+            };
+            _pendingDisplacedSlot = -1; // Reset — bir sonraki move için temiz başla
+
+            WaitFromServer = true;
+        }
+
+        // ================================================
+        // Mobil Adaptasyon: Tap → Equip/Unequip
+        // C++ sağ tıklama (InvOpsSomething) karşılığı
+        // UIInventory.cpp satır 1029-1137, 1541-1570
+        // ================================================
+
+        /// <summary>
+        /// Bag'deki bir item'ı equip et (Inv → Arm).
+        ///
+        /// C++ referans: UIInventory.cpp satır 917-982 — Inv → Arm akışı
+        /// 1. GetArmDestinationIndex ile hedef slot'u bul (MakeResrcFileNameForUPC + IsValidRaceAndClass kontrollü)
+        /// 2. SendInvMsg(0x01, itemID, invIndex, slotIndex)
+        /// </summary>
+        public void EquipItem(int invIndex)
+        {
+            if (invIndex < 0 || invIndex >= MAX_ITEM_INVENTORY) return;
+            var item = m_pMyInvWnd[invIndex];
+            if (item == null || item.IsEmpty) return;
+
+            if (OnSlotSelectedForAH != null)
+            {
+                var callback = OnSlotSelectedForAH;
+                OnSlotSelectedForAH = null;
+                callback.Invoke(invIndex, item.itemId, item.count);
+                return;
+            }
+
+            // Consumable item'ları equip etmeye çalışma — çift tıklama ile "kullan" akışına gitmeliler
+            if (IsConsumableItem(invIndex))
+            {
+                Debug.LogWarning($"[KOINV] Consumable item equip edilemez, kullanım akışına yönlendirilmeli: itemId={item.itemId} attachPoint={item.attachPoint}");
+                KOUIManager.Instance?.ShowToast("This item is consumable and cannot be equipped.");
+                return;
+            }
+
+            // C++ birebir: UIInventory.cpp satır 746 (CheckIconDropIfSuccessSendToServer)
+            // iDestiOrder = GetArmDestinationIndex(spItem)
+            int destSlot = GetArmDestinationIndex(item.attachPoint, item.itemId);
+            if (destSlot < 0)
+            {
+                Debug.LogWarning($"[KOINV] Item equip edilemez: attachPoint={item.attachPoint} itemId={item.itemId}");
+                KOUIManager.Instance?.ShowToast("This item cannot be equipped right now.");
+                return;
+            }
+
+            // C++ birebir: UIInventory.cpp satır 924, 949
+            // if (IsValidPosFromInvToArm(iDestiOrder))
+            // 2H weapon çakışma kontrolü dahil — false dönerse equip engellenir
+            if (!IsValidPosFromInvToArm(invIndex, destSlot))
+            {
+                Debug.LogWarning($"[KOINV] IsValidPosFromInvToArm failed: invIndex={invIndex} destSlot={destSlot}");
+                KOUIManager.Instance?.ShowToast("This item cannot be equipped right now.");
+                return;
+            }
+
+            // C++ birebir: UIInventory.cpp satır 932-935
+            // SendInvMsg(0x01, itemID, srcPos, destSlot)
+            SendInvMsg(ITEM_MOVE_INV_TO_ARM, item.itemId, invIndex, destSlot);
+        }
+
+        /// <summary>
+        /// Equipped item'ı çıkar (Arm → Inv).
+        ///
+        /// C++ referans: UIInventory.cpp satır 861-916 — Arm → Inv akışı
+        /// 1. GetInvDestinationIndex ile ilk boş bag slot'unu bul
+        /// 2. SendInvMsg(0x02, itemID, slotIndex, invIndex)
+        /// </summary>
+        public void UnequipItem(int slotIndex)
+        {
+            if (slotIndex < 0 || slotIndex >= ITEM_SLOT_COUNT) return;
+            var item = m_pMySlot[slotIndex];
+            if (item == null || item.IsEmpty) return;
+
+            // C++ satır 769: iDestiOrder = GetInvDestinationIndex(spItem)
+            int destInv = GetInvDestinationIndex();
+            if (destInv < 0)
+            {
+                Debug.LogWarning("[KOINV] Bag dolu! Unequip edilemez.");
+                return;
+            }
+
+            // C++ satır 874-877: SendInvMsg(0x02, itemID, slotIndex, destInv)
+            SendInvMsg(ITEM_MOVE_ARM_TO_INV, item.itemId, slotIndex, destInv);
+        }
+
+        // ================================================
+        // Open-KO: HasAnyItemInSlot() — UIInventory.cpp satır 88-96 birebir
+        // ================================================
+
+        /// <summary>
+        /// Equipment slot'larında herhangi bir item var mı?
+        /// C++ referans: UIInventory.cpp HasAnyItemInSlot() satır 88-96
+        /// </summary>
+        public bool HasAnyItemInSlot()
+        {
+            for (int i = 0; i < ITEM_SLOT_COUNT; i++)
+            {
+                if (m_pMySlot[i] != null)
+                    return true;
+            }
+            return false;
+        }
+
+        // ================================================
+        // Open-KO: GetCountInInvByID — UIInventory.cpp satır 2946-2967
+        // ================================================
+
+        /// <summary>
+        /// Bag'de belirli item ID'den kaç tane var?
+        /// C++ referans: UIInventory.cpp GetCountInInvByID() satır 2946-2967
+        /// </summary>
+                public int GetCountInInvByID(int itemId)
+        {
+            int count = 0;
+            // C++ satır 2955-2966: m_pMyInvWnd + m_pMySlot
+            for (int i = 0; i < MAX_ITEM_INVENTORY; i++)
+            {
+                if (m_pMyInvWnd[i] != null && m_pMyInvWnd[i].itemId == itemId)
+                {
+                    // C++: if (spItem->pItemBasic->byClass == ITEM_CLASS_CONSUMABLE) return spItem->iDurability;
+                    // byAttachPoint == 15 is scrolls/consumables
+                    if (m_pMyInvWnd[i].attachPoint == 15)
+                    {
+                        count += m_pMyInvWnd[i].durability;
+                    }
+                    else
+                    {
+                        count += m_pMyInvWnd[i].count;
+                    }
+                }
+            }
+            return count;
+        }
+
+        /// <summary>
+        /// Envanterdeki eşyaların durumuna göre hızlı bir hash üretir.
+        /// </summary>
+        public int GetInventoryHash()
+        {
+            int hash = 0;
+            if (m_pMyInvWnd != null)
+            {
+                for (int i = 0; i < MAX_ITEM_INVENTORY; i++)
+                {
+                    if (m_pMyInvWnd[i] != null)
+                    {
+                        hash += (int)m_pMyInvWnd[i].itemId + m_pMyInvWnd[i].count + m_pMyInvWnd[i].durability;
+                    }
+                }
+            }
+            return hash;
+        }
+
+        /// <summary>Debug: Bag'de kaç slot dolu?</summary>
+        public int GetOccupiedBagSlotCount()
+        {
+            int n = 0;
+            for (int i = 0; i < MAX_ITEM_INVENTORY; i++)
+                if (m_pMyInvWnd[i] != null) n++;
+            return n;
+        }
+
+        // ================================================
+        // Open-KO: GetIndexItemCount — UIInventory.cpp satır 103 (header)
+        // ================================================
+
+        /// <summary>
+        /// Belirli item index'inin toplam sayısını döndür.
+        /// C++ referans: UIInventory.h GetIndexItemCount() satır 103
+        /// </summary>
+        public int GetIndexItemCount(int itemIndex)
+        {
+            // Slot'larda ara
+            for (int i = 0; i < ITEM_SLOT_COUNT; i++)
+            {
+                if (m_pMySlot[i] != null && m_pMySlot[i].itemId == itemIndex)
+                    return m_pMySlot[i].count;
+            }
+
+            // Bag'de ara
+            for (int i = 0; i < MAX_ITEM_INVENTORY; i++)
+            {
+                if (m_pMyInvWnd[i] != null && m_pMyInvWnd[i].itemId == itemIndex)
+                    return m_pMyInvWnd[i].count;
+            }
+
+            return 0;
+        }
+
+        // ================================================
+        // Open-KO: GoldUpdate — UIInventory.cpp satır 155-166
+        // ================================================
+
+        /// <summary>
+        /// Gold text güncelleme.
+        /// C++ referans: UIInventory.cpp GoldUpdate() satır 155-166
+        /// </summary>
+        public void GoldUpdate()
+        {
+            var gm = Core.GameManager.Instance;
+            if (gm != null && KOUIManager.Instance != null)
+                KOUIManager.Instance.UpdateGold(gm.Gold);
+        }
+
+        // ================================================
+        // Open-KO: ItemCountChange — UIInventory.cpp birebir
+        // GameProcMain.cpp:3600 çağrısı
+        // ================================================
+
+        /// <summary>
+        /// C++ birebir: UIInventory::ItemCountChange(district, index, itemId, count, durability)
+        /// Sunucudan gelen item count değişikliğini modele uygular.
+        /// count=0 → item silinir, count>0 → güncellenir veya yeni eklenir.
+        /// </summary>
+        public void ItemCountChange(byte district, byte index, uint itemId, int count, ushort durability)
+        {
+            if (district == 0) // equip slot
+            {
+                if (index >= ITEM_SLOT_COUNT) return;
+                if (count == 0 || itemId == 0)
+                {
+                    m_pMySlot[index] = null;
+                }
+                else
+                {
+                    if (m_pMySlot[index] != null && m_pMySlot[index].itemId == (int)itemId)
+                    {
+                        // Mevcut item — count ve durability güncelle
+                        m_pMySlot[index].count = count;
+                        m_pMySlot[index].durability = durability;
+                    }
+                    else
+                    {
+                        // Yeni item — C++ birebir: pItemBasic referansını bul
+                        KOTableReader.TableItemBasic basic = null;
+                        if (s_pTbl_Items_Basic != null)
+                            s_pTbl_Items_Basic.TryGetValue(itemId / 1000 * 1000, out basic);
+
+                        var newSlot = new ItemSlot
+                        {
+                            itemId = (int)itemId,
+                            count = count,
+                            durability = durability,
+                            pItemBasic = basic,
+                            iconFN = ResolveItemIcon((uint)itemId, basic)
+                        };
+                        // serverData oluştur — RefreshInventoryUI'da icon doğru yüklensin
+                        newSlot.serverData = new InventoryItemData
+                        {
+                            ItemDefId = (int)itemId,
+                            StackCount = (short)count,
+                            Durability = (short)durability,
+                            SlotType = 1, // EQUIPPED
+                            SlotIndex = index,
+                            IconId = newSlot.iconFN ?? "",
+                            AttachPoint = (byte)newSlot.attachPoint,
+                            Type = (byte)newSlot.itemClass,
+                            Delay = basic?.siAttackInterval ?? 0,
+                            Range = basic?.siAttackRange ?? 0
+                        };
+                        m_pMySlot[index] = newSlot;
+                    }
+                }
+            }
+            else // inventory bag
+            {
+                if (index >= MAX_ITEM_INVENTORY) return;
+                if (count == 0 || itemId == 0)
+                {
+                    m_pMyInvWnd[index] = null;
+                }
+                else
+                {
+                    if (m_pMyInvWnd[index] != null && m_pMyInvWnd[index].itemId == (int)itemId)
+                    {
+                        // Mevcut item — count ve durability güncelle
+                        m_pMyInvWnd[index].count = count;
+                        m_pMyInvWnd[index].durability = durability;
+                    }
+                    else
+                    {
+                        // Yeni item — C++ birebir: pItemBasic referansını bul
+                        KOTableReader.TableItemBasic basic = null;
+                        if (s_pTbl_Items_Basic != null)
+                            s_pTbl_Items_Basic.TryGetValue(itemId / 1000 * 1000, out basic);
+
+                        var newSlot = new ItemSlot
+                        {
+                            itemId = (int)itemId,
+                            count = count,
+                            durability = durability,
+                            pItemBasic = basic,
+                            iconFN = ResolveItemIcon((uint)itemId, basic)
+                        };
+                        // serverData oluştur — RefreshInventoryUI'da icon doğru yüklensin
+                        newSlot.serverData = new InventoryItemData
+                        {
+                            ItemDefId = (int)itemId,
+                            StackCount = (short)count,
+                            Durability = (short)durability,
+                            SlotType = 0, // INVENTORY
+                            SlotIndex = index,
+                            IconId = newSlot.iconFN ?? "",
+                            AttachPoint = (byte)newSlot.attachPoint,
+                            Type = (byte)newSlot.itemClass,
+                            Delay = basic?.siAttackInterval ?? 0,
+                            Range = basic?.siAttackRange ?? 0
+                        };
+                        m_pMyInvWnd[index] = newSlot;
+                    }
+                }
+            }
+        }
+
+        // ================================================
+        // Yardımcılar
+        // ================================================
+
+        // GetAttachPointFromSubType KALDIRILDI — artık sunucu byAttachPoint'i direkt gönderiyor
+        // (InventoryItemData.AttachPoint = ItemDefinition.Slot)
+
+        public static string ResolveItemIcon(uint itemId, KOTableReader.TableItemBasic basic)
+        {
+            if (basic == null) return null;
+            string iconName = basic.dwIDIcon.ToString();
+
+            // Query ItemDataManager which contains the successfully parsed TBL extension records
+            var ext = KOImport.ItemDataManager.GetItemExt((int)itemId);
+            if (ext != null && ext.DwIDIcon != 0)
+            {
+                iconName = ext.DwIDIcon.ToString();
+            }
+            return iconName;
+        }
+
+        /// <summary>
+        /// Belirli bir slot'taki equipped item'ı getir.
+        /// </summary>
+        public ItemSlot GetEquippedItem(int slotIndex)
+        {
+            if (slotIndex < 0 || slotIndex >= ITEM_SLOT_COUNT) return null;
+            return m_pMySlot[slotIndex];
+        }
+
+        /// <summary>
+        /// Sağ eldeki silahı getir.
+        /// C++ referans: PlayerBase.h ItemClass_RightHand() satır 222-228
+        /// </summary>
+        public ItemSlot GetRightHandWeapon()
+        {
+            return m_pMySlot[ITEM_SLOT_HAND_RIGHT];
+        }
+
+        /// <summary>
+        /// Sol eldeki silahı getir.
+        /// C++ referans: PlayerBase.h ItemClass_LeftHand() satır 230-236
+        /// </summary>
+        public ItemSlot GetLeftHandWeapon()
+        {
+            return m_pMySlot[ITEM_SLOT_HAND_LEFT];
+        }
+
+        /// <summary>
+        /// Debug: Mevcut envanter durumunu logla.
+        /// </summary>
+        // ================================================
+        // Open-KO: WIZ_ITEM_REMOVE — Item Destroy
+        // UIInventory.cpp ItemDestroyOK() satır 2678-2709
+        // UIInventory.cpp ReceiveResultItemRemoveFromServer() satır 2747-2830
+        // GameProcMain.cpp MsgRecv_ItemDestroy() satır 3619-3623
+        // ================================================
+
+        /// <summary>
+        /// Item silme paketi gönder.
+        /// C++ birebir: UIInventory.cpp ItemDestroyOK() satır 2678-2709
+        /// Wire: [WIZ_ITEM_REMOVE][district:byte][index:byte][itemId:uint32]
+        ///   district: 0x01=equip slot, 0x02=inventory slot
+        /// </summary>
+        public void SendItemDestroy(bool isEquipSlot, int index)
+        {
+            ItemSlot item;
+            byte district;
+
+            if (isEquipSlot)
+            {
+                // C++ satır 2689-2691: UIWND_DISTRICT_INVENTORY_SLOT → 0x01
+                if (index < 0 || index >= ITEM_SLOT_COUNT) return;
+                item = m_pMySlot[index];
+                district = 0x01;
+            }
+            else
+            {
+                // C++ satır 2692-2694: UIWND_DISTRICT_INVENTORY_INV → 0x02
+                if (index < 0 || index >= MAX_ITEM_INVENTORY) return;
+                item = m_pMyInvWnd[index];
+                district = 0x02;
+            }
+
+            if (item == null || item.IsEmpty)
+            {
+                Debug.LogWarning($"[KOINV] SendItemDestroy: boş slot — isEquip={isEquipSlot} idx={index}");
+                return;
+            }
+
+            var netMgr = KONetworkManager.Instance;
+            if (netMgr == null) return;
+
+            // C++ satır 2685-2706 birebir
+            using var pkt = new KOPacketWriter(WizOpcode.WIZ_ITEM_REMOVE);
+            pkt.WriteByte(district);           // cpp:2690/2693
+            pkt.WriteByte((byte)index);        // cpp:2700
+            pkt.WriteUInt32((uint)item.itemId); // cpp:2703-2704
+            netMgr.SendPacket(pkt);
+
+            // Pending bilgi kaydet — sunucu yanıtında commit/revert
+            _pendingRemove = new PendingRemoveInfo
+            {
+                IsActive = true,
+                District = district,
+                Index    = index,
+                ItemId   = item.itemId
+            };
+
+            WaitFromServer = true;
+        }
+
+        /// <summary>
+        /// WIZ_ITEM_REMOVE sonuç handler.
+        /// C++ birebir: GameProcMain.cpp MsgRecv_ItemDestroy() satır 3619-3623
+        /// → UIInventory.cpp ReceiveResultItemRemoveFromServer() satır 2747-2830
+        /// Wire: [result:byte] — 0x01=başarılı, 0x00=başarısız
+        /// </summary>
+        private void HandleItemRemoveResult_KO(byte[] rawData)
+        {
+            var r = new KOPacketReader(rawData);
+            byte result = r.ReadByte(); // cpp:3621
+
+            WaitFromServer = false;
+
+            if (!_pendingRemove.IsActive)
+            {
+                Debug.LogWarning("[KOINV] HandleItemRemoveResult: pending remove yok!");
+                return;
+            }
+
+            if (result == 0x01) // C++ satır 2755: başarılı
+            {
+                // Item'ı envanter modelinden sil
+                if (_pendingRemove.District == 0x01) // equip slot
+                {
+                    int idx = _pendingRemove.Index;
+                    if (idx >= 0 && idx < ITEM_SLOT_COUNT)
+                    {
+                        m_pMySlot[idx] = null;
+
+                        // C++ birebir: ItemDelete — equipment visual güncelleme
+                        OnEquipmentChanged?.Invoke(0x02, idx, 0); // Arm → Inv direction (silme)
+                    }
+                }
+                else // inventory slot (0x02)
+                {
+                    int idx = _pendingRemove.Index;
+                    if (idx >= 0 && idx < MAX_ITEM_INVENTORY)
+                    {
+                        m_pMyInvWnd[idx] = null;
+                    }
+                }
+
+                // UI güncelle
+                KOUIManager.Instance?.RefreshInventoryUI();
+            }
+            else // C++ satır 2789: başarısız
+            {
+                Debug.LogWarning($"[KOINV] Item destroy FAILED: district=0x{_pendingRemove.District:X2} idx={_pendingRemove.Index}");
+            }
+
+            _pendingRemove = default;
+        }
+
+        public void LogInventoryState()
+        {
+        }
+
+        // ================================================
+        // Open-KO birebir: ReceiveResultFromServer
+        // UIInventory.cpp satır 1222-1429
+        // GameProcMain.cpp MsgRecv_ItemMove satır 3366-3427
+        // ================================================
+
+        /// <summary>
+        /// KOPacketHandler.OnItemMove event handler.
+        /// Open-KO birebir: GameProcMain.cpp MsgRecv_ItemMove satır 3366-3427
+        ///
+        /// C++ satır 3374-3393: stat'ları __InfoPlayerMySelf'e kaydet
+        /// C++ satır 3395-3398: HP/MP clamp
+        /// C++ satır 3400-3421: tüm UI panellerini güncelle
+        /// C++ satır 3424: ReceiveResultFromServer(bResult)
+        /// </summary>
+        private void HandleItemMoveResult(byte result, short totalHit, short totalAc, short maxWeight,
+            short maxHp, short maxMp, short strDelta, short staDelta, short dexDelta, short intDelta, short chaDelta,
+            short fireR, short coldR, short lightningR, short magicR, short diseaseR, short poisonR)
+        {
+            if (result != 0)
+            {
+                var gm = Core.GameManager.Instance;
+                if (gm != null)
+                {
+                    // C++ satır 3374-3376: iAttack, iGuard, iWeightMax
+                    gm.TotalHit = totalHit;
+                    gm.TotalAc = totalAc;
+                    // maxWeight — weight sistemi mobilde devre dışı
+
+                    // C++ satır 3378-3379: iHPMax, iMSPMax
+                    gm.MaxHp = maxHp;
+                    gm.MaxMp = maxMp;
+
+                    // C++ satır 3382-3386: stat delta'lar (eşya+buff bonusu)
+                    gm.StrDelta = strDelta;
+                    gm.StaDelta = staDelta;
+                    gm.DexDelta = dexDelta;
+                    gm.IntDelta = intDelta;
+                    gm.ChaDelta = chaDelta;
+
+                    // C++ satır 3388-3393: elementel dirençler
+                    gm.FireR = fireR;
+                    gm.ColdR = coldR;
+                    gm.LightningR = lightningR;
+                    gm.MagicR = magicR;
+                    gm.DiseaseR = diseaseR;
+                    gm.PoisonR = poisonR;
+
+                    // C++ satır 3395-3396: if (pInfoBase->iHP > pInfoBase->iHPMax) pInfoBase->iHP = pInfoBase->iHPMax
+                    if (gm.CurrentHp > gm.MaxHp)
+                        gm.CurrentHp = gm.MaxHp;
+                    // C++ satır 3397-3398: if (pInfoExt->iMSP > pInfoExt->iMSPMax) pInfoExt->iMSP = pInfoExt->iMSPMax
+                    if (gm.CurrentMp > gm.MaxMp)
+                        gm.CurrentMp = gm.MaxMp;
+
+                    // C++ satır 3400-3404: m_pUIVar->m_pPageState->UpdateHP/MSP + StateBar
+                    var uiMgr = KOUIManager.Instance;
+                    if (uiMgr != null)
+                    {
+                        // C++ satır 3400: m_pUIVar->m_pPageState->UpdateHP(iHP, iHPMax)
+                        uiMgr.UpdateHPText(gm.CurrentHp, gm.MaxHp);
+                        // C++ satır 3401: m_pUIVar->m_pPageState->UpdateMSP(iMSP, iMSPMax)
+                        uiMgr.UpdateMPText(gm.CurrentMp, gm.MaxMp);
+
+                        // C++ satır 3403: m_pUIStateBarAndMiniMap->UpdateHP
+                        float hpRatio = gm.MaxHp > 0 ? (float)gm.CurrentHp / gm.MaxHp : 0f;
+                        uiMgr.UpdateHP(hpRatio);
+                        // C++ satır 3404: m_pUIStateBarAndMiniMap->UpdateMSP
+                        float mpRatio = gm.MaxMp > 0 ? (float)gm.CurrentMp / gm.MaxMp : 0f;
+                        uiMgr.UpdateMP(mpRatio);
+
+                        // C++ satır 3406-3421: UpdateAttackPoint, GuardPoint, Weight, Stats, Resistances
+                        // Bunlar UIVarious.cpp'deki PageState text'lerini günceller
+                        // Şu an UpdateCharacterInfo'yu çağırarak tüm stat panelini yeniliyoruz
+                        uiMgr.UpdateCharacterInfo(
+                            gm.CharacterName, gm.Level,
+                            (short)(gm.StatStr + strDelta), (short)(gm.StatSta + staDelta),
+                            (short)(gm.StatDex + dexDelta), (short)(gm.StatInt + intDelta),
+                            (short)(gm.StatCha + chaDelta), gm.StatPoints,
+                            gm.CurrentHp, gm.MaxHp, gm.CurrentMp, gm.MaxMp,
+                            gm.Experience, 0, gm.SkillPoints,
+                            gm.Loyalty, gm.LoyaltyMonthly
+                        );
+                    }
+                }
+            }
+
+            // C++ satır 3424: m_pUIInventory->ReceiveResultFromServer(bResult)
+            ReceiveResultFromServer(result);
+        }
+
+        /// <summary>
+        /// Open-KO birebir: UIInventory::ReceiveResultFromServer(uint8_t bResult)
+        /// C++ referans: UIInventory.cpp satır 1222-1429
+        ///
+        /// Success (0x01):
+        ///   - Pending move'u commit et — slot'ları swap/taşı
+        ///   - C++ satır 1226-1311: source/target icon'ları yeni pozisyonlara yerleştir
+        ///
+        /// Fail (0x00):
+        ///   - Pending move'u iptal et — slot'lara dokunma
+        ///   - C++ satır 1312-1416: icon'ları eski pozisyonlarına geri koy
+        ///
+        /// Her iki durumda da:
+        ///   - C++ satır 1421: s_bWaitFromServer = false
+        ///   - C++ satır 1422-1423: s_sRecoveryJobInfo temizle
+        /// </summary>
+        /// <summary>
+        /// C++ birebir: UIInventory::ReceiveResultFromServer (satır 1226-1311)
+        /// Success path'te ItemDelete(source) → ItemAdd(dest) çağrılır.
+        /// Event: (direction, srcSlotIndex, dstSlotIndex)
+        /// </summary>
+        public static event System.Action<byte, int, int> OnEquipmentChanged;
+
+        public void ReceiveResultFromServer(byte bResult)
+        {
+            if (!_pendingMove.IsActive)
+            {
+                Debug.LogWarning("[KOINV] ReceiveResultFromServer: no pending move!");
+                WaitFromServer = false;
+                return;
+            }
+
+            byte dir = _pendingMove.Direction;
+            int src = _pendingMove.SrcIndex;
+            int dst = _pendingMove.DstIndex;
+
+            if (bResult == 0x01) // 성공 (C++ satır 1226)
+            {
+                // Commit: slot'ları taşı/swap et
+                CommitPendingMove();
+            }
+            else // 실패 (C++ satır 1312)
+            {
+                Debug.LogWarning($"[KOINV] Item move FAILED — reverting (dir=0x{dir:X2})");
+            }
+
+            // C++ satır 1421-1423
+            WaitFromServer = false;
+            _lastPendingDirection = dir;
+            int displacedSlot = _pendingMove.DisplacedSlotIdx; // Displacement bilgisini sakla (default öncesi)
+            _pendingMove = default;
+
+            // UI'ı güncelle
+            if (KOUIManager.Instance != null)
+                KOUIManager.Instance.RefreshInventoryUI();
+
+            // C++ birebir: equipment slot etkileniyorsa ItemAdd/ItemDelete tetikle
+            // dir=0x01 (Inv→Arm), dir=0x02 (Arm→Inv), dir=0x04 (Arm→Arm)
+            if (bResult == 0x01 && dir != ITEM_MOVE_INV_TO_INV)
+            {
+                OnEquipmentChanged?.Invoke(dir, src, dst);
+
+                // C++ birebir: pItemTarget displacement — ReceiveResultFromServer satır 1257-1267
+                // Displaced slot'taki item kaldırıldı → ARM_TO_INV gibi ItemDelete tetikle
+                // KOEquipmentVisualizer bu event'le silah görselini kaldırır.
+                if (displacedSlot >= 0)
+                {
+                    OnEquipmentChanged?.Invoke(ITEM_MOVE_ARM_TO_INV, displacedSlot, src);
+                }
+            }
+
+        }
+
+        /// <summary>
+        /// Pending move'u commit et — slot'ları gerçekten taşı.
+        /// Open-KO UIInventory.cpp satır 1044-1136 (InvOpsSomething) +
+        /// satır 1226-1311 (ReceiveResultFromServer success path) birebir.
+        ///
+        /// direction'a göre 4 case:
+        ///   0x01 (Inv→Arm): m_pMyInvWnd[src] → m_pMySlot[dst], m_pMySlot[dst] → m_pMyInvWnd[src]
+        ///   0x02 (Arm→Inv): m_pMySlot[src] → m_pMyInvWnd[dst]
+        ///   0x03 (Inv→Inv): m_pMyInvWnd[src] ↔ m_pMyInvWnd[dst]
+        ///   0x04 (Arm→Arm): m_pMySlot[src] ↔ m_pMySlot[dst]
+        /// </summary>
+        private void CommitPendingMove()
+        {
+            int src = _pendingMove.SrcIndex;
+            int dst = _pendingMove.DstIndex;
+
+            switch (_pendingMove.Direction)
+            {
+                case ITEM_MOVE_INV_TO_ARM: // 0x01 — C++ satır 1050-1106
+                {
+                    var srcItem = (src >= 0 && src < MAX_ITEM_INVENTORY) ? m_pMyInvWnd[src] : null;
+                    var dstItem = (dst >= 0 && dst < ITEM_SLOT_COUNT) ? m_pMySlot[dst] : null;
+
+                    // Source → equip slot
+                    if (dst >= 0 && dst < ITEM_SLOT_COUNT)
+                        m_pMySlot[dst] = srcItem;
+                    // Dest (varsa) → inv slot (swap)
+                    if (src >= 0 && src < MAX_ITEM_INVENTORY)
+                        m_pMyInvWnd[src] = dstItem;
+
+                    // C++ birebir: pItemTarget displacement — ReceiveResultFromServer satır 1249-1310
+                    // 2H weapon diğer elden item'ı envantere taşır.
+                    // UIWndTargetStart.iOrder = DisplacedSlotIdx (equip slot)
+                    // UIWndTargetEnd.iOrder   = SrcIndex (kaynak inv slot — swap sonrası boş)
+                    int displaced = _pendingMove.DisplacedSlotIdx;
+                    if (displaced >= 0 && displaced < ITEM_SLOT_COUNT && displaced != dst)
+                    {
+                        var displacedItem = m_pMySlot[displaced];
+                        if (displacedItem != null)
+                        {
+                            // Displaced item → inv[src] (primary swap sonrası burası boş/null)
+                            if (src >= 0 && src < MAX_ITEM_INVENTORY)
+                                m_pMyInvWnd[src] = displacedItem;
+                            m_pMySlot[displaced] = null;
+                        }
+                    }
+                    break;
+                }
+
+                case ITEM_MOVE_ARM_TO_INV: // 0x02 — C++ satır 4589-4618
+                {
+                    // Open-KO'da swap yok — hedef boş olmalı (server zaten fail verirdi)
+                    var srcItem = (src >= 0 && src < ITEM_SLOT_COUNT) ? m_pMySlot[src] : null;
+
+                    if (dst >= 0 && dst < MAX_ITEM_INVENTORY)
+                        m_pMyInvWnd[dst] = srcItem;
+                    if (src >= 0 && src < ITEM_SLOT_COUNT)
+                        m_pMySlot[src] = null;
+                    break;
+                }
+
+                case ITEM_MOVE_INV_TO_INV: // 0x03 — C++ satır 4621-4663
+                {
+                    if (src >= 0 && src < MAX_ITEM_INVENTORY && dst >= 0 && dst < MAX_ITEM_INVENTORY)
+                    {
+                        var temp = m_pMyInvWnd[src];
+                        m_pMyInvWnd[src] = m_pMyInvWnd[dst];
+                        m_pMyInvWnd[dst] = temp;
+                    }
+                    break;
+                }
+
+                case ITEM_MOVE_ARM_TO_ARM: // 0x04 — C++ satır 4666-4734
+                {
+                    if (src >= 0 && src < ITEM_SLOT_COUNT && dst >= 0 && dst < ITEM_SLOT_COUNT)
+                    {
+                        var temp = m_pMySlot[src];
+                        m_pMySlot[src] = m_pMySlot[dst];
+                        m_pMySlot[dst] = temp;
+                    }
+                    break;
+                }
+            }
+        }
+
+        // ================================================
+        // Open-KO birebir: m_pMySlot[i] != nullptr kontrolü
+        // C++'da null pointer = slot boş, bizde null || IsEmpty = slot boş
+        // ================================================
+        private bool SlotOccupied(int slotIdx)
+        {
+            return slotIdx >= 0 && slotIdx < ITEM_SLOT_COUNT
+                && m_pMySlot[slotIdx] != null && !m_pMySlot[slotIdx].IsEmpty;
+        }
+
+        // ================================================
+        // Open-KO birebir: CGameBase::MakeResrcFileNameForUPC
+        // C++ GameBase.cpp satır 513-624
+        // attachPoint → e_ItemType sınıflandırma + PartPos/PlugPos belirleme
+        // Geçersiz attachPoint → ITEM_TYPE_UNKNOWN döner
+        // ================================================
+        public static int MakeResrcFileNameForUPC(
+            KOTableReader.TableItemBasic pItem,
+            KOTableReader.TableItemExt pItemExt,
+            out int ePartPosition,
+            out int ePlugPosition,
+            byte eRace)
+        {
+            ePartPosition = PART_POS_UNKNOWN;
+            ePlugPosition = PLUG_POS_UNKNOWN;
+
+            // C++ satır 523-524
+            if (pItem == null) return ITEM_TYPE_UNKNOWN;
+
+            int ePos = pItem.byAttachPoint;
+
+            // C++ satır 531-540: Silahlar (0-4) → PLUG
+            if (ePos >= ITEM_ATTACH_POS_DUAL && ePos <= ITEM_ATTACH_POS_TWOHAND_LEFT)
+            {
+                if (ePos == ITEM_ATTACH_POS_DUAL || ePos == ITEM_ATTACH_POS_HAND_RIGHT || ePos == ITEM_ATTACH_POS_TWOHAND_RIGHT)
+                    ePlugPosition = PLUG_POS_RIGHTHAND;
+                else if (ePos == ITEM_ATTACH_POS_HAND_LEFT || ePos == ITEM_ATTACH_POS_TWOHAND_LEFT)
+                    ePlugPosition = PLUG_POS_LEFTHAND;
+
+                return ITEM_TYPE_PLUG;
+            }
+            // C++ satır 541-560: Zırhlar (5-9) → PART
+            else if (ePos >= ITEM_ATTACH_POS_UPPER && ePos <= ITEM_ATTACH_POS_FOOT)
+            {
+                if (ePos == ITEM_ATTACH_POS_UPPER)
+                    ePartPosition = PART_POS_UPPER;
+                else if (ePos == ITEM_ATTACH_POS_LOWER)
+                    ePartPosition = PART_POS_LOWER;
+                else if (ePos == ITEM_ATTACH_POS_HEAD)
+                    ePartPosition = PART_POS_HAIR_HELMET;
+                else if (ePos == ITEM_ATTACH_POS_ARM) // gloves
+                    ePartPosition = PART_POS_HANDS;
+                else if (ePos == ITEM_ATTACH_POS_FOOT)
+                    ePartPosition = PART_POS_FEET;
+                else
+                {
+                    Debug.LogError($"[KOInventory] MakeResrcFileNameForUPC: Geçersiz armor pos {ePos}");
+                    return ITEM_TYPE_UNKNOWN;
+                }
+
+                return ITEM_TYPE_PART;
+            }
+            // C++ satır 561-565: Aksesuarlar (10-15) → ICONONLY
+            else if (ePos >= ITEM_ATTACH_POS_EAR && ePos <= ITEM_ATTACH_POS_INVENTORY)
+            {
+                return ITEM_TYPE_ICONONLY;
+            }
+            // C++ satır 566-569: Gold (16)
+            else if (ePos == ITEM_ATTACH_POS_GOLD)
+            {
+                return ITEM_TYPE_GOLD;
+            }
+            // C++ satır 571-575: Songpyun (17)
+            else if (ePos == ITEM_ATTACH_POS_SONGPYUN)
+            {
+                return ITEM_TYPE_SONGPYUN;
+            }
+            else
+            {
+                // C++ satır 576-579: __ASSERT(0, "Invalid Item Position")
+                Debug.LogError($"[KOInventory] MakeResrcFileNameForUPC: Geçersiz attachPoint {ePos}");
+                return ITEM_TYPE_UNKNOWN;
+            }
+        }
+
+        // ================================================
+        // Open-KO birebir: GetInvDestinationIndex
+        // C++ UIInventory.cpp satır 590-602
+        // İlk boş bag slot indeksini döndürür.
+        // ================================================
+        public int GetInvDestinationIndex()
+        {
+            for (int i = 0; i < MAX_ITEM_INVENTORY; i++)
+            {
+                if (m_pMyInvWnd[i] == null || m_pMyInvWnd[i].IsEmpty)
+                    return i;
+            }
+            return -1;
+        }
+
+        // ================================================
+        // Mobil Adaptasyon: Consumable item tespiti
+        // KO protokolünde byAttachPoint >= 15 olan itemler tüketilebilir:
+        //   15 = INVENTORY (quest item, scroll, vb.)
+        //   16 = GOLD
+        //   17 = SONGPYUN/EXHAUST (potion, buff scroll, vb.)
+        // Bu kontrol, eski IsConsumable (Type==4) kontrolünün yerini alır.
+        // ================================================
+
+        /// <summary>
+        /// Bag'deki bir item'ın consumable (tüketilebilir) olup olmadığını kontrol eder.
+        /// KO protokolünde byAttachPoint ile belirlenir:
+        ///   attachPoint >= 15 → consumable (potion, scroll, quest item)
+        ///   attachPoint < 15 → equippable (silah, zırh, aksesuar)
+        /// NOT: Type==4 kontrolü KO itemleri için çalışmaz çünkü
+        /// byClass (95,97,98,255 vb.) hiçbir zaman 4 değildir.
+        /// </summary>
+        public bool IsConsumableItem(int invIndex)
+        {
+            if (invIndex < 0 || invIndex >= MAX_ITEM_INVENTORY) return false;
+            var item = m_pMyInvWnd[invIndex];
+            if (item == null || item.IsEmpty) return false;
+
+            // Önce stored attachPoint'i kontrol et
+            if (item.attachPoint >= ITEM_ATTACH_POS_INVENTORY) // >= 15
+                return true;
+
+            // Stored attachPoint 0 olabilir (tablo yüklenememiş). Tablodan doğrula.
+            if (s_pTbl_Items_Basic != null && item.itemId != 0)
+            {
+                var pItem = KOTableReader.FindItemBasic(s_pTbl_Items_Basic, item.itemId);
+                if (pItem != null && pItem.byAttachPoint >= ITEM_ATTACH_POS_INVENTORY)
+                    return true;
+            }
+
+            return false;
+        }
+
+        // ================================================
+        // Open-KO birebir: GetArmDestinationIndex
+        // C++ UIInventory.cpp satır 604-698
+        // Item'ın attachPoint'ine göre hedef equip slot'u belirler.
+        // C++ satır 614-619: MakeResrcFileNameForUPC + IsValidRaceAndClass kontrolleri birebir
+        // ================================================
+        public int GetArmDestinationIndex(int attachPoint, int itemId = 0)
+        {
+            int resolvedAttachPoint = attachPoint;
+
+            // C++ satır 614-617: MakeResrcFileNameForUPC ile item tipi kontrolü
+            if (s_pTbl_Items_Basic != null && itemId != 0)
+            {
+                var pItem = KOTableReader.FindItemBasic(s_pTbl_Items_Basic, itemId);
+
+                if (pItem != null)
+                {
+                    KOTableReader.TableItemExt pItemExt = null;
+                    if (s_pTbl_Items_Exts != null)
+                        pItemExt = KOTableReader.FindItemExt(s_pTbl_Items_Exts, pItem.byExtIndex, itemId);
+
+                    int eType = MakeResrcFileNameForUPC(pItem, pItemExt, out _, out _, PlayerRace);
+                    if (eType == ITEM_TYPE_UNKNOWN)
+                        return -1;
+
+                    // C++ satır 619: if (IsValidRaceAndClass(pItem, pItemExt))
+                    if (!IsValidRaceAndClass(itemId))
+                        return -1;
+
+                    resolvedAttachPoint = pItem.byAttachPoint;
+                }
+                else
+                {
+                    // Item tabloda bulunamadı — stored attachPoint'i kullan.
+                    // Sunucu yine doğrulayacak, yanlış slot gönderilirse reddedecek.
+                    Debug.LogWarning($"[KOINV] FindItemBasic({itemId}) tabloda bulunamadı, stored attachPoint={attachPoint} kullanılıyor");
+                    // resolvedAttachPoint zaten attachPoint'e eşit, değiştirmiyoruz.
+                    // attachPoint 0 ise (DUAL) silah slotuna gider — sunucu kontrol eder.
+                }
+            }
+
+            // C++ satır 621-694: switch (pItem->byAttachPoint)
+            switch (resolvedAttachPoint)
+            {
+                case ITEM_ATTACH_POS_DUAL: // 0
+                    // C++ satır 624-635: Dual wield — sağ el öncelikli
+                    if (SlotOccupied(ITEM_SLOT_HAND_RIGHT) && SlotOccupied(ITEM_SLOT_HAND_LEFT))
+                        return ITEM_SLOT_HAND_RIGHT; // İkisi de dolu → sağ el
+                    if (!SlotOccupied(ITEM_SLOT_HAND_RIGHT))
+                        return ITEM_SLOT_HAND_RIGHT; // Sağ boş → sağ
+                    // Sağ doluysa: sağ elde 2-handed weapon varsa sağ el, yoksa sol el
+                    if (m_pMySlot[ITEM_SLOT_HAND_RIGHT].attachPoint == ITEM_ATTACH_POS_TWOHAND_RIGHT)
+                        return ITEM_SLOT_HAND_RIGHT;
+                    else
+                        return ITEM_SLOT_HAND_LEFT;
+
+                case ITEM_ATTACH_POS_HAND_RIGHT: // 1
+                    return ITEM_SLOT_HAND_RIGHT;
+
+                case ITEM_ATTACH_POS_HAND_LEFT: // 2
+                    return ITEM_SLOT_HAND_LEFT;
+
+                case ITEM_ATTACH_POS_TWOHAND_RIGHT: // 3
+                    // C++ satır 644-647: İki elde de item varsa → -1
+                    if (SlotOccupied(ITEM_SLOT_HAND_RIGHT) && SlotOccupied(ITEM_SLOT_HAND_LEFT))
+                        return -1;
+                    return ITEM_SLOT_HAND_RIGHT;
+
+                case ITEM_ATTACH_POS_TWOHAND_LEFT: // 4
+                    // C++ satır 650-653
+                    if (SlotOccupied(ITEM_SLOT_HAND_RIGHT) && SlotOccupied(ITEM_SLOT_HAND_LEFT))
+                        return -1;
+                    return ITEM_SLOT_HAND_LEFT;
+
+                case ITEM_ATTACH_POS_EAR: // 10
+                    // C++ satır 656-660: Sağ boşsa sağ, sol boşsa sol, ikisi doluysa sağ
+                    if (!SlotOccupied(ITEM_SLOT_EAR_RIGHT))
+                        return ITEM_SLOT_EAR_RIGHT;
+                    if (!SlotOccupied(ITEM_SLOT_EAR_LEFT))
+                        return ITEM_SLOT_EAR_LEFT;
+                    return ITEM_SLOT_EAR_RIGHT;
+
+                case ITEM_ATTACH_POS_HEAD: // 7
+                    return ITEM_SLOT_HEAD;
+
+                case ITEM_ATTACH_POS_NECK: // 11
+                    return ITEM_SLOT_NECK;
+
+                case ITEM_ATTACH_POS_UPPER: // 5
+                    return ITEM_SLOT_UPPER;
+
+                case ITEM_ATTACH_POS_CLOAK: // 13
+                    return ITEM_SLOT_SHOULDER;
+
+                case ITEM_ATTACH_POS_BELT: // 14
+                    return ITEM_SLOT_BELT;
+
+                case ITEM_ATTACH_POS_FINGER: // 12
+                    // C++ satır 678-682: Sağ boşsa sağ, sol boşsa sol, ikisi doluysa sağ
+                    if (!SlotOccupied(ITEM_SLOT_RING_RIGHT))
+                        return ITEM_SLOT_RING_RIGHT;
+                    if (!SlotOccupied(ITEM_SLOT_RING_LEFT))
+                        return ITEM_SLOT_RING_LEFT;
+                    return ITEM_SLOT_RING_RIGHT;
+
+                case ITEM_ATTACH_POS_LOWER: // 6
+                    return ITEM_SLOT_LOWER;
+
+                case ITEM_ATTACH_POS_ARM: // 8
+                    return ITEM_SLOT_GLOVES;
+
+                case ITEM_ATTACH_POS_FOOT: // 9
+                    return ITEM_SLOT_SHOES;
+
+                default:
+                    return -1;
+            }
+        }
+
+        // ================================================
+        // Open-KO birebir: IsValidPosFromInvToArm
+        // C++ UIInventory.cpp satır 1982-2212
+        // Item'ın attachPoint'inin hedef equip slot'a uygunluğunu kontrol eder.
+        // C++ IsValidRaceAndClass + MakeResrcFileNameForUPC kontrolleri
+        // sunucu tarafında ProcessItemMove ile yapılıyor.
+        // ================================================
+        public bool IsValidPosFromInvToArm(int srcBagIdx, int destSlotIdx)
+        {
+            var item = m_pMyInvWnd[srcBagIdx];
+            if (item == null || item.IsEmpty) return false;
+
+            // C++ birebir: UIInventory.cpp satır 1987-1997
+            // pItem->pItemBasic->byAttachPoint — property getter otomatik çözümler
+            // (ItemSlot.attachPoint → pItemBasic.byAttachPoint)
+
+            // C++ birebir: her çağrıda pItemTarget sıfırla (s_sRecoveryJobInfo.pItemTarget = nullptr)
+            _pendingDisplacedSlot = -1;
+
+            // C++ satır 1999-2209: switch (iOrder) → attachPoint uyum kontrolü
+            switch (destSlotIdx)
+            {
+                case ITEM_SLOT_EAR_RIGHT:
+                case ITEM_SLOT_EAR_LEFT:
+                    return item.attachPoint == ITEM_ATTACH_POS_EAR;
+
+                case ITEM_SLOT_HEAD:
+                    return item.attachPoint == ITEM_ATTACH_POS_HEAD;
+
+                case ITEM_SLOT_NECK:
+                    return item.attachPoint == ITEM_ATTACH_POS_NECK;
+
+                case ITEM_SLOT_UPPER:
+                    return item.attachPoint == ITEM_ATTACH_POS_UPPER;
+
+                case ITEM_SLOT_SHOULDER:
+                    return item.attachPoint == ITEM_ATTACH_POS_CLOAK;
+
+                case ITEM_SLOT_HAND_RIGHT:
+                    // C++ satır 2027-2102: Sağ el — 2H weapon displacement mantığı birebir
+                    switch (item.attachPoint)
+                    {
+                        case ITEM_ATTACH_POS_DUAL:
+                        case ITEM_ATTACH_POS_HAND_RIGHT:
+                            // C++ satır 2033-2034: Sol elde 2H-left silah var mı?
+                            if (SlotOccupied(ITEM_SLOT_HAND_LEFT)
+                                && m_pMySlot[ITEM_SLOT_HAND_LEFT].attachPoint == ITEM_ATTACH_POS_TWOHAND_LEFT)
+                            {
+                                // C++ satır 2037-2038: Sağ el doluysa → false
+                                if (SlotOccupied(ITEM_SLOT_HAND_RIGHT))
+                                    return false;
+                                // C++ satır 2040-2048: Sağ el boş → sol eli envantere taşı
+                                // pItemTarget = m_pMySlot[HAND_LEFT]
+                                // UIWndTargetStart.iOrder = HAND_LEFT
+                                // UIWndTargetEnd.iOrder = srcBagIdx
+                                _pendingDisplacedSlot = ITEM_SLOT_HAND_LEFT;
+                                return true;
+                            }
+                            // C++ satır 2051-2064: Sol elde 2H yok → normal exchange
+                            // Sağ el doluysa pItemTarget = m_pMySlot[HAND_RIGHT] (CommitPendingMove swap ile halleder)
+                            return true;
+
+                        case ITEM_ATTACH_POS_TWOHAND_RIGHT:
+                            // C++ satır 2066-2097: 2H silahı sağ ele takmak
+                            if (SlotOccupied(ITEM_SLOT_HAND_LEFT))
+                            {
+                                // C++ satır 2071-2072: İki el de doluysa → false
+                                if (SlotOccupied(ITEM_SLOT_HAND_RIGHT))
+                                    return false;
+                                // C++ satır 2074-2082: Sağ el boş → sol eli envantere taşı
+                                // pItemTarget = m_pMySlot[HAND_LEFT]
+                                _pendingDisplacedSlot = ITEM_SLOT_HAND_LEFT;
+                                return true;
+                            }
+                            // C++ satır 2085-2097: Sol el boş → normal exchange
+                            // Sağ el doluysa pItemTarget = m_pMySlot[HAND_RIGHT] (CommitPendingMove swap ile halleder)
+                            return true;
+
+                        default:
+                            return false;
+                    }
+
+                case ITEM_SLOT_HAND_LEFT:
+                    // C++ satır 2104-2179: Sol el — 2H weapon displacement mantığı birebir
+                    switch (item.attachPoint)
+                    {
+                        case ITEM_ATTACH_POS_DUAL:
+                        case ITEM_ATTACH_POS_HAND_LEFT:
+                            // C++ satır 2110-2111: Sağ elde 2H-right silah var mı?
+                            if (SlotOccupied(ITEM_SLOT_HAND_RIGHT)
+                                && m_pMySlot[ITEM_SLOT_HAND_RIGHT].attachPoint == ITEM_ATTACH_POS_TWOHAND_RIGHT)
+                            {
+                                // C++ satır 2114-2115: Sol el doluysa → false
+                                if (SlotOccupied(ITEM_SLOT_HAND_LEFT))
+                                    return false;
+                                // C++ satır 2117-2125: Sol el boş → sağ eli envantere taşı
+                                // pItemTarget = m_pMySlot[HAND_RIGHT]
+                                _pendingDisplacedSlot = ITEM_SLOT_HAND_RIGHT;
+                                return true;
+                            }
+                            // C++ satır 2128-2141: Sağ elde 2H yok → normal exchange
+                            return true;
+
+                        case ITEM_ATTACH_POS_TWOHAND_LEFT:
+                            // C++ satır 2143-2174: 2H silahı sol ele takmak
+                            if (SlotOccupied(ITEM_SLOT_HAND_RIGHT))
+                            {
+                                // C++ satır 2148-2149: İki el de doluysa → false
+                                if (SlotOccupied(ITEM_SLOT_HAND_LEFT))
+                                    return false;
+                                // C++ satır 2151-2159: Sol el boş → sağ eli envantere taşı
+                                // pItemTarget = m_pMySlot[HAND_RIGHT]
+                                _pendingDisplacedSlot = ITEM_SLOT_HAND_RIGHT;
+                                return true;
+                            }
+                            // C++ satır 2162-2174: Sağ el boş → normal exchange
+                            return true;
+
+                        default:
+                            return false;
+                    }
+
+                case ITEM_SLOT_BELT:
+                    return item.attachPoint == ITEM_ATTACH_POS_BELT;
+
+                case ITEM_SLOT_RING_RIGHT:
+                case ITEM_SLOT_RING_LEFT:
+                    return item.attachPoint == ITEM_ATTACH_POS_FINGER;
+
+                case ITEM_SLOT_LOWER:
+                    return item.attachPoint == ITEM_ATTACH_POS_LOWER;
+
+                case ITEM_SLOT_GLOVES:
+                    return item.attachPoint == ITEM_ATTACH_POS_ARM;
+
+                case ITEM_SLOT_SHOES:
+                    return item.attachPoint == ITEM_ATTACH_POS_FOOT;
+
+                default:
+                    return false;
+            }
+        }
+
+        // ================================================
+        // Open-KO birebir: IsValidPosFromArmToArm
+        // C++ UIInventory.cpp satır 2214-2256
+        // Equip slot'lar arası taşıma — sadece Dual(ear/hand/ring) slot'lar
+        // ================================================
+        public bool IsValidPosFromArmToArm(int srcSlotIdx, int destSlotIdx)
+        {
+            var item = m_pMySlot[srcSlotIdx];
+            if (item == null || item.IsEmpty) return false;
+
+            // C++ satır 2231-2253: switch (iOrder)
+            switch (destSlotIdx)
+            {
+                case ITEM_SLOT_EAR_RIGHT:
+                case ITEM_SLOT_EAR_LEFT:
+                    return item.attachPoint == ITEM_ATTACH_POS_EAR;
+
+                case ITEM_SLOT_HAND_RIGHT:
+                case ITEM_SLOT_HAND_LEFT:
+                    return item.attachPoint == ITEM_ATTACH_POS_DUAL;
+
+                case ITEM_SLOT_RING_RIGHT:
+                case ITEM_SLOT_RING_LEFT:
+                    return item.attachPoint == ITEM_ATTACH_POS_FINGER;
+
+                default:
+                    return false;
+            }
+        }
+
+        // ================================================
+        // Open-KO birebir: e_Class enum sabitleri (globals.h:69-111)
+        // IsValidRaceAndClass kontrolü için gerekli
+        // ================================================
+        public const byte CLASS_KINDOF_WARRIOR       = 1;
+        public const byte CLASS_KINDOF_ROGUE         = 2;
+        public const byte CLASS_KINDOF_WIZARD        = 3;
+        public const byte CLASS_KINDOF_PRIEST        = 4;
+        public const byte CLASS_KINDOF_ATTACK_WARRIOR = 5;
+        public const byte CLASS_KINDOF_DEFEND_WARRIOR = 6;
+        public const byte CLASS_KINDOF_ARCHER        = 7;
+        public const byte CLASS_KINDOF_ASSASSIN      = 8;
+        public const byte CLASS_KINDOF_ATTACK_WIZARD = 9;
+        public const byte CLASS_KINDOF_PET_WIZARD    = 10;
+        public const byte CLASS_KINDOF_HEAL_PRIEST   = 11;
+        public const byte CLASS_KINDOF_CURSE_PRIEST  = 12;
+
+        public const ushort CLASS_KA_WARRIOR     = 101;
+        public const ushort CLASS_KA_ROGUE       = 102;
+        public const ushort CLASS_KA_WIZARD      = 103;
+        public const ushort CLASS_KA_PRIEST      = 104;
+        public const ushort CLASS_KA_BERSERKER   = 105;
+        public const ushort CLASS_KA_GUARDIAN     = 106;
+        public const ushort CLASS_KA_HUNTER      = 107;
+        public const ushort CLASS_KA_PENETRATOR  = 108;
+        public const ushort CLASS_KA_SORCERER    = 109;
+        public const ushort CLASS_KA_NECROMANCER = 110;
+        public const ushort CLASS_KA_SHAMAN      = 111;
+        public const ushort CLASS_KA_DARKPRIEST  = 112;
+
+        public const ushort CLASS_EL_WARRIOR     = 201;
+        public const ushort CLASS_EL_ROGUE       = 202;
+        public const ushort CLASS_EL_WIZARD      = 203;
+        public const ushort CLASS_EL_PRIEST      = 204;
+        public const ushort CLASS_EL_BLADE       = 205;
+        public const ushort CLASS_EL_PROTECTOR   = 206;
+        public const ushort CLASS_EL_RANGER      = 207;
+        public const ushort CLASS_EL_ASSASSIN    = 208;
+        public const ushort CLASS_EL_MAGE        = 209;
+        public const ushort CLASS_EL_ENCHANTER   = 210;
+        public const ushort CLASS_EL_CLERIC      = 211;
+        public const ushort CLASS_EL_DRUID       = 212;
+
+        // ================================================
+        // Open-KO birebir: IsValidRaceAndClass
+        // C++ UIInventory.cpp satır 1683-1980
+        // Item tablosundan race/class/stat kısıtlamalarını kontrol eder.
+        // ================================================
+        public const int ITEM_LIMITED_EXHAUST = 17; // GameDef.h:878
+
+        public bool IsValidRaceAndClass(int itemId)
+        {
+            if (s_pTbl_Items_Basic == null) return true; // Tablo yüklenmemişse sunucu kontrol etsin
+
+            var pItem = KOTableReader.FindItemBasic(s_pTbl_Items_Basic, itemId);
+            if (pItem == null) return true; // Tabloda yoksa sunucu kontrol etsin
+
+            // C++ satır 1692-1702: Race kontrolü
+            bool bValid = false;
+            if (pItem.byNeedRace == 0)
+                bValid = true;
+            else if (pItem.byNeedRace == PlayerRace)
+                bValid = true;
+
+            if (!bValid)
+            {
+                Debug.LogWarning($"[KOInventory] Race uyumsuz: item={itemId} needRace={pItem.byNeedRace} playerRace={PlayerRace}");
+                return false;
+            }
+
+            // C++ satır 1713-1897: Class kontrolü
+            if (pItem.byNeedClass != 0)
+            {
+                bool classValid = false;
+                switch (pItem.byNeedClass)
+                {
+                    case CLASS_KINDOF_WARRIOR:
+                        classValid = PlayerClass == CLASS_KA_WARRIOR || PlayerClass == CLASS_KA_BERSERKER
+                            || PlayerClass == CLASS_KA_GUARDIAN || PlayerClass == CLASS_EL_WARRIOR
+                            || PlayerClass == CLASS_EL_BLADE || PlayerClass == CLASS_EL_PROTECTOR;
+                        break;
+                    case CLASS_KINDOF_ROGUE:
+                        classValid = PlayerClass == CLASS_KA_ROGUE || PlayerClass == CLASS_KA_HUNTER
+                            || PlayerClass == CLASS_KA_PENETRATOR || PlayerClass == CLASS_EL_ROGUE
+                            || PlayerClass == CLASS_EL_RANGER || PlayerClass == CLASS_EL_ASSASSIN;
+                        break;
+                    case CLASS_KINDOF_WIZARD:
+                        classValid = PlayerClass == CLASS_KA_WIZARD || PlayerClass == CLASS_KA_SORCERER
+                            || PlayerClass == CLASS_KA_NECROMANCER || PlayerClass == CLASS_EL_WIZARD
+                            || PlayerClass == CLASS_EL_MAGE || PlayerClass == CLASS_EL_ENCHANTER;
+                        break;
+                    case CLASS_KINDOF_PRIEST:
+                        classValid = PlayerClass == CLASS_KA_PRIEST || PlayerClass == CLASS_KA_SHAMAN
+                            || PlayerClass == CLASS_KA_DARKPRIEST || PlayerClass == CLASS_EL_PRIEST
+                            || PlayerClass == CLASS_EL_CLERIC || PlayerClass == CLASS_EL_DRUID;
+                        break;
+                    case CLASS_KINDOF_ATTACK_WARRIOR:
+                        classValid = PlayerClass == CLASS_KA_BERSERKER || PlayerClass == CLASS_EL_BLADE;
+                        break;
+                    case CLASS_KINDOF_DEFEND_WARRIOR:
+                        classValid = PlayerClass == CLASS_KA_GUARDIAN || PlayerClass == CLASS_EL_PROTECTOR;
+                        break;
+                    case CLASS_KINDOF_ARCHER:
+                        classValid = PlayerClass == CLASS_KA_HUNTER || PlayerClass == CLASS_EL_RANGER;
+                        break;
+                    case CLASS_KINDOF_ASSASSIN:
+                        classValid = PlayerClass == CLASS_KA_PENETRATOR || PlayerClass == CLASS_EL_ASSASSIN;
+                        break;
+                    case CLASS_KINDOF_ATTACK_WIZARD:
+                        classValid = PlayerClass == CLASS_KA_SORCERER || PlayerClass == CLASS_EL_MAGE;
+                        break;
+                    case CLASS_KINDOF_PET_WIZARD:
+                        classValid = PlayerClass == CLASS_KA_NECROMANCER || PlayerClass == CLASS_EL_ENCHANTER;
+                        break;
+                    case CLASS_KINDOF_HEAL_PRIEST:
+                        classValid = PlayerClass == CLASS_KA_SHAMAN || PlayerClass == CLASS_EL_CLERIC;
+                        break;
+                    case CLASS_KINDOF_CURSE_PRIEST:
+                        classValid = PlayerClass == CLASS_KA_DARKPRIEST || PlayerClass == CLASS_EL_DRUID;
+                        break;
+                    default:
+                        // C++ satır 1889-1896: Direkt class eşleşmesi
+                        classValid = PlayerClass == pItem.byNeedClass;
+                        break;
+                }
+
+                if (!classValid)
+                {
+                    Debug.LogWarning($"[KOInventory] Class uyumsuz: item={itemId} needClass={pItem.byNeedClass} playerClass={PlayerClass}");
+                    return false;
+                }
+            }
+
+            // C++ satır 1900-1970: Stat gereksinim kontrolleri
+            // pItemExt'i bul — extIndex'ten
+            KOTableReader.TableItemExt pItemExt = null;
+            if (s_pTbl_Items_Exts != null)
+                pItemExt = KOTableReader.FindItemExt(s_pTbl_Items_Exts, pItem.byExtIndex, itemId);
+
+            short extNeedLevel    = pItemExt?.siNeedLevel ?? 0;
+            short extNeedRank     = pItemExt?.siNeedRank ?? 0;
+            short extNeedTitle    = pItemExt?.siNeedTitle ?? 0;
+            short extNeedStr      = pItemExt?.siNeedStrength ?? 0;
+            short extNeedSta      = pItemExt?.siNeedStamina ?? 0;
+            short extNeedDex      = pItemExt?.siNeedDexterity ?? 0;
+            short extNeedInt      = pItemExt?.siNeedInteli ?? 0;
+            short extNeedMagAtk   = pItemExt?.siNeedMagicAttack ?? 0;
+
+            // C++ satır 1900-1906: ITEM_LIMITED_EXHAUST level kontrolü
+            if (pItem.byAttachPoint == ITEM_LIMITED_EXHAUST
+                && PlayerLevel < pItem.cNeedLevel + extNeedLevel)
+            {
+                Debug.LogWarning($"[KOInventory] Level yetersiz: item={itemId} need={pItem.cNeedLevel + extNeedLevel} player={PlayerLevel}");
+                return false;
+            }
+
+            // C++ satır 1908-1913: Rank kontrolü
+            if (PlayerRank < pItem.byNeedRank + extNeedRank)
+            {
+                Debug.LogWarning($"[KOInventory] Rank yetersiz: item={itemId} need={pItem.byNeedRank + extNeedRank} player={PlayerRank}");
+                return false;
+            }
+
+            // C++ satır 1915-1920: Title kontrolü
+            if (PlayerTitle < pItem.byNeedTitle + extNeedTitle)
+            {
+                Debug.LogWarning($"[KOInventory] Title yetersiz: item={itemId} need={pItem.byNeedTitle + extNeedTitle} player={PlayerTitle}");
+                return false;
+            }
+
+            // C++ satır 1922-1930: Strength kontrolü
+            int iNeedValue = pItem.byNeedStrength;
+            if (iNeedValue != 0) iNeedValue += extNeedStr;
+            if (PlayerStrength < iNeedValue)
+            {
+                Debug.LogWarning($"[KOInventory] Strength yetersiz: item={itemId} need={iNeedValue} player={PlayerStrength}");
+                return false;
+            }
+
+            // C++ satır 1932-1940: Stamina kontrolü
+            iNeedValue = pItem.byNeedStamina;
+            if (iNeedValue != 0) iNeedValue += extNeedSta;
+            if (PlayerStamina < iNeedValue)
+            {
+                Debug.LogWarning($"[KOInventory] Stamina yetersiz: item={itemId} need={iNeedValue} player={PlayerStamina}");
+                return false;
+            }
+
+            // C++ satır 1942-1950: Dexterity kontrolü
+            iNeedValue = pItem.byNeedDexterity;
+            if (iNeedValue != 0) iNeedValue += extNeedDex;
+            if (PlayerDexterity < iNeedValue)
+            {
+                Debug.LogWarning($"[KOInventory] Dexterity yetersiz: item={itemId} need={iNeedValue} player={PlayerDexterity}");
+                return false;
+            }
+
+            // C++ satır 1952-1960: Intelligence kontrolü
+            iNeedValue = pItem.byNeedInteli;
+            if (iNeedValue != 0) iNeedValue += extNeedInt;
+            if (PlayerIntelligence < iNeedValue)
+            {
+                Debug.LogWarning($"[KOInventory] Intelligence yetersiz: item={itemId} need={iNeedValue} player={PlayerIntelligence}");
+                return false;
+            }
+
+            // C++ satır 1962-1970: MagicAttack (Charisma) kontrolü
+            iNeedValue = pItem.byNeedMagicAttack;
+            if (iNeedValue != 0) iNeedValue += extNeedMagAtk;
+            if (PlayerMagicAttack < iNeedValue)
+            {
+                Debug.LogWarning($"[KOInventory] MagicAttack yetersiz: item={itemId} need={iNeedValue} player={PlayerMagicAttack}");
+                return false;
+            }
+
+            return true;
+        }
+
+        // ============================================================
+        // 3D Character Preview variables & logic
+        // ============================================================
+        private const int PREVIEW_LAYER = 31;
+        private RenderTexture _previewRT;
+        private UnityEngine.UI.RawImage _previewImage;
+        private UnityEngine.Camera _previewCam;
+        private Light _previewLight;
+        private GameObject _previewModel;
+        private KOEquipmentVisualizer _previewVisualizer;
+
+        public void SetupCharacterPreview()
+        {
+        }
+
+        public void CleanupCharacterPreview()
+        {
+        }
+
+        private void CleanupCharacterPreviewInternal()
+        {
+        }
+
+        private static void SetLayerRecursive(GameObject obj, int layer)
+        {
+        }
+
+        // ================================================
+        // Auto-Sort Inventory Feature
+        // ================================================
+        public bool IsSorting { get; private set; }
+
+        public void SortInventory()
+        {
+            if (IsSorting) return;
+            StartCoroutine(SortInventoryCoroutine());
+        }
+
+        private int GetSortScore(ItemSlot slot)
+        {
+            if (slot == null || slot.itemId == 0) return 9999;
+            string idStr = slot.itemId.ToString();
+            if (idStr.StartsWith("389")) return 10; // Potions
+            if (idStr.StartsWith("379")) return 20; // Scrolls
+            if (idStr.StartsWith("370") || idStr.StartsWith("371")) return 30; // Gems & Upgrade scrolls
+            if (slot.pItemBasic != null)
+            {
+                int attach = slot.pItemBasic.byAttachPoint;
+                if (attach == 6 || attach == 8) return 40; // Weapons / Shields
+                if (attach == 1 || attach == 4 || attach == 10 || attach == 12 || attach == 13) return 50; // Armor
+            }
+            return 100; // Misc
+        }
+
+        private List<Tuple<int, int>> CalculateSortMoves()
+        {
+            var moves = new List<Tuple<int, int>>();
+            
+            // 1. Gather all existing items and their slots
+            var items = new List<Tuple<int, ItemSlot>>();
+            for (int i = 0; i < MAX_ITEM_INVENTORY; i++)
+            {
+                var slot = m_pMyInvWnd[i];
+                if (slot != null && slot.itemId != 0)
+                {
+                    items.Add(new Tuple<int, ItemSlot>(i, slot));
+                }
+            }
+
+            // 2. Sort items by category and then by ID
+            items.Sort((a, b) => {
+                int scoreA = GetSortScore(a.Item2);
+                int scoreB = GetSortScore(b.Item2);
+                if (scoreA != scoreB) return scoreA.CompareTo(scoreB);
+                return a.Item2.itemId.CompareTo(b.Item2.itemId);
+            });
+
+            // 3. Create target bag slots mapping
+            var targetBag = new ItemSlot[MAX_ITEM_INVENTORY];
+            for (int i = 0; i < items.Count; i++)
+            {
+                targetBag[i] = items[i].Item2;
+            }
+
+            // 4. Clone current bag slots for simulation
+            var currentBag = new ItemSlot[MAX_ITEM_INVENTORY];
+            Array.Copy(m_pMyInvWnd, currentBag, MAX_ITEM_INVENTORY);
+
+            // 5. Simulate selections/swaps to generate moves list
+            for (int i = 0; i < MAX_ITEM_INVENTORY; i++)
+            {
+                var targetItem = targetBag[i];
+                var currentItem = currentBag[i];
+
+                if (currentItem == targetItem) continue;
+                if (targetItem == null) continue;
+
+                int srcIdx = -1;
+                for (int j = i + 1; j < MAX_ITEM_INVENTORY; j++)
+                {
+                    if (currentBag[j] == targetItem)
+                    {
+                        srcIdx = j;
+                        break;
+                    }
+                }
+
+                if (srcIdx != -1)
+                {
+                    moves.Add(new Tuple<int, int>(srcIdx, i));
+                    var temp = currentBag[i];
+                    currentBag[i] = currentBag[srcIdx];
+                    currentBag[srcIdx] = temp;
+                }
+            }
+
+            return moves;
+        }
+
+        private System.Collections.IEnumerator SortInventoryCoroutine()
+        {
+            var moves = CalculateSortMoves();
+            if (moves.Count == 0) yield break;
+
+            IsSorting = true;
+
+            foreach (var move in moves)
+            {
+                int src = move.Item1;
+                int dst = move.Item2;
+                var item = m_pMyInvWnd[src];
+                if (item == null || item.itemId == 0) continue;
+
+                SendInvMsg(ITEM_MOVE_INV_TO_INV, item.itemId, src, dst);
+
+                float timeout = Time.time + 2.0f;
+                while (WaitFromServer && Time.time < timeout)
+                {
+                    yield return null;
+                }
+
+                yield return new WaitForSeconds(0.04f);
+            }
+
+            IsSorting = false;
+            KOUIManager.Instance?.RefreshInventoryUI();
+        }
+    }
+}

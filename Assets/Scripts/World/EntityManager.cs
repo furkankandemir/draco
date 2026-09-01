@@ -1,0 +1,7942 @@
+using System.Collections;
+
+using System.Collections.Generic;
+
+using System.IO;
+
+using UnityEngine;
+
+using UnityEngine.UI;
+
+using EntropyOnline.Core;
+
+using EntropyOnline.Import;
+
+using EntropyOnline.Network;
+
+using EntropyOnline.Network.KO;
+
+using EntropyOnline.UI;
+
+using KO;
+
+using KOImport;
+
+using EntropyOnline.Combat;
+
+
+
+namespace EntropyOnline.World
+
+{
+
+    /// <summary>
+
+    /// Entropy Online — Entity Yöneticisi
+
+    /// 
+
+    /// Sunucudan gelen spawn/despawn/hareket/hasar paketleri ile
+
+    /// sahnedeki yaratık ve uzak oyuncu objelerini yönetir.
+
+    /// 
+
+    /// Tüm uzak entity'ler (monster + remote player) bu sınıf tarafından
+
+    /// oluşturulur, güncellenir ve yok edilir.
+
+    /// 
+
+    /// GameSceneController tarafından başlatılır.
+
+    /// </summary>
+
+    public class EntityManager : MonoBehaviour
+
+    {
+
+        public static EntityManager Instance { get; private set; }
+
+
+
+        // Aktif yaratıklar (InstanceId → GameObject)
+
+        private readonly Dictionary<long, MonsterVisual> _monsters = new();
+
+        public Dictionary<long, MonsterVisual> Monsters => _monsters;
+
+
+
+        // Aktif uzak oyuncular (CharacterId → GameObject)
+
+        private readonly Dictionary<long, RemotePlayerVisual> _remotePlayers = new();
+
+
+
+        // Materyaller (renk bazlı cache)
+
+        private Material _monsterMaterial;
+
+        private Material _karusMaterial;
+
+        private Material _elmoradMaterial;
+
+        private Material _deadMaterial;
+
+
+
+        // Frame-spread monster model yükleme kuyruğu — donmayı önler
+
+        // C++ birebir: C++'ta model senkron yüklenir (kuyruk yok). Unity'de asenkron.
+
+        // _monsterModelQueuedIds: aynı ID'nin kuyruğa birden fazla eklenmesini engeller
+
+        // C++ NPCAdd (PlayerOtherMgr.h:171-183): duplicate varsa delete+replace
+
+        private readonly Queue<PendingMonsterModel> _monsterModelQueue = new();
+
+        private readonly HashSet<long> _monsterModelQueuedIds = new();
+
+        private bool _monsterModelCoroutineRunning = false;
+
+
+
+        private struct PendingMonsterModel
+
+        {
+
+            public long InstanceId;
+
+            public int DefId;
+
+            public string Name;
+
+            public int Hp;
+
+            public int MaxHp;
+
+            public byte NpcType;  // C++ Npc.h:38 m_tNpcType — 0=Monster, 1=NPC, 2=Gate, 3=Guard
+
+            public byte Nation;   // C++ Npc.h:36 m_byGroup (nation) — 0=none, 1=Karus, 2=ElMorad
+
+            public int Size;
+
+        }
+
+
+
+        // World Canvas (entity HP barları için)
+
+        private Canvas _worldCanvas;
+
+
+
+        private void Awake()
+
+        {
+
+            if (Instance != null && Instance != this)
+
+            {
+
+                Destroy(gameObject);
+
+                return;
+
+            }
+
+            Instance = this;
+
+
+
+            CreateMaterials();
+
+            CreateWorldCanvas();
+
+        }
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: s_pOPMgr->CharacterGetByID(iID, false)
+
+        /// (CPlayerOtherMgr::NPCGetByID — PlayerOtherMgr.cpp)
+
+        ///
+
+        /// Instance ID ile NPC/Monster entity'sini döndürür.
+
+        /// null = entity yok veya root silinmiş.
+
+        /// </summary>
+
+        public KOEntity GetEntityByInstanceId(long instanceId)
+
+        {
+
+            if (_monsters.TryGetValue(instanceId, out var mv) && mv.Root != null)
+
+            {
+
+                return mv.Root.GetComponent<KOEntity>();
+
+            }
+
+            return null;
+
+        }
+
+
+
+        private void Start()
+
+        {
+
+            // Awake'te Destroy edildiyse (duplicate instance), subscribe olma
+
+            if (Instance != this) return;
+
+
+
+            // C++ birebir: CGameProcMain::Init() — event handler'lar kayıt edilir
+
+            SubscribeToEvents();
+
+
+
+            // C++ birebir: Init() tamamlandıktan sonra TickActive() → Tick() çağrılır
+
+            // Tick() içinde m_qRecvPkt drain edilir — ProcessPacket (virtual) ile
+
+            // SetGameReady(true) → KONetworkManager.Update() game paketlerini drain etmeye başlar
+
+            // Sahne geçişinde kuyrukta biriken WIZ_NPC_REGION, WIZ_NPC_INOUT vb. burada işlenir
+
+            if (KONetworkManager.Instance != null)
+
+                KONetworkManager.Instance.SetGameReady(true);
+
+        }
+
+
+
+        private void OnDestroy()
+
+        {
+
+            // C++ birebir: CGameProcMain::Release()
+
+            if (KONetworkManager.Instance != null)
+
+                KONetworkManager.Instance.SetGameReady(false);
+
+            UnsubscribeFromEvents();
+
+            if (Instance == this) Instance = null;
+
+        }
+
+
+
+        private void Update()
+
+        {
+
+            bool hideAllPlayers = UI.GameOptionsManager.Instance != null && UI.GameOptionsManager.Instance.Effect_HideAllPlayers;
+
+
+
+            // Uzak oyuncuların smooth hareket enterpolasyonu
+
+            foreach (var kvp in _remotePlayers)
+
+            {
+
+                var rp = kvp.Value;
+
+                if (rp.Root != null)
+
+                {
+
+                    bool shouldBeActive = !hideAllPlayers;
+
+                    if (rp.Root.activeSelf != shouldBeActive)
+
+                    {
+
+                        rp.Root.SetActive(shouldBeActive);
+
+                    }
+
+
+
+                    if (shouldBeActive)
+
+                    {
+
+                        rp.UpdateInterpolation(Time.deltaTime);
+
+                    }
+
+                    else
+
+                    {
+
+                        // Warp instantly when hidden to keep position correct
+
+                        rp.Root.transform.position = rp.TargetPosition;
+
+                        rp.Root.transform.rotation = Quaternion.Euler(0, rp.TargetRotation, 0);
+
+                    }
+
+                }
+
+            }
+
+        }
+
+
+
+        // ============================
+
+        // MATERYAL OLUŞTURMA
+
+        // ============================
+
+
+
+        private void CreateMaterials()
+
+        {
+
+            _monsterMaterial = CreateMat(new Color(0.7f, 0.15f, 0.1f));  // Kırmızı
+
+            _karusMaterial = CreateMat(new Color(0.6f, 0.2f, 0.6f));     // Mor (Karus)
+
+            _elmoradMaterial = CreateMat(new Color(0.2f, 0.4f, 0.7f));   // Mavi (El Morad)
+
+            _deadMaterial = CreateMat(new Color(0.3f, 0.3f, 0.3f, 0.5f)); // Gri (ölü)
+
+        }
+
+
+
+        private static Material CreateMat(Color color)
+
+        {
+
+            var shader = Shader.Find("Universal Render Pipeline/Lit");
+
+            if (shader == null) shader = Shader.Find("Standard");
+
+            if (shader == null) shader = Shader.Find("Sprites/Default");
+
+            var mat = new Material(shader);
+
+            if (mat.HasProperty("_BaseColor"))
+
+                mat.SetColor("_BaseColor", color);
+
+            else
+
+                mat.color = color;
+
+            return mat;
+
+        }
+
+
+
+        private void CreateWorldCanvas()
+
+        {
+
+            var canvasObj = new GameObject("WorldCanvas");
+
+            canvasObj.transform.SetParent(transform);
+
+            _worldCanvas = canvasObj.AddComponent<Canvas>();
+
+            _worldCanvas.renderMode = RenderMode.WorldSpace;
+
+            _worldCanvas.sortingOrder = 50;
+
+        }
+
+
+
+        // ============================
+
+        // EVENT ABONELİK
+
+        // ============================
+
+
+
+        private void SubscribeToEvents()
+
+        {
+
+            KOPacketHandler.OnUserInOut += HandleUserInOut_KO;
+
+            KOPacketHandler.OnNpcInOut += HandleNpcInOut_KO;
+
+            KOPacketHandler.OnUserMove += HandleUserMove_KO;
+
+            KOPacketHandler.OnRotate += HandleUserRotate_KO;
+
+            KOPacketHandler.OnAttackResult += HandleAttackResult_KO;
+
+            KOPacketHandler.OnMagicProcess += HandleMagicProcess_KO;
+
+            KOPacketHandler.OnDead += HandleDead_KO;
+
+            KOPacketHandler.OnUserLookChange += HandleUserLookChange_KO;
+
+            KOPacketHandler.OnRegionChange += HandleRegionChange_KO;
+
+            KOPacketHandler.OnNpcRegion += HandleNpcRegion_KO;
+
+            KOPacketHandler.OnRequestNpcIn += HandleRequestNpcIn_KO;
+
+            KOPacketHandler.OnNpcMove += HandleNpcMove_KO;
+
+            KOPacketHandler.OnRequestUserIn += HandleRequestUserIn_KO;
+
+        }
+
+
+
+        private void UnsubscribeFromEvents()
+
+        {
+
+            KOPacketHandler.OnUserInOut -= HandleUserInOut_KO;
+
+            KOPacketHandler.OnNpcInOut -= HandleNpcInOut_KO;
+
+            KOPacketHandler.OnUserMove -= HandleUserMove_KO;
+
+            KOPacketHandler.OnRotate -= HandleUserRotate_KO;
+
+            KOPacketHandler.OnAttackResult -= HandleAttackResult_KO;
+
+            KOPacketHandler.OnMagicProcess -= HandleMagicProcess_KO;
+
+            KOPacketHandler.OnDead -= HandleDead_KO;
+
+            KOPacketHandler.OnUserLookChange -= HandleUserLookChange_KO;
+
+            KOPacketHandler.OnRegionChange -= HandleRegionChange_KO;
+
+            KOPacketHandler.OnNpcRegion -= HandleNpcRegion_KO;
+
+            KOPacketHandler.OnRequestNpcIn -= HandleRequestNpcIn_KO;
+
+            KOPacketHandler.OnNpcMove -= HandleNpcMove_KO;
+
+            KOPacketHandler.OnRequestUserIn -= HandleRequestUserIn_KO;
+
+        }
+
+
+
+        // ============================
+
+        // KO RAW DATA WRAPPERS
+
+        // ============================
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: MsgRecv_UserInOut (GameProcMain.cpp:2510)
+
+        /// Wire: [opcode][type:byte] then type-dependent data
+
+        /// type=0x01/0x03/0x04 → UserIn, type=0x02 → UserOut [id:int16]
+
+        /// </summary>
+
+        private void HandleUserInOut_KO(byte[] rawData)
+
+        {
+
+            var r = new KOPacketReader(rawData);
+
+            byte type = r.ReadByte();
+
+
+
+            if (type == 0x02) // User OUT
+
+            {
+
+                short id = r.ReadInt16();
+
+                HandleDespawnPlayer(id);
+
+            }
+
+            else // type 0x01, 0x03, 0x04 → User IN
+
+            {
+
+                ParseAndSpawnUser(r, type == 0x03);
+
+            }
+
+        }
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: MsgRecv_NPCInOut (GameProcMain.cpp:2838)
+
+        /// Wire: [opcode][type:byte] then type-dependent data
+
+        /// type=0x01 → NPCIn, else → NPCOut [id:int16]
+
+        /// </summary>
+
+        private void HandleNpcInOut_KO(byte[] rawData)
+
+        {
+
+            var r = new KOPacketReader(rawData);
+
+            byte type = r.ReadByte();
+
+
+
+            if (type == 0x01) // NPC IN
+
+            {
+
+                ParseAndSpawnNpc(r);
+
+            }
+
+            else // NPC OUT
+
+            {
+
+                short id = r.ReadInt16();
+
+                HandleDespawnMonster(id);
+
+            }
+
+        }
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: MsgRecv_UserMove (GameProcMain.cpp:2327)
+
+        /// Wire: [opcode][id:int16][x:uint16][z:uint16][y:int16][speed:int16][moveFlag:byte]
+
+        /// </summary>
+
+        private void HandleUserMove_KO(byte[] rawData)
+
+        {
+
+            var r = new KOPacketReader(rawData);
+
+            short id = r.ReadInt16();
+
+            float x = r.ReadUInt16() / 10f;
+
+            float z = r.ReadUInt16() / 10f;
+
+            float y = r.ReadInt16() / 10f;
+
+            float speed = r.ReadInt16() / 10f;
+
+            byte moveFlag = r.ReadByte();
+
+            HandleRemotePlayerMove(id, x, y, z, speed, moveFlag);
+
+        }
+
+
+
+        private void HandleUserRotate_KO(byte[] rawData)
+
+        {
+
+            var r = new KOPacketReader(rawData);
+
+            short id = r.ReadInt16();
+
+            short direction = r.ReadInt16();
+
+
+
+            if (GameManager.Instance != null && id == GameManager.Instance.CharacterId)
+
+                return;
+
+
+
+            if (_remotePlayers.TryGetValue(id, out var rp))
+
+            {
+
+                rp.TargetRotation = direction;
+
+            }
+
+        }
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: MsgRecv_Attack (GameProcMain.cpp:3213)
+
+        /// Wire: [opcode][type:byte][result:byte][attackerId:int16][targetId:int16]
+
+        /// </summary>
+
+        private void HandleAttackResult_KO(byte[] rawData)
+
+        {
+
+            var r = new KOPacketReader(rawData);
+
+            byte type = r.ReadByte();
+
+            byte result = r.ReadByte();
+
+            short attackerId = r.ReadInt16();
+
+            short targetId = r.ReadInt16();
+
+            HandleAttackResult(attackerId, targetId, type, result);
+
+        }
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: MagicSkillMng.cpp MagicPacketRecv()
+
+        /// Wire: [opcode][subOp:byte][magicId:uint32][sourceId:int16][targetId:int16][data0-5:int16×6]
+
+        /// </summary>
+
+        private void HandleMagicProcess_KO(byte[] rawData)
+
+        {
+
+            var r = new KOPacketReader(rawData);
+
+            byte subOp = r.ReadByte();
+
+
+
+            // Open-KO birebir: MagicPacketRecv — subOp'a göre farklı wire format
+
+            // 0x05 (TYPE4BUFFTYPE): subOp(1) + buffType(1) — sadece 2 byte
+
+            // 0x06 (CANCEL): subOp(1) — sadece 1 byte (veya magicId ile)
+
+            // 0x01-0x04: subOp(1) + magicId(4) + sourceId(2) + targetId(2) + data(12)
+
+            if (subOp == 0x05) // N3_SP_MAGIC_TYPE4BUFFTYPE
+
+            {
+
+                byte buffType = r.ReadByte();
+
+                var magicMgr = EntropyOnline.Combat.KOMagicSkillManager.Instance;
+
+                if (magicMgr != null)
+
+                {
+
+                    magicMgr.MsgRecv_BuffType(buffType);
+
+                }
+
+                return;
+
+            }
+
+            if (subOp == 0x06) // N3_SP_MAGIC_CANCEL
+
+            {
+
+                var magicMgr = EntropyOnline.Combat.KOMagicSkillManager.Instance;
+
+                if (magicMgr != null)
+
+                {
+
+                    magicMgr.ClearDurationalMagic();
+
+                }
+
+                return;
+
+            }
+
+
+
+            // 0x01-0x04: standart format
+
+            uint magicId = r.ReadUInt32();
+
+            short sourceId = r.ReadInt16();
+
+            short targetId = r.ReadInt16();
+
+            short d0 = r.ReadInt16(), d1 = r.ReadInt16(), d2 = r.ReadInt16();
+
+            short d3 = r.ReadInt16(), d4 = r.ReadInt16(), d5 = r.ReadInt16();
+
+            HandleMagicProcess(subOp, (int)magicId, sourceId, targetId, d0, d1, d2, d3, d4, d5);
+
+        }
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: MsgRecv_Dead (GameProcMain.cpp:3330)
+
+        /// Wire: [opcode][targetId:int16]
+
+        /// </summary>
+
+        private void HandleDead_KO(byte[] rawData)
+
+        {
+
+            var r = new KOPacketReader(rawData);
+
+            short targetId = r.ReadInt16();
+
+            HandleEntityDeath(targetId);
+
+        }
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: MsgRecv_UserLookChange (GameProcMain.cpp:3438)
+
+        /// Wire: [opcode][userId:int16][slot:byte][itemId:uint32][durability:int16]
+
+        /// </summary>
+
+        private void HandleUserLookChange_KO(byte[] rawData)
+
+        {
+
+            var r = new KOPacketReader(rawData);
+
+            short userId = r.ReadInt16();
+
+            byte slot = r.ReadByte();
+
+            uint itemId = r.ReadUInt32();
+
+            short durability = r.ReadInt16();
+
+            HandleUserLookChange(userId, slot, (int)itemId, durability);
+
+        }
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: MsgRecv_UserInAndRequest (GameProcMain.cpp:2720)
+
+        /// Wire: [opcode][count:int16][{userId:int16}*count]
+
+        /// Client compares against existing list, removes stale, requests new via WIZ_REQ_USERIN.
+
+        /// </summary>
+
+        private void HandleRegionChange_KO(byte[] rawData)
+
+        {
+
+            var r = new KOPacketReader(rawData);
+
+            short count = r.ReadInt16();
+
+            if (count <= 0) return;
+
+
+
+            var newIds = new HashSet<short>();
+
+            for (int i = 0; i < count; i++)
+
+                newIds.Add(r.ReadInt16());
+
+
+
+            // Stale player'ları kaldır
+
+            var toRemove = new List<long>();
+
+            foreach (var kvp in _remotePlayers)
+
+            {
+
+                if (!newIds.Contains((short)kvp.Key))
+
+                    toRemove.Add(kvp.Key);
+
+            }
+
+            foreach (var id in toRemove)
+
+                HandleDespawnPlayer(id);
+
+
+
+            // Yeni player'ları iste — C++ birebir: WIZ_REQ_USERIN [count:int16][{id:int16}*]
+
+            var requestIds = new List<short>();
+
+            foreach (var id in newIds)
+
+            {
+
+                if (!_remotePlayers.ContainsKey(id))
+
+                    requestIds.Add(id);
+
+            }
+
+
+
+            if (requestIds.Count > 0 && KONetworkManager.Instance != null)
+
+            {
+
+                using var pkt = new KOPacketWriter(WizOpcode.WIZ_REQ_USERIN);
+
+                pkt.WriteInt16((short)requestIds.Count);
+
+                foreach (var id in requestIds)
+
+                    pkt.WriteInt16(id);
+
+                KONetworkManager.Instance.SendPacket(pkt);
+
+            }
+
+        }
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: MsgRecv_NPCInAndRequest (GameProcMain.cpp:3073)
+
+        /// Wire: [opcode][count:int16][{npcId:int16}*count]
+
+        /// </summary>
+
+        private void HandleNpcRegion_KO(byte[] rawData)
+
+        {
+
+            var r = new KOPacketReader(rawData);
+
+            short count = r.ReadInt16();
+
+            if (count <= 0) { ClearAllMonsters(); return; }
+
+
+
+            var newIds = new HashSet<short>();
+
+            for (int i = 0; i < count; i++)
+
+                newIds.Add(r.ReadInt16());
+
+
+
+            // C++ birebir (GameProcMain.cpp:3119-3135): Stale NPC'leri kaldır
+
+            // ÖNEMLİ: Ölü NPC'lere dokunma — corpse olarak kalır
+
+            // C++: if (pNPC && pNPC->IsDead()) { itNPC++; } else { delete pNPC; }
+
+            var toRemove = new List<long>();
+
+            foreach (var kvp in _monsters)
+
+            {
+
+                if (!newIds.Contains((short)kvp.Key))
+
+                {
+
+                    // Unity null check: destroy edilmiş objelerde ?. operatörü çalışmaz
+
+                    // Unity overloaded == kullanılmalı
+
+                    if (kvp.Value.Root != null)
+
+                    {
+
+                        // C++ birebir: ölü NPC'leri koru (cpp:3128)
+
+                        var koEntity = kvp.Value.Root.GetComponent<KOEntity>();
+
+                        if (koEntity != null && koEntity.IsDead)
+
+                            continue; // corpse kalır — C++ birebir
+
+                    }
+
+                    toRemove.Add(kvp.Key);
+
+                }
+
+            }
+
+            foreach (var id in toRemove)
+
+                HandleDespawnMonster(id);
+
+
+
+            // Yeni NPC'leri iste — C++ birebir: WIZ_REQ_NPCIN [count:int16][{id:int16}*]
+
+            var requestIds = new List<short>();
+
+            foreach (var id in newIds)
+
+            {
+
+                if (!_monsters.ContainsKey(id))
+
+                    requestIds.Add(id);
+
+            }
+
+
+
+            if (requestIds.Count > 0 && KONetworkManager.Instance != null)
+
+            {
+
+                using var pkt = new KOPacketWriter(WizOpcode.WIZ_REQ_NPCIN);
+
+                pkt.WriteInt16((short)requestIds.Count);
+
+                foreach (var id in requestIds)
+
+                    pkt.WriteInt16(id);
+
+                KONetworkManager.Instance.SendPacket(pkt);
+
+            }
+
+        }
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: MsgRecv_NPCInRequested (GameProcMain.cpp:3168)
+
+        /// Wire: [opcode][count:int16][{NPCIn data}*count]
+
+        /// </summary>
+
+        private void HandleRequestNpcIn_KO(byte[] rawData)
+
+        {
+
+            var r = new KOPacketReader(rawData);
+
+            short count = r.ReadInt16();
+
+            for (int i = 0; i < count; i++)
+
+                ParseAndSpawnNpc(r);
+
+        }
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: MsgRecv_NPCMove (GameProcMain.cpp:3188)
+
+        /// Wire: [opcode][id:int16][x:uint16][z:uint16][y:int16][speed:int16]
+
+        /// </summary>
+
+        private void HandleNpcMove_KO(byte[] rawData)
+
+        {
+
+            var r = new KOPacketReader(rawData);
+
+            short id = r.ReadInt16();
+
+            float x = r.ReadUInt16() / 10f;
+
+            float z = r.ReadUInt16() / 10f;
+
+            r.ReadInt16(); // y — C++ birebir: ignored, terrain height kullanılır
+
+            float speed = r.ReadInt16() / 10f;
+
+            HandleMonsterMove(id, x, z, speed);
+
+        }
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: MsgRecv_UserInRequested (GameProcMain.cpp:2818)
+
+        /// Wire: [opcode][count:int16][{UserIn data}*count]
+
+        /// </summary>
+
+        private void HandleRequestUserIn_KO(byte[] rawData)
+
+        {
+
+            var r = new KOPacketReader(rawData);
+
+            short count = r.ReadInt16();
+
+            for (int i = 0; i < count; i++)
+
+                ParseAndSpawnUser(r, false);
+
+        }
+
+
+
+        // ============================
+
+        // PARSE HELPERS
+
+        // ============================
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: MsgRecv_UserIn (GameProcMain.cpp:2529)
+
+        /// Reads full user data from reader and calls HandleSpawnPlayer.
+
+        /// </summary>
+
+        private void ParseAndSpawnUser(KOPacketReader r, bool withFX)
+
+        {
+
+            short id = r.ReadInt16();
+
+            string name = r.ReadKOString1();
+
+            byte nation = r.ReadByte();
+
+            short knightsId = r.ReadInt16();
+
+            byte knightsDuty = r.ReadByte();
+
+            short allianceId = r.ReadInt16();
+
+            string knightsName = r.ReadKOString1();
+
+            byte knightsGrade = r.ReadByte();
+
+            byte knightsRank = r.ReadByte();
+
+            short markVersion = r.ReadInt16();
+
+            short capeId = r.ReadInt16();
+
+            byte level = r.ReadByte();
+
+            byte race = r.ReadByte();
+
+            short charClass = r.ReadInt16();
+
+            float x = r.ReadUInt16() / 10f;
+
+            float z = r.ReadUInt16() / 10f;
+
+            float y = r.ReadInt16() / 10f;
+
+            byte face = r.ReadByte();
+
+            byte hair = r.ReadByte();
+
+            byte status = r.ReadByte();
+
+            uint statusSize = r.ReadUInt32();
+
+            byte recruitParty = r.ReadByte();
+
+            byte authority = r.ReadByte();
+
+            byte partyLeader = r.ReadByte();
+
+            byte invisType = r.ReadByte();
+
+            short direction = r.ReadInt16();
+
+            byte isChicken = r.ReadByte();
+
+            byte bRank = r.ReadByte();
+
+            byte bKnightsRank = r.ReadByte();
+
+            byte bPersonalRank = r.ReadByte();
+
+
+
+            // Equipment — MAX_ITEM_SLOT_OPC = 8
+
+            int[] itemIds = new int[8];
+
+            short[] itemDurabilities = new short[8];
+
+            for (int i = 0; i < 8; i++)
+
+            {
+
+                itemIds[i] = (int)r.ReadUInt32();
+
+                itemDurabilities[i] = r.ReadInt16();
+
+                r.ReadByte(); // bFlag
+
+            }
+
+
+
+            HandleSpawnPlayer(id, name, nation, race, (byte)charClass, level,
+
+                x, y, z, direction, 0, 0, face, hair, itemIds, itemDurabilities, authority, recruitParty,
+
+                knightsId, knightsDuty, knightsName, capeId);
+
+        }
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: MsgRecv_NPCIn (GameProcMain.cpp:2853)
+
+        /// Reads full NPC data from reader and calls HandleSpawnMonster.
+
+        /// </summary>
+
+        private void ParseAndSpawnNpc(KOPacketReader r)
+
+        {
+
+            short id = r.ReadInt16();
+
+            short resourceId = r.ReadInt16();
+
+            byte npcType = r.ReadByte();
+
+            uint itemTradeId = r.ReadUInt32();
+
+            short scale = r.ReadInt16();
+
+            uint itemId0 = r.ReadUInt32();
+
+            uint itemId1 = r.ReadUInt32();
+
+            string name = r.ReadKOString1();
+
+            byte nation = r.ReadByte();
+
+            byte level = r.ReadByte();
+
+            float x = r.ReadUInt16() / 10f;
+
+            float z = r.ReadUInt16() / 10f;
+
+            float y = r.ReadInt16() / 10f;
+
+            uint status = r.ReadUInt32();
+
+            byte objectType = r.ReadByte();
+
+            short sIDK0 = r.ReadInt16();
+
+            short sIDK1 = r.ReadInt16();
+
+            byte direction = r.ReadByte();
+
+            // C++ birebir (GameProcMain.cpp:2894-2902): Duplicate kontrolü HandleSpawnMonster'da
+
+            HandleSpawnMonster(id, resourceId, name, level, x, y, z, 100, 100, npcType, nation, direction, scale);
+
+        }
+
+
+
+        // ============================
+
+        // YARATIK SPAWN / DESPAWN
+
+        // ============================
+
+
+
+        private void HandleSpawnMonster(long instanceId, int defId, string name, short level,
+
+            float x, float y, float z, int hp, int maxHp,
+
+            byte npcType = 0, byte nation = 0, byte direction = 0, int size = 100)
+
+        {
+
+            if (!string.IsNullOrEmpty(name) && BlacklistedNpcNames.Contains(name.Trim()))
+
+            {
+
+                return;
+
+            }
+
+            // Zaten varsa — respawn veya güncelleme
+
+            if (_monsters.TryGetValue(instanceId, out var existing))
+
+            {
+
+                existing.UpdateData(hp, maxHp);
+
+                existing.SetPosition(x, y, z);
+
+                if (existing.Root != null)
+
+                {
+
+                    existing.Root.SetActive(true);
+
+
+
+                    // Open-KO birebir: Respawn geldiğinde ölü entity'yi tamamen sıfırla
+
+                    // Sunucu aynı InstanceId ile S2C_SPAWN_MONSTER gönderir — CNpc::Init gibi
+
+                    var koEntity = existing.Root.GetComponent<KOEntity>();
+
+                    if (koEntity != null && koEntity.IsDead)
+
+                    {
+
+                        koEntity.ResetDeath();
+
+                    }
+
+
+
+                    // Wander yeniden aktif et (ActionDying'de disable edilmişti)
+
+                    var wander = existing.Root.GetComponent<KONpcIdleWander>();
+
+                    if (wander != null) wander.enabled = true;
+
+
+
+                    // Idle animasyona geri dön
+
+                    var anim = existing.Root.GetComponentInChildren<Animation>();
+
+                    if (anim != null && anim.clip != null)
+
+                    {
+
+                        anim.clip.wrapMode = WrapMode.Loop;
+
+                        anim.Play(anim.clip.name);
+
+                    }
+
+                }
+
+                return;
+
+            }
+
+
+
+            // ========================================================================
+
+            // FRAME-SPREAD MODEL YÜKLEME — Open-KO'da donma yok çünkü DirectX lazy load yapar.
+
+            // Unity'de Resources.Load senkron → main thread bloke olur.
+
+            // Çözüm: Hemen boş placeholder oluştur, modeli coroutine ile sonraki frame'lerde yükle.
+
+            // ========================================================================
+
+
+
+            // Hemen boş placeholder oluştur — pozisyon + tracking
+
+            var root = new GameObject($"MON_{name}_{instanceId}");
+
+            float terrainY = (WorldBuilder.Instance != null) 
+
+                ? WorldBuilder.Instance.GetTerrainHeight(x, z) : y;
+
+            root.transform.position = new Vector3(x, terrainY, z);
+
+
+
+            // Canavarlar için rastgele rotasyon korunsun, NPC'ler için veritabanındaki yön uygulansın
+
+            if (npcType >= 1)
+
+            {
+
+                float rotAngle = (float)direction * 360f / 255f;
+
+                root.transform.rotation = Quaternion.Euler(0f, rotAngle, 0f);
+
+            }
+
+            else
+
+            {
+
+                root.transform.rotation = Quaternion.Euler(0f, Random.Range(0f, 360f), 0f);
+
+            }
+
+
+
+            var entity = root.AddComponent<Combat.MonsterEntity>();
+
+            entity.Initialize(instanceId, defId, name, level, hp, maxHp);
+
+
+
+            // C++ birebir: Entity oluşturulduğu anda m_tNpcType ve m_byGroup set edilir
+
+            // Model yüklenmesini BEKLEMEDEN hemen KOEntity ekle — IsNpc kontrolü doğru çalışsın
+
+            var koEntityImmediate = root.GetComponent<KOEntity>();
+
+            if (koEntityImmediate == null)
+
+                koEntityImmediate = root.AddComponent<KOEntity>();
+
+            koEntityImmediate.IsNpc = (npcType >= 1);  // C++ Npc.h:38 — 0=Monster, 1+=NPC
+
+            koEntityImmediate.ActType = npcType;
+
+            koEntityImmediate.Nation = nation;
+
+            koEntityImmediate.ServerInstanceId = instanceId;
+
+            koEntityImmediate.NpcId = defId;
+
+            koEntityImmediate.EntityName = name;
+
+            koEntityImmediate.MaxHP = maxHp;
+
+            koEntityImmediate.CurrentHP = hp;
+
+
+
+            // Eğer bir NPC ise etkileşim butonu ekle (Kuleler, kapılar, anıtlar hariç)
+
+            bool isInteractiveNpc = npcType >= 1 && 
+
+                                   npcType != 3 && // m_tNpcType Guard
+
+                                   npcType != 11 && npcType != 12 && npcType != 13 && npcType != 14 && npcType != 16 && // Database e_NpcType Guard types
+
+                                   npcType != 50 && npcType != 51 && npcType != 52 && npcType != 53 && 
+
+                                   npcType != 55 && npcType != 60 && npcType != 61 && 
+
+                                   npcType != 62 && npcType != 63 && npcType != 64 && 
+
+                                   npcType != 65 && npcType != 66 && npcType != 67 && npcType != 68;
+
+            if (isInteractiveNpc)
+
+            {
+
+                var interactBtn = root.AddComponent<KONpcInteractButton>();
+
+                interactBtn.Initialize(koEntityImmediate);
+
+            }
+
+
+
+            // Default CapsuleCollider — model yüklenmese bile (gate NPC gibi) tıklanabilir olsun
+
+            // AttachMonsterModel'da renderer varsa bu collider güncellenir
+
+            var defaultCol = root.AddComponent<CapsuleCollider>();
+
+            defaultCol.isTrigger = true;
+
+
+
+            // C++ birebir: Gate NPC (npcType==2) çok daha büyük bir yapıdır
+
+            if (npcType == 2)
+
+            {
+
+                // Gate portal yapısı — yüksek ve geniş collider
+
+                defaultCol.height = 6f;
+
+                defaultCol.radius = 2.5f;
+
+                defaultCol.center = new Vector3(0, 3f, 0);
+
+            }
+
+            else
+
+            {
+
+                defaultCol.height = 2f;
+
+                defaultCol.radius = 0.5f;
+
+                defaultCol.center = new Vector3(0, 1f, 0);
+
+            }
+
+
+
+            var monsterVisual = new MonsterVisual
+
+            {
+
+                Root = root,
+
+                Entity = entity,
+
+                Renderer = null,
+
+                OverheadUI = new OverheadDisplay()
+
+            };
+
+            _monsters[instanceId] = monsterVisual;
+
+
+
+            // Model yüklemeyi kuyruğa ekle — her frame sadece 1 model yüklenir
+
+            // C++ birebir: NPCAdd duplicate varsa delete+replace (PlayerOtherMgr.h:178-182)
+
+            // Unity karşılığı: aynı ID zaten kuyrukta ise tekrar ekleme
+
+            if (_monsterModelQueuedIds.Add(instanceId))
+
+            {
+
+                _monsterModelQueue.Enqueue(new PendingMonsterModel
+
+                {
+
+                    InstanceId = instanceId,
+
+                    DefId = defId,
+
+                    Name = name,
+
+                    Hp = hp,
+
+                    MaxHp = maxHp,
+
+                    NpcType = npcType,
+
+                    Nation = nation,
+
+                    Size = size
+
+                });
+
+            }
+
+
+
+            // Coroutine zaten çalışmıyorsa başlat
+
+            if (!_monsterModelCoroutineRunning)
+
+            {
+
+                _monsterModelCoroutineRunning = true;
+
+                StartCoroutine(ProcessMonsterModelQueue());
+
+            }
+
+
+
+        }
+
+
+
+        /// <summary>
+
+        /// Frame-spread coroutine: Her frame'de en fazla 1 monster modeli yüklenir.
+
+        /// Open-KO DirectX'te lazy load native olarak yapılır, Unity'de biz elle yönetiyoruz.
+
+        /// </summary>
+
+        private IEnumerator ProcessMonsterModelQueue()
+
+        {
+
+            while (_monsterModelQueue.Count > 0)
+
+            {
+
+                var pending = _monsterModelQueue.Dequeue();
+
+                _monsterModelQueuedIds.Remove(pending.InstanceId);
+
+
+
+                // Monster hala sahada mı kontrol et
+
+                if (!_monsters.TryGetValue(pending.InstanceId, out var visual) || visual.Root == null)
+
+                {
+
+                    yield return null;
+
+                    continue;
+
+                }
+
+
+
+                // C++ birebir (cpp:2894-2902): model zaten yüklenmişse tekrar yükleme
+
+                // Root'un child'ı varsa model zaten attach edilmiş demektir (NpcInteractCanvas ve NameCanvas hariç)
+
+                bool hasModel = false;
+
+                for (int ci = 0; ci < visual.Root.transform.childCount; ci++)
+
+                {
+
+                    var child = visual.Root.transform.GetChild(ci);
+
+                    if (child.name != "NpcInteractCanvas" && child.name != "NameCanvas")
+
+                    {
+
+                        hasModel = true;
+
+                        break;
+
+                    }
+
+                }
+
+                if (hasModel)
+
+                {
+
+                    yield return null;
+
+                    continue;
+
+                }
+
+
+
+                // Model yükle (bu frame'in tek ağır işlemi)
+
+                AttachMonsterModel(visual, pending);
+
+
+
+                // Sonraki frame'e bırak
+
+                yield return null;
+
+            }
+
+
+
+            _monsterModelCoroutineRunning = false;
+
+        }
+
+
+
+        /// <summary>
+
+        /// Placeholder GameObject'e gerçek monster modelini attach eder.
+
+        /// BuildMonsterModel çağrısı senkron ama tek tek frame'lere dağıtıldığı için donma olmaz.
+
+        /// </summary>
+
+        private void AttachMonsterModel(MonsterVisual visual, PendingMonsterModel pending)
+
+        {
+
+            if (WorldBuilder.Instance == null) { Debug.LogWarning($"[ENTITY] AttachMonster: WorldBuilder null for {pending.Name}"); return; }
+
+
+
+
+
+
+
+            // C++ birebir: NPCAdd (PlayerOtherMgr.h:171-183) — duplicate model güvenlik katmanı
+
+            // Eğer root'ta zaten model child varsa, eski modeli temizle.
+
+            // C++'ta NPCAdd duplicate varsa: delete it->second → it->second = pNPC
+
+            // Unity'de Destroy sonraki frame'de çalışır → DestroyImmediate kullan
+
+            int existingChildren = visual.Root.transform.childCount;
+
+            if (existingChildren > 0)
+
+            {
+
+                for (int ci = existingChildren - 1; ci >= 0; ci--)
+
+                {
+
+                    var child = visual.Root.transform.GetChild(ci);
+
+                    if (child.name != "NpcInteractCanvas" && child.name != "NameCanvas" &&
+
+                        child.GetComponent<KOWorldEvent>() == null &&
+
+                        child.GetComponentInChildren<KOWorldEvent>() == null)
+
+                    {
+
+                        DestroyImmediate(child.gameObject);
+
+                    }
+
+                }
+
+            }
+
+
+
+            // C++ birebir: GameProcMain.cpp:2921 — s_pTbl_NPC_Looks.Find(iIDResrc)
+
+            // Sunucu paketindeki resourceId (DefId) doğrudan NPC_Looks.tbl ID'sidir
+
+            var monsterModel = WorldBuilder.Instance.BuildMonsterModelByResourceId(pending.DefId, out int monsterSize, pending.NpcType >= 1);
+
+            if (pending.Size > 0)
+
+            {
+
+                monsterSize = pending.Size;
+
+            }
+
+            bool isLinkedToShape = false;
+
+
+
+            if (monsterModel == null)
+
+            {
+
+                // C++: Object NPC - haritadaki static mesh (KOWorldEvent) ile eşleştir.
+
+                // Eğer zaten KOWorldEvent child olarak eklenmişse tekrar aramaya ve taşımaya gerek yok
+
+                KOWorldEvent linkedEvent = visual.Root.GetComponentInChildren<KOWorldEvent>();
+
+                if (linkedEvent != null)
+
+                {
+
+                    isLinkedToShape = true;
+
+                }
+
+                else
+
+                {
+
+                    var worldEvents = Object.FindObjectsByType<KOWorldEvent>();
+
+                    foreach (var we in worldEvents)
+
+                    {
+
+                        if (we.EventID == pending.DefId || we.NPC_ID == pending.DefId)
+
+                        {
+
+                            linkedEvent = we;
+
+                            break;
+
+                        }
+
+                    }
+
+
+
+                    if (linkedEvent != null)
+
+                    {
+
+                        isLinkedToShape = true;
+
+                        // NPC root objesini, haritadaki static shape pozisyon ve rotasyonuna taşıyoruz.
+
+                        visual.Root.transform.position = linkedEvent.transform.position;
+
+                        visual.Root.transform.rotation = linkedEvent.transform.rotation;
+
+                        
+
+                        var objEntity = visual.Root.GetComponent<KOEntity>();
+
+                        if (objEntity != null)
+
+                            objEntity.IsObjectNpc = true;
+
+
+
+                        // Harita nesnesini, NPC'nin altına taşıyarak hiyerarşik yapı kuruyoruz (seçim halkası vb. için renderer bounds gerekeceğinden).
+
+                        linkedEvent.transform.SetParent(visual.Root.transform, true);
+
+                    }
+
+                    else
+
+                    {
+
+                        Debug.LogWarning($"[ENTITY] AttachMonster: model NULL for resourceId={pending.DefId} ({pending.Name})");
+
+                        return;
+
+                    }
+
+                }
+
+            }
+
+            else
+
+            {
+
+                // Modeli placeholder'ın altına child olarak ekle
+
+                monsterModel.transform.SetParent(visual.Root.transform, false);
+
+                monsterModel.transform.localPosition = Vector3.zero;
+
+                monsterModel.transform.localRotation = Quaternion.identity;
+
+
+
+                // Check if this model is an override prefab (they are already aligned to Y=0 at edit-time)
+
+                bool isOverride = monsterModel != null && monsterModel.name.Contains("_override");
+
+                if (!isOverride)
+
+                {
+
+                    // C++ birebir: CPlayerNPC::Tick() — model doğrudan entity pozisyonuna yerleşir.
+
+                    // C++'ta XZ offset düzeltmesi YAPILMAZ — model kendi pivot noktasını kullanır.
+
+                    // Sadece Y offset: modelin tabanı terrain ile aynı hizada olmalı.
+
+                    var rawRenderers = monsterModel.GetComponentsInChildren<Renderer>();
+
+                    var filtered = new System.Collections.Generic.List<Renderer>();
+
+                    foreach (var r in rawRenderers)
+
+                    {
+
+                        if (r is ParticleSystemRenderer || r is TrailRenderer || r is LineRenderer) continue;
+
+                        filtered.Add(r);
+
+                    }
+
+                    var renderers = filtered.ToArray();
+
+                    if (renderers.Length > 0)
+
+                    {
+
+                        Bounds worldBounds = renderers[0].bounds;
+
+                        for (int ri = 1; ri < renderers.Length; ri++)
+
+                            worldBounds.Encapsulate(renderers[ri].bounds);
+
+
+
+                        // Y offset: modelin tabanı root Y ile aynı olmalı
+
+                        Vector3 rootWorldPos = visual.Root.transform.position;
+
+                        float offsetY = worldBounds.min.y - rootWorldPos.y;
+
+
+
+                        // Sadece Y düzelt — XZ offset yok (C++ birebir)
+
+                        if (Mathf.Abs(offsetY) > 0.01f)
+
+                            monsterModel.transform.localPosition = new Vector3(0f, -offsetY, 0f);
+
+                    }
+
+                }
+
+            }
+
+
+
+            // Gather valid model renderers to compute true animated local bounds at scale = 1.0 (before localScale changes)
+
+            var rawAllRenderers = visual.Root.GetComponentsInChildren<Renderer>();
+
+            var filteredAll = new System.Collections.Generic.List<Renderer>();
+
+            foreach (var r in rawAllRenderers)
+
+            {
+
+                if (r is ParticleSystemRenderer || r is TrailRenderer || r is LineRenderer) continue;
+
+                filteredAll.Add(r);
+
+            }
+
+            var allRenderers = filteredAll.ToArray();
+
+
+
+            float localMaxY = 2.0f;
+
+            float localMinY = 0f;
+
+            float maxRadius = 0.5f;
+
+            Vector3 localBonePos = Vector3.zero;
+
+            bool foundBone = false;
+
+
+
+            if (pending.NpcType != 2 && allRenderers.Length > 0)
+
+            {
+
+                bool first = true;
+
+                Vector3 rootPos = visual.Root.transform.position;
+
+                foreach (var r in allRenderers)
+
+                {
+
+                    Bounds b = r.bounds;
+
+                    float top = b.max.y - rootPos.y;
+
+                    float bot = b.min.y - rootPos.y;
+
+                    if (first)
+
+                    {
+
+                        localMaxY = top;
+
+                        localMinY = bot;
+
+                        first = false;
+
+                    }
+
+                    else
+
+                    {
+
+                        if (top > localMaxY) localMaxY = top;
+
+                        if (bot < localMinY) localMinY = bot;
+
+                    }
+
+                    float rad = Mathf.Max(b.extents.x, b.extents.z);
+
+                    if (rad > maxRadius) maxRadius = rad;
+
+                }
+
+
+
+                // Self-healing / validation using actual vertex-deforming bones
+                float maxBoneY = 0f;
+                Transform explicitHeadBone = null;
+                foreach (var r in allRenderers)
+                {
+                    if (r is SkinnedMeshRenderer smr && smr.bones != null)
+                    {
+                        foreach (var bone in smr.bones)
+                        {
+                            if (bone == null) continue;
+                            string bName = bone.name.ToLowerInvariant();
+                            if (bName.Contains("head") || bName.Contains("kelle"))
+                            {
+                                explicitHeadBone = bone;
+                                break;
+                            }
+
+                            // Silah / asa / el kemiklerini isim tepesi hesaplamasından hariç tut
+                            if (bName.Contains("weapon") || bName.Contains("item") || bName.Contains("staff") || bName.Contains("sword") || bName.Contains("hand"))
+                                continue;
+
+                            float boneY = bone.position.y - rootPos.y;
+                            if (boneY > maxBoneY)
+                            {
+                                maxBoneY = boneY;
+                                localBonePos = monsterModel != null 
+                                    ? monsterModel.transform.InverseTransformPoint(bone.position)
+                                    : Vector3.zero;
+                                foundBone = true;
+
+                            }
+
+                        }
+
+                    }
+
+                }
+
+                if (explicitHeadBone != null)
+                {
+                    maxBoneY = explicitHeadBone.position.y - rootPos.y;
+                    localBonePos = monsterModel != null
+                        ? monsterModel.transform.InverseTransformPoint(explicitHeadBone.position)
+                        : Vector3.zero;
+                    foundBone = true;
+                }
+
+                // If the bounds are stretched by helper/dummy nodes or uninitialized (too small),
+                // fall back to the highest vertex-deforming skeleton bone as the true physical height.
+                if (maxBoneY > 0.1f)
+                {
+                    if (localMaxY > maxBoneY + 0.3f || localMaxY < maxBoneY - 0.1f)
+                    {
+                        localMaxY = maxBoneY;
+                    }
+                }
+
+            }
+
+            if (localMaxY < 0.1f) localMaxY = 2.0f;
+
+
+
+            float scale = monsterSize / 100f;
+
+            if (scale < 0.1f) scale = 1f;
+
+
+
+            // Treant ve Ancient boylarını 2 katına çıkar (Looks ID 5100 ve 5200)
+
+            // Werewolf ailesi ve bosslarını 1.5 katına çıkar (Looks ID 500 ve 506)
+
+            int looksId = WorldBuilder.Instance.GetMonsterLooksId(pending.DefId);
+
+
+
+            if (looksId == 5100 || looksId == 5200)
+
+            {
+
+                scale *= 2f;
+
+            }
+
+            else if (looksId == 500 || looksId == 506)
+
+            {
+
+                scale *= 1.5f;
+
+            }
+
+            else if (looksId == 1300)
+
+            {
+
+                scale *= 1.5f; // Haunga ailesini 1.5 katına çıkar
+
+            }
+
+visual.Root.transform.localScale = Vector3.one * scale;
+
+
+
+            var pos = visual.Root.transform.position;
+
+            int renderersCount = allRenderers.Length;
+
+
+
+            // KOEntity component — hedef seçimi için
+
+            var koEntity = visual.Root.GetComponent<KOEntity>();
+
+            if (koEntity == null) koEntity = visual.Root.AddComponent<KOEntity>();
+
+            koEntity.NpcId = pending.DefId;
+
+            koEntity.EntityName = pending.Name;
+
+            // C++ birebir Npc.h:38-42: m_tNpcType 0=Monster, 1=NPC, 2=Gate NPC, 3=Guard
+
+            koEntity.IsNpc = (pending.NpcType >= 1);
+
+            koEntity.ActType = pending.NpcType;
+
+            koEntity.Nation = pending.Nation;
+
+            koEntity.ServerInstanceId = pending.InstanceId;
+
+            koEntity.MaxHP = pending.MaxHp;
+
+            koEntity.CurrentHP = pending.Hp;
+
+
+
+            // CapsuleCollider — raycast ile hedef seçimi
+
+            var col = visual.Root.GetComponent<CapsuleCollider>();
+
+            if (col == null) col = visual.Root.AddComponent<CapsuleCollider>();
+
+            col.isTrigger = true;
+
+            
+
+            if (pending.NpcType != 2)
+
+            {
+
+                float localHeight = localMaxY - localMinY;
+
+                if (localHeight < 0.5f) localHeight = 2f;
+
+                
+
+                col.height = localHeight;
+
+                col.radius = Mathf.Max(0.5f, Mathf.Min(maxRadius, localHeight * 0.5f));
+
+                col.center = new Vector3(0f, localMinY + localHeight * 0.5f, 0f);
+
+            }
+
+
+
+            // Floating name
+
+            if (!string.IsNullOrEmpty(pending.Name))
+
+            {
+
+                float nameHeight = 0.3f;
+
+                if (allRenderers.Length > 0)
+
+                {
+
+                    // Using 0.4m above the exact head bone / highest mesh point
+
+                    nameHeight = (localMaxY * scale) + 0.4f;
+
+                }
+
+                var existingName = visual.Root.GetComponent<FloatingName>();
+
+                if (existingName == null)
+
+                {
+
+                    var floatingName = visual.Root.AddComponent<FloatingName>();
+
+                    float localOffsetX = foundBone ? localBonePos.x : 0f;
+
+                    float localOffsetZ = foundBone ? localBonePos.z : 0f;
+
+                    floatingName.Initialize(pending.Name, koEntity.IsNpc, nameHeight, localOffsetX, localOffsetZ);
+
+                }
+
+
+
+                // Update world space Overhead UI (name + HP bar) position as well
+
+                if (visual.OverheadUI != null && visual.OverheadUI.Container != null)
+
+                {
+
+                    visual.OverheadUI.Container.transform.localPosition = Vector3.up * (nameHeight / (scale > 0.01f ? scale : 1f));
+
+                }
+
+
+
+                // NPC etkileşim butonunun yüksekliğini model boyutuna göre güncelle
+
+                var interactBtn = visual.Root.GetComponent<KONpcInteractButton>();
+
+                if (interactBtn != null)
+
+                {
+
+                    interactBtn.UpdateHeight(nameHeight);
+
+                }
+
+            }
+
+
+
+            // Idle animasyon
+
+            var anim = visual.Root.GetComponentInChildren<Animation>();
+
+            if (anim != null && anim.clip != null)
+
+            {
+
+                anim.clip.wrapMode = WrapMode.Loop;
+
+                anim.Play();
+
+            }
+
+
+
+            // Open-KO birebir: CPlayerNPC::Tick() + AI Server idle wander
+
+            // Gate NPC'leri (npcType==2) veya haritadaki static shape'e bağlı nesneler — wander ekleme
+
+            if (pending.NpcType != 2 && !isLinkedToShape)
+
+            {
+
+                var wander = visual.Root.GetComponent<KONpcIdleWander>();
+
+                if (wander == null) wander = visual.Root.AddComponent<KONpcIdleWander>();
+
+                wander.isNpc = koEntity.IsNpc;
+
+                float chrRadius = (scale > 0.01f) ? scale : 1f;
+
+                wander.moveSpeed = 1.2f * chrRadius;
+
+                wander.wanderRadius = 3f + chrRadius;
+
+            }
+
+        }
+
+
+
+        private MonsterVisual CreateMonsterVisual(long instanceId, int defId, string name, short level,
+
+            float x, float y, float z, int hp, int maxHp)
+
+        {
+
+            // Ana obje
+
+            var root = new GameObject($"Monster_{name}_{instanceId}");
+
+            root.transform.position = new Vector3(x, y, z);
+
+
+
+            // Seviyeye göre boyut
+
+            float scale = 0.8f + level * 0.04f; // Lv1=0.84, Lv25=1.8
+
+            scale = Mathf.Clamp(scale, 0.8f, 2.0f);
+
+
+
+            // Capsule model
+
+            var capsule = GameObject.CreatePrimitive(PrimitiveType.Capsule);
+
+            capsule.name = "Model";
+
+            capsule.transform.SetParent(root.transform);
+
+            capsule.transform.localPosition = Vector3.up * scale;
+
+            capsule.transform.localScale = new Vector3(scale * 0.6f, scale, scale * 0.6f);
+
+            capsule.GetComponent<Renderer>().material = _monsterMaterial;
+
+
+
+            // Collider (hedef seçimi için)
+
+            var col = capsule.GetComponent<CapsuleCollider>();
+
+            // Collider varsayılan olarak kalır
+
+
+
+            // MonsterEntity component
+
+            var entity = root.AddComponent<Combat.MonsterEntity>();
+
+            entity.Initialize(instanceId, defId, name, level, hp, maxHp);
+
+
+
+            // Overhead UI (isim + HP bar)
+
+            var overhead = CreateOverheadUI(root.transform, name, level, scale * 2.5f,
+
+                new Color(0.95f, 0.2f, 0.2f)); // Kırmızı HP bar
+
+
+
+            return new MonsterVisual
+
+            {
+
+                Root = root,
+
+                Entity = entity,
+
+                Renderer = capsule.GetComponent<Renderer>(),
+
+                OverheadUI = overhead
+
+            };
+
+        }
+
+
+
+        // ============================
+
+        // UZAK OYUNCU SPAWN / DESPAWN
+
+        // ============================
+
+
+
+        private void HandleSpawnPlayer(long charId, string name, byte nation, byte race, byte charClass,
+
+            short level, float x, float y, float z, float rotation, int currentHp, int maxHp,
+
+            byte face, byte hair, int[] itemIds, short[] itemDurabilities, byte authority, byte recruitParty,
+
+            short knightsId, byte knightsDuty, string knightsName, short capeId)
+
+        {
+
+            // Kendi karakterimiz ise atla
+
+            if (GameManager.Instance != null && charId == GameManager.Instance.CharacterId)
+
+                return;
+
+
+
+            // Zaten varsa güncelle
+
+            if (_remotePlayers.TryGetValue(charId, out var existing))
+
+            {
+
+                existing.SetPosition(x, y, z);
+
+                existing.UpdateHp(currentHp, maxHp);
+
+                existing.Level = level;
+
+                existing.KnightsId = knightsId;
+
+                existing.ClanName = knightsName;
+
+                existing.KnightsDuty = knightsDuty;
+
+                existing.CapeId = capeId;
+
+                existing.Root.SetActive(true);
+
+
+
+                var fn = existing.Root.GetComponent<EntropyOnline.World.FloatingName>();
+
+                if (fn != null)
+
+                {
+
+                    fn.SetClanName(knightsName);
+
+                    fn.SetKnightsDuty(knightsDuty);
+
+                    if (recruitParty == 2)
+
+                    {
+
+                        int iLMin = Mathf.Min(level - 8, (int)(level / 1.5f));
+
+                        if (iLMin < 1) iLMin = 1;
+
+                        int iLMax = Mathf.Max(level + 8, (int)(level * 1.5f));
+
+                        if (iLMax > 80) iLMax = 80;
+
+                        string szMsg = $"Seeking Party : Level {iLMin} ~ {iLMax}";
+
+                        fn.SetInfoText(szMsg, new Color(0f, 1f, 0f, 1f));
+
+                    }
+
+                    else
+
+                    {
+
+                        fn.SetInfoText("", Color.white);
+
+                    }
+
+                }
+
+
+
+                UpdatePlayerCloakVisual(existing, capeId);
+
+                return;
+
+            }
+
+
+
+            // Yeni uzak oyuncu oluştur
+
+            // Open-KO birebir: CPlayerOther::Init(eRace, iFace, iHair, ...) — GameProcMain.cpp:2632
+
+            var rp = CreateRemotePlayerVisual(charId, name, nation, race, charClass, level,
+
+                x, y, z, rotation, currentHp, maxHp, face, hair, itemIds, itemDurabilities,
+
+                knightsId, knightsDuty, knightsName, capeId);
+
+            rp.Race = race;
+
+            // Open-KO birebir: GameProcMain.cpp:2631
+
+            // pUPC->m_InfoBase.iAuthority = byAuthority;
+
+            rp.Authority = authority;
+
+            _remotePlayers[charId] = rp;
+
+
+
+            if (recruitParty == 2)
+
+            {
+
+                int iLMin = Mathf.Min(level - 8, (int)(level / 1.5f));
+
+                if (iLMin < 1) iLMin = 1;
+
+                int iLMax = Mathf.Max(level + 8, (int)(level * 1.5f));
+
+                if (iLMax > 80) iLMax = 80;
+
+                string szMsg = $"Seeking Party : Level {iLMin} ~ {iLMax}";
+
+                var fn = rp.Root.GetComponent<EntropyOnline.World.FloatingName>();
+
+                if (fn != null)
+
+                {
+
+                    fn.SetInfoText(szMsg, new Color(0f, 1f, 0f, 1f));
+
+                }
+
+            }
+
+        }
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: GameProcMain.cpp:7039-7041 — CPlayerOther::KnightsInfoSet / CPlayerMySelf::KnightsInfoSet
+
+        /// Oyuncunun (veya kendi karakterimizin) klan adı, grade, rank bilgilerini günceller ve başının üstündeki kırmızı klan adını yeniler.
+
+        /// </summary>
+
+        public void UpdatePlayerKnightsInfo(short charId, short knightsId, byte knightsDuty, string knightsName, byte grade, byte rank)
+
+        {
+
+            // Kendi karakterimiz ise
+
+            if (GameManager.Instance != null && charId == (short)GameManager.Instance.CharacterId)
+
+            {
+
+                GameManager.Instance.ClanName = knightsName;
+
+                return;
+
+            }
+
+
+
+            // Diğer uzaktaki oyuncu ise (magetest vb.)
+
+            if (_remotePlayers.TryGetValue(charId, out var existing))
+
+            {
+
+                existing.KnightsId = knightsId;
+
+                existing.ClanName = knightsName;
+
+                existing.KnightsDuty = knightsDuty;
+
+
+
+                if (existing.Root != null)
+
+                {
+
+                    var fn = existing.Root.GetComponent<EntropyOnline.World.FloatingName>();
+
+                    if (fn != null)
+
+                    {
+
+                        fn.SetClanName(knightsName);
+
+                        fn.SetKnightsDuty(knightsDuty);
+
+                    }
+
+                }
+
+            }
+
+        }
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: CPlayerOther::Init (PlayerOther.cpp:55) → CPlayerBase::InitChr
+
+        /// PlayerBase.cpp:2025-2055:
+
+        ///   pLooks = s_pTbl_UPC_Looks.Find(eRace)  — PlayerOther.cpp:48
+
+        ///   m_Chr.LoadFromFile(pLooks->szChrFN)     — PlayerBase.cpp:2035
+
+        ///   PartSet(i, pLooks->szPartFNs[i])         — varsayılan vücut parçaları
+
+        ///
+
+        /// eRace değerleri (GameDef.h:164-176):
+
+        ///   1=KA_Ark, 2=KA_Tur, 3=KA_Wrt, 4=KA_Pri, 5=KA_Pla, 6=KA_Assa
+
+        ///   11=EL_War, 12=EL_Rog, 13=EL_Mag, 14=EL_Pri
+
+        /// </summary>
+
+        private RemotePlayerVisual CreateRemotePlayerVisual(long charId, string name, byte nation,
+
+            byte race, byte charClass, short level, float x, float y, float z, float rotation,
+
+            int currentHp, int maxHp, byte face, byte hair, int[] itemIds, short[] itemDurabilities,
+
+            short knightsId, byte knightsDuty, string knightsName, short capeId)
+
+        {
+
+            var root = new GameObject($"Player_{name}_{charId}");
+
+
+
+            // Terrain yüksekliği
+
+            float terrainY = 0f;
+
+            if (WorldBuilder.Instance != null)
+
+                terrainY = WorldBuilder.Instance.GetTerrainHeight(x, z);
+
+            root.transform.position = new Vector3(x, terrainY, z);
+
+            root.transform.rotation = Quaternion.Euler(0, rotation, 0);
+
+
+
+            // UPC_DefaultLooks tablosunu yükle (henüz yüklenmemişse)
+
+            if (KOEquipmentVisualizer.s_pTbl_UPC_Looks == null)
+
+            {
+
+                string looksPath = "UPC_DefaultLooks.tbl";
+
+                KOEquipmentVisualizer.s_pTbl_UPC_Looks = KOTableReader.LoadUpcLooksTable(looksPath);
+
+            }
+
+
+
+            // Open-KO birebir: pLooks = s_pTbl_UPC_Looks.Find(eRace)
+
+            GameObject charModel = null;
+
+            Renderer charRenderer = null;
+
+            float nameHeight = 2.8f;
+
+            RemotePlayerVisual rpVisual = null;
+
+
+
+            if (KOEquipmentVisualizer.s_pTbl_UPC_Looks != null &&
+
+                KOEquipmentVisualizer.s_pTbl_UPC_Looks.TryGetValue(race, out var pLooks))
+
+            {
+
+                // Open-KO birebir: CPlayerBase::InitChr (PlayerBase.cpp:2025-2055)
+
+                // if (!szChrFN.empty()) → m_Chr.LoadFromFile(szChrFN)
+
+                // else → m_Chr.JointSet(szJointFN) + m_Chr.AniCtrlSet(szAniFN)
+
+                //
+
+                // Part'lar InitChr sonrası for döngüsünde PartSet ile eklenir.
+
+                // Unity'de BuildWithExternalParts'a boş dizi geçerek sadece skeleton oluşturuyoruz.
+
+                // Tüm part'lar aşağıdaki RemotePartSet döngüsünde atanacak.
+
+                if (!string.IsNullOrEmpty(pLooks.szChrFN))
+
+                {
+
+                    string chrPath = N3CharBuilder.FindAssetFile(pLooks.szChrFN);
+
+                    if (chrPath != null)
+
+                    {
+
+                        charModel = N3CharBuilder.BuildWithExternalParts(
+
+                            chrPath, new string[0]);
+
+                    }
+
+                }
+
+                else if (!string.IsNullOrEmpty(pLooks.szJointFN))
+
+                {
+
+                    // C++ birebir: PlayerBase.cpp:2040-2055 — else dalı
+
+                    string jointPath = N3CharBuilder.FindAssetFile(pLooks.szJointFN);
+
+                    charModel = N3CharBuilder.BuildWithJointAndAnim(
+
+                        jointPath, pLooks.szAniFN);
+
+                }
+
+
+
+                if (charModel != null)
+
+                {
+
+                    charModel.transform.SetParent(root.transform);
+
+                    charModel.transform.localPosition = Vector3.zero;
+
+                    charModel.transform.localRotation = Quaternion.identity;
+
+                    charModel.transform.localScale = Vector3.one;
+
+
+
+                    // Idle animasyonu başlat
+
+                    var anim = charModel.GetComponentInChildren<Animation>();
+
+                    if (anim != null && anim.clip != null)
+
+                    {
+
+                        anim.clip.wrapMode = WrapMode.Loop;
+
+                        anim.Play();
+
+                    }
+
+
+
+                    // ============================================================
+
+                    // Open-KO birebir: CPlayerOther::Init (PlayerOther.cpp:57-160)
+
+                    // MAX_ITEM_SLOT_OPC = 8 döngüsü
+
+                    // Slot sırası: 0=BREAST, 1=LEG, 2=HEAD, 3=GLOVE, 4=FOOT, 5=SHOULDER, 6=RIGHTHAND, 7=LEFTHAND
+
+                    //
+
+                    // CPlayerOther::Init → PartSet → CPlayerBase::PartSet (PlayerBase.cpp:1852-1941)
+
+                    // CPlayerBase::PartSet Robe UPPER/LOWER mantığını içerir.
+
+                    // rpVisual.RemotePartSet wrapper bu mantığı birebir uygular.
+
+                    // ============================================================
+
+                    const int MAX_ITEM_SLOT_OPC = 8;
+
+                    // Part position sabitleri (GameDef.h:363-370)
+
+                    const int PART_POS_UPPER = 0;
+
+                    const int PART_POS_LOWER = 1;
+
+                    const int PART_POS_HANDS = 3;
+
+                    const int PART_POS_FEET = 4;
+
+                    const int PART_POS_HAIR_HELMET = 5;
+
+
+
+                    // RemotePlayerVisual'ı erken oluştur — RemotePartSet wrapper için Race/Face/Hair state lazım
+
+                    rpVisual = new RemotePlayerVisual { Race = race, Face = face, Hair = hair };
+
+
+
+                    bool hasHelmetEquipped = false;
+
+
+
+                    for (int i = 0; i < MAX_ITEM_SLOT_OPC; i++)
+
+                    {
+
+                        int dwItemID = itemIds[i];
+
+
+
+                        if (dwItemID == 0)
+
+                        {
+
+                            // PlayerOther.cpp:66-93 — item yok → default part veya hiçbir şey
+
+                            // C++: PartSet(ePos, pLooks->szPartFNs[ePos], nullptr, nullptr)
+
+                            if (i == 0)
+
+                                rpVisual.RemotePartSet(charModel, PART_POS_UPPER, pLooks.szPartFNs[0], null, null);
+
+                            else if (i == 1)
+
+                                rpVisual.RemotePartSet(charModel, PART_POS_LOWER, pLooks.szPartFNs[1], null, null);
+
+                            // i==2 HEAD: yorum satırı (cpp:78) — kask yoksa InitHair halleder
+
+                            else if (i == 3)
+
+                                rpVisual.RemotePartSet(charModel, PART_POS_HANDS, pLooks.szPartFNs[3], null, null);
+
+                            else if (i == 4)
+
+                                rpVisual.RemotePartSet(charModel, PART_POS_FEET, pLooks.szPartFNs[4], null, null);
+
+                            // i==5 SHOULDER (pelerin): boş bırakılır (cpp:89-91)
+
+                            // i==6,7 RIGHTHAND/LEFTHAND: silah yok → hiçbir şey (cpp:92-93)
+
+                        }
+
+                        else
+
+                        {
+
+                            // PlayerOther.cpp:95-146 — item var → MakeResrcFileNameForUPC → PartSet/PlugSet
+
+                            if (KOInventory.s_pTbl_Items_Basic == null) continue;
+
+                            var pItem = KOTableReader.FindItemBasic(KOInventory.s_pTbl_Items_Basic, dwItemID);
+
+                            if (pItem == null) continue;
+
+
+
+                            KOTableReader.TableItemExt pItemExt = null;
+
+                            if (KOInventory.s_pTbl_Items_Exts != null)
+
+                                pItemExt = KOTableReader.FindItemExt(KOInventory.s_pTbl_Items_Exts, pItem.byExtIndex, dwItemID);
+
+
+
+                            if (pItemExt == null) continue;
+
+
+
+                            // dwIDResrc override — GameBase.cpp:584-587
+
+                            uint iIDResrc = pItem.dwIDResrc;
+
+                            if (pItemExt.dwIDResrc != 0)
+
+                                iIDResrc = pItemExt.dwIDResrc;
+
+                            if (iIDResrc == 0) continue;
+
+
+
+                            int d1 = (int)(iIDResrc / 10000000);
+
+                            int d2 = (int)((iIDResrc / 1000) % 10000);
+
+                            int d3 = (int)((iIDResrc / 10) % 100);
+
+                            int d4 = (int)(iIDResrc % 10);
+
+
+
+                            // PlayerOther.cpp:108-145 — slot'a göre Part veya Plug
+
+                            if (i == 0)
+
+                            {
+
+                                // GameBase.cpp:599-602 — Part: race offset ekle
+
+                                string szItemFN = $"Item\\{d1}_{(d2 + race):D4}_{d3:D2}_{d4}.n3cpart";
+
+                                rpVisual.RemotePartSet(charModel, PART_POS_UPPER, szItemFN, pItem, pItemExt);
+
+                            }
+
+                            else if (i == 1)
+
+                            {
+
+                                string szItemFN = $"Item\\{d1}_{(d2 + race):D4}_{d3:D2}_{d4}.n3cpart";
+
+                                rpVisual.RemotePartSet(charModel, PART_POS_LOWER, szItemFN, pItem, pItemExt);
+
+                            }
+
+                            else if (i == 2)
+
+                            {
+
+                                // HEAD → PART_POS_HAIR_HELMET
+
+                                string szItemFN = $"Item\\{d1}_{(d2 + race):D4}_{d3:D2}_{d4}.n3cpart";
+
+                                rpVisual.RemotePartSet(charModel, PART_POS_HAIR_HELMET, szItemFN, pItem, pItemExt);
+
+                                hasHelmetEquipped = true;
+
+                            }
+
+                            else if (i == 3)
+
+                            {
+
+                                string szItemFN = $"Item\\{d1}_{(d2 + race):D4}_{d3:D2}_{d4}.n3cpart";
+
+                                rpVisual.RemotePartSet(charModel, PART_POS_HANDS, szItemFN, pItem, pItemExt);
+
+                            }
+
+                            else if (i == 4)
+
+                            {
+
+                                string szItemFN = $"Item\\{d1}_{(d2 + race):D4}_{d3:D2}_{d4}.n3cpart";
+
+                                rpVisual.RemotePartSet(charModel, PART_POS_FEET, szItemFN, pItem, pItemExt);
+
+                            }
+
+                            else if (i == 5)
+
+                            {
+
+                                // SHOULDER (pelerin) — cpp:133-135 boş bırakılır
+
+                            }
+
+                            else if (i == 6 || i == 7)
+
+                            {
+
+                                // Plug (weapon/shield/bow)
+
+                                KOInventory.MakeResrcFileNameForUPC(
+
+                                    pItem, pItemExt,
+
+                                    out _, out int ePlugPos,
+
+                                    race);
+
+
+
+                                if (i == 6)
+
+                                    ePlugPos = KOInventory.PLUG_POS_RIGHTHAND;
+
+                                else if (i == 7)
+
+                                    ePlugPos = KOInventory.PLUG_POS_LEFTHAND;
+
+
+
+                                string plugTag = ePlugPos == KOInventory.PLUG_POS_RIGHTHAND ? "PLUG_RH" : "PLUG_LH";
+
+                                int jointIndex = ePlugPos == KOInventory.PLUG_POS_RIGHTHAND ? pLooks.iJointRH : pLooks.iJointLH;
+
+                                string szItemFN = $"Item\\{d1}_{d2:D4}_{d3:D2}_{d4}.n3cplug";
+
+                                var plugObj = N3CharBuilder.PlugSet(charModel, szItemFN, jointIndex, plugTag);
+
+                                if (plugObj != null && pItemExt != null)
+
+                                {
+
+                                    var glow = plugObj.GetComponent<KOWeaponGlow>() ?? plugObj.AddComponent<KOWeaponGlow>();
+
+                                    glow.Initialize(pItemExt);
+
+
+
+                                    var trail = plugObj.GetComponent<KOWeaponTrail>() ?? plugObj.GetComponentInChildren<KOWeaponTrail>();
+
+                                    if (trail != null)
+
+                                    {
+
+                                        const int LIMIT_FX_DAMAGE = 64;
+
+                                        const int ITEM_ATTRIB_UNIQUE = 4;
+
+                                        if ((pItemExt.byMagicOrRare == ITEM_ATTRIB_UNIQUE && pItemExt.byDamageFire > 0)
+
+                                                 || (pItemExt.byDamageFire >= LIMIT_FX_DAMAGE))
+
+                                        {
+
+                                            trail.crTrace = 0xffff0000;
+
+                                        }
+
+                                        else if ((pItemExt.byMagicOrRare == ITEM_ATTRIB_UNIQUE && pItemExt.byDamageIce > 0)
+
+                                                 || (pItemExt.byDamageIce >= LIMIT_FX_DAMAGE))
+
+                                        {
+
+                                            trail.crTrace = 0xff0000ff;
+
+                                        }
+
+                                        else if ((pItemExt.byMagicOrRare == ITEM_ATTRIB_UNIQUE && pItemExt.byDamageThuner > 0)
+
+                                                 || (pItemExt.byDamageThuner >= LIMIT_FX_DAMAGE))
+
+                                        {
+
+                                            trail.crTrace = 0xffffffff;
+
+                                        }
+
+                                        else if ((pItemExt.byMagicOrRare == ITEM_ATTRIB_UNIQUE && pItemExt.byDamagePoison > 0)
+
+                                                 || (pItemExt.byDamagePoison >= LIMIT_FX_DAMAGE))
+
+                                        {
+
+                                            trail.crTrace = 0xffff00ff;
+
+                                        }
+
+                                    }
+
+                                }
+
+                            }
+
+                        }
+
+                    }
+
+
+
+                    // Open-KO birebir: PlayerOther.cpp:162-163
+
+                    // InitFace() — yüz part'ını face index'ine göre ata
+
+                    N3CharBuilder.InitFace(charModel, pLooks, face);
+
+
+
+                    // Open-KO birebir: PlayerOther.cpp:165-170
+
+                    // CN3CPart* pPartHairHelmet = Part(PART_POS_HAIR_HELMET);
+
+                    // if (pPartHairHelmet->FileName().empty()) InitHair();
+
+                    // Kask varsa saç gizlenir (helmet part zaten atanmış)
+
+                    if (!hasHelmetEquipped)
+
+                    {
+
+                        N3CharBuilder.InitHair(charModel, pLooks, hair);
+
+                    }
+
+
+
+                    // ============================================================
+
+                    // Bounds ve Collider — tüm part'lar eklendikten SONRA hesapla.
+
+                    // Skeleton-only'de renderer olmaz, bounds 0 kalırdı.
+
+                    // ============================================================
+
+                    var renderers = charModel.GetComponentsInChildren<Renderer>();
+
+                    float bottomOffsetY = 0f;
+
+                    if (renderers.Length > 0)
+
+                    {
+
+                        Bounds b = renderers[0].bounds;
+
+                        for (int ri = 1; ri < renderers.Length; ri++)
+
+                            b.Encapsulate(renderers[ri].bounds);
+
+                        nameHeight = b.max.y - root.transform.position.y + 0.2f;
+
+                        charRenderer = renderers[0];
+
+
+
+                        // Uzak oyuncunun pivot kaymasını düzelt (CharacterController'ı olmadığı için skinWidth telafisi YAPILMAZ)
+
+                        bottomOffsetY = b.min.y - charModel.transform.position.y;
+
+                        if (bottomOffsetY < -2f || bottomOffsetY > 2f)
+
+                            bottomOffsetY = 0f;
+
+
+
+                        // Animasyon (nefes alma, koşma vb.) kalibrasyon payı
+
+                        float calibrationOffset = 0.05f;
+
+
+
+                        charModel.transform.localPosition = new Vector3(0f, -bottomOffsetY - calibrationOffset, 0f);
+
+                    }
+
+
+
+                    // CapsuleCollider — hedef seçimi için
+
+                    var col = charModel.AddComponent<CapsuleCollider>();
+
+                    col.isTrigger = true;
+
+                    var allRenderers = charModel.GetComponentsInChildren<Renderer>();
+
+                    if (allRenderers.Length > 0)
+
+                    {
+
+                        Bounds b = allRenderers[0].bounds;
+
+                        for (int ri = 1; ri < allRenderers.Length; ri++)
+
+                            b.Encapsulate(allRenderers[ri].bounds);
+
+                        col.height = b.size.y;
+
+                        col.radius = Mathf.Min(Mathf.Max(b.size.x, b.size.z) * 0.5f, b.size.y * 0.5f);
+
+                        col.center = new Vector3(0, b.size.y * 0.5f, 0);
+
+                    }
+
+                    else
+
+                    {
+
+                        col.height = 2f;
+
+                        col.radius = 0.5f;
+
+                        col.center = new Vector3(0, 1f, 0);
+
+                    }
+
+
+
+                    if (capeId > 0)
+
+                    {
+
+                        int jointCloak = pLooks.iJointCloak; // typically index 22
+
+                        N3CharBuilder.PlugSet(charModel, $"Item\\cloak_{capeId:D3}.n3cplug", jointCloak, "PLUG_BACK");
+
+                    }
+
+                }
+
+            }
+
+
+
+            // Open-KO birebir: model yüklenemezse görsel yok — entity mantıkta var ama render edilmez.
+
+            // Placeholder oluşturulmaz.
+
+            if (charModel == null)
+
+            {
+
+                Debug.LogWarning($"[ENTITY] Uzak oyuncu modeli yüklenemedi: {name} race={race}");
+
+            }
+
+
+
+            // Overhead UI
+
+            Color barColor = nation == 1
+
+                ? new Color(0.8f, 0.3f, 0.8f) // Karus = mor HP
+
+                : new Color(0.3f, 0.5f, 0.9f); // El Morad = mavi HP
+
+            var overhead = CreateOverheadUI(root.transform, name, level, nameHeight, barColor);
+
+
+
+            // FloatingName
+
+            if (!string.IsNullOrEmpty(name))
+
+            {
+
+                var floatingName = root.AddComponent<FloatingName>();
+
+                floatingName.Initialize(name, false, nameHeight);
+
+
+
+                // Open-KO ally/enemy name color coding (Enemy: RGB 255,96,96 | Ally: RGB 128,128,255)
+
+                if (GameManager.Instance != null)
+
+                {
+
+                    bool isEnemy = nation != GameManager.Instance.Nation;
+
+                    Color nameColor = isEnemy 
+
+                        ? new Color(255f / 255f, 96f / 255f, 96f / 255f, 1f)
+
+                        : new Color(128f / 255f, 128f / 255f, 1f, 1f);
+
+                    floatingName.SetNameColor(nameColor);
+
+                }
+
+
+
+                if (!string.IsNullOrEmpty(knightsName))
+
+                {
+
+                    floatingName.SetClanName(knightsName);
+
+                    floatingName.SetKnightsDuty(knightsDuty);
+
+                }
+
+            }
+
+
+
+            // RemotePlayerEntity component (hedef seçimi için)
+
+            var entity = root.AddComponent<RemotePlayerEntity>();
+
+            entity.Initialize(charId, name, nation, charClass, level, currentHp, maxHp);
+
+
+
+            // Open-KO birebir: CPlayerBase::ItemClass_RightHand / ItemClass_LeftHand
+
+            // Spawn sırasında itemIds[6]=RIGHTHAND, itemIds[7]=LEFTHAND slot'larından byClass alınır.
+
+            // JudgeAnimationBreath silah tipine göre idle animasyon seçimi için.
+
+            {
+
+                var eICR = EntropyOnline.Character.KOItemClass.ITEM_CLASS_UNKNOWN;
+
+                var eICL = EntropyOnline.Character.KOItemClass.ITEM_CLASS_UNKNOWN;
+
+                float fWeightR = 0f;
+
+
+
+                if (KOInventory.s_pTbl_Items_Basic != null)
+
+                {
+
+                    if (itemIds[6] != 0)
+
+                    {
+
+                        var pItemR = KOTableReader.FindItemBasic(KOInventory.s_pTbl_Items_Basic, itemIds[6]);
+
+                        if (pItemR != null)
+
+                        {
+
+                            eICR = (EntropyOnline.Character.KOItemClass)pItemR.byClass;
+
+                            fWeightR = pItemR.siWeight / 10f;
+
+                        }
+
+                    }
+
+                    if (itemIds[7] != 0)
+
+                    {
+
+                        var pItemL = KOTableReader.FindItemBasic(KOInventory.s_pTbl_Items_Basic, itemIds[7]);
+
+                        if (pItemL != null)
+
+                            eICL = (EntropyOnline.Character.KOItemClass)pItemL.byClass;
+
+                    }
+
+                }
+
+                entity.SetWeaponInfo(eICR, eICL, fWeightR);
+
+            }
+
+
+
+            // rpVisual equip loop'ta oluşturuldu — kalan alanları doldur
+
+            // (pLooks bloğu dışına çıkılmış olabilir — rpVisual null olabilir)
+
+            if (rpVisual == null)
+
+                rpVisual = new RemotePlayerVisual { Race = race, Face = face, Hair = hair };
+
+
+
+            rpVisual.Root = root;
+
+            rpVisual.CharId = charId;
+
+            rpVisual.Name = name;
+
+            rpVisual.Nation = nation;
+
+            rpVisual.CharClass = charClass;
+
+            rpVisual.Level = level;
+
+            rpVisual.KnightsId = knightsId;
+
+            rpVisual.ClanName = knightsName;
+
+            rpVisual.KnightsDuty = knightsDuty;
+
+            rpVisual.CapeId = capeId;
+
+            rpVisual.CurrentHp = currentHp;
+
+            rpVisual.MaxHp = maxHp;
+
+            rpVisual.Renderer = charRenderer;
+
+            rpVisual.OverheadUI = overhead;
+
+            rpVisual.TargetPosition = root.transform.position;
+
+            rpVisual.Entity = entity;
+
+            rpVisual.IsMoving = false;
+
+
+
+            return rpVisual;
+
+        }
+
+
+
+
+
+        private void HandleDespawnPlayer(long charId)
+
+        {
+
+            if (_remotePlayers.TryGetValue(charId, out var rp))
+
+            {
+
+                Destroy(rp.Root);
+
+                _remotePlayers.Remove(charId);
+
+            }
+
+        }
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: MsgRecv_RegionChange (GameProcMain.cpp:2503-2540)
+
+        /// Region değiştiğinde sunucudan gelen yakın oyuncu ID listesini alır.
+
+        /// Mevcut lokal listeyle karşılaştırır:
+
+        /// - Listede olup lokal'de olmayan ID'ler → C2S_REQ_USERIN ile detay iste
+
+        /// - Lokal'de olup listede olmayan ID'ler → despawn et
+
+        /// </summary>
+
+        private void HandleRegionChange(long[] nearbyCharIds)
+
+        {
+
+            // Listede olmayan remote player'ları despawn et
+
+            var toRemove = new System.Collections.Generic.List<long>();
+
+            var nearbySet = new System.Collections.Generic.HashSet<long>(nearbyCharIds);
+
+            
+
+            // Kendi ID'mizi çıkar
+
+            long myId = GameManager.Instance != null ? GameManager.Instance.CharacterId : 0;
+
+            
+
+            foreach (var kvp in _remotePlayers)
+
+            {
+
+                if (!nearbySet.Contains(kvp.Key))
+
+                {
+
+                    toRemove.Add(kvp.Key);
+
+                }
+
+            }
+
+            foreach (long id in toRemove)
+
+            {
+
+                if (_remotePlayers.TryGetValue(id, out var rp))
+
+                {
+
+                    Destroy(rp.Root);
+
+                    _remotePlayers.Remove(id);
+
+                }
+
+            }
+
+            
+
+            // Listede olup lokal'de olmayan ID'leri topla → C2S_REQ_USERIN gönder
+
+            var unknownIds = new System.Collections.Generic.List<long>();
+
+            foreach (long id in nearbyCharIds)
+
+            {
+
+                if (id != myId && !_remotePlayers.ContainsKey(id))
+
+                {
+
+                    unknownIds.Add(id);
+
+                }
+
+            }
+
+            
+
+            if (unknownIds.Count > 0)
+
+            {
+
+                // Open-KO birebir: WIZ_REQ_USERIN
+
+                using var pkt = new KOPacketWriter(WizOpcode.WIZ_REQ_USERIN);
+
+                pkt.WriteInt16((short)unknownIds.Count);
+
+                foreach (long id in unknownIds)
+
+                {
+
+                    pkt.WriteInt16((short)id); // KO uses short IDs
+
+                }
+
+                KONetworkManager.Instance?.SendPacket(pkt);
+
+            }
+
+        }
+
+        
+
+        // ============================
+
+        // NPC REGION SİSTEMİ (Open-KO birebir)
+
+        // ============================
+
+        
+
+        /// <summary>
+
+        /// Open-KO birebir: MsgRecv_NPCInOut (GameProcMain.cpp:2838-2851)
+
+        /// S2C_NPC_INOUT — NPC/Monster region'a giriş/çıkış delta güncellemesi.
+
+        /// NPC_IN (0x01): MsgRecv_NPCIn → NPC oluştur (HP bilgisi YOK — C++ GetNpcInfo HP göndermez)
+
+        /// NPC_OUT (0x02): MsgRecv_NPCOut → NPC sil
+
+        /// </summary>
+
+        private void HandleNpcInOut(byte type, long npcId, NpcInfoData npcInfo)
+
+        {
+
+            const byte NPC_IN = 1;
+
+            const byte NPC_OUT = 2;
+
+            
+
+            if (type == NPC_OUT)
+
+            {
+
+                // C++ birebir: MsgRecv_NPCOut (cpp:3066-3070)
+
+                // return s_pOPMgr->NPCDelete(iID);
+
+                if (_monsters.TryGetValue(npcId, out var mv))
+
+                {
+
+                    if (mv.Root != null)
+
+                        DestroyEntityRoot(mv.Root);
+
+                    _monsters.Remove(npcId);
+
+                }
+
+            }
+
+            else if (type == NPC_IN && npcInfo != null)
+
+            {
+
+                // C++ birebir: MsgRecv_NPCIn (cpp:2853-3063)
+
+                // C++ NPC'yi HP bilgisi OLMADAN oluşturur — GetNpcInfo HP göndermez.
+
+                // HP sadece oyuncu NPC'yi hedef seçtiğinde WIZ_TARGET_HP ile alınır.
+
+                // C++ (cpp:2894-2902): Zaten varsa → PSA_BASIC + PositionSet (canlandır)
+
+                // C++ (cpp:2907-3061): Yoksa → new CPlayerNPC + InitChr + PositionSet + Action(PSA_BASIC)
+
+                // Soft-hide'daysa temizle
+
+                _hiddenNpcs.Remove(npcId);
+
+                SpawnNpcFromRegion(npcInfo);
+
+            }
+
+        }
+
+        
+
+        /// <summary>
+
+        /// Open-KO birebir: MsgRecv_NPCInAndRequest (GameProcMain.cpp:3073-3166)
+
+        /// S2C_NPC_REGION — Region değiştiğinde sunucudan gelen yakın NPC ID listesi.
+
+        /// Mevcut lokal listeyle karşılaştırır:
+
+        /// - Lokal'de olup listede olmayan CANLI NPC'ler → despawn et (C++ cpp:3130-3133: ölü NPC kalır)
+
+        /// - Listede olup lokal'de olmayan NPC'ler → C2S_REQ_NPCIN ile detay iste
+
+        /// </summary>
+
+        /// <summary>
+
+        /// NPC'lerin region-dışı soft-hide süresi (saniye).
+
+        /// Region sınırı geçişlerinde race condition'lar yüzünden NPC geçici olarak
+
+        /// listeden çıkabilir — hemen silmek yerine gizle ve bekle.
+
+        /// </summary>
+
+        private const float NPC_REGION_HIDE_TIMEOUT = 4f;
+
+        
+
+        /// <summary>NPC ID → gizlenme zamanı. Soft-hide'daki NPC'lerin takibi.</summary>
+
+        private readonly System.Collections.Generic.Dictionary<long, float> _hiddenNpcs = new();
+
+        
+
+        private void HandleNpcRegionChange(long[] nearbyNpcIds)
+
+        {
+
+            var nearbySet = new System.Collections.Generic.HashSet<long>(nearbyNpcIds);
+
+            
+
+            // 1) Listede olan ama gizli (hidden) NPC'leri tekrar görünür yap
+
+            var toUnhide = new System.Collections.Generic.List<long>();
+
+            foreach (long id in nearbyNpcIds)
+
+            {
+
+                if (_hiddenNpcs.ContainsKey(id) && _monsters.ContainsKey(id))
+
+                {
+
+                    toUnhide.Add(id);
+
+                }
+
+            }
+
+            foreach (long id in toUnhide)
+
+            {
+
+                _hiddenNpcs.Remove(id);
+
+                if (_monsters.TryGetValue(id, out var mv) && mv.Root != null)
+
+                {
+
+                    mv.Root.SetActive(true);
+
+                }
+
+            }
+
+            
+
+            // 2) Lokal'de olup listede olmayan NPC'leri → hemen Destroy yerine gizle (soft-hide)
+
+            foreach (var kvp in _monsters)
+
+            {
+
+                if (!nearbySet.Contains(kvp.Key))
+
+                {
+
+                    // Ölü NPC'ler kalır
+
+                    var koEntity = kvp.Value.Root?.GetComponent<KOEntity>();
+
+                    if (koEntity != null && koEntity.IsDead)
+
+                        continue;
+
+                    
+
+                    // Zaten gizliyse atla
+
+                    if (_hiddenNpcs.ContainsKey(kvp.Key))
+
+                        continue;
+
+                    
+
+                    // Gizle — Destroy DEĞİL
+
+                    if (kvp.Value.Root != null)
+
+                        kvp.Value.Root.SetActive(false);
+
+                    _hiddenNpcs[kvp.Key] = Time.time;
+
+                }
+
+            }
+
+            
+
+            // 3) Timeout'u dolan gizli NPC'leri artık gerçekten sil
+
+            var toDestroy = new System.Collections.Generic.List<long>();
+
+            foreach (var kvp in _hiddenNpcs)
+
+            {
+
+                if (Time.time - kvp.Value > NPC_REGION_HIDE_TIMEOUT)
+
+                {
+
+                    toDestroy.Add(kvp.Key);
+
+                }
+
+            }
+
+            foreach (long id in toDestroy)
+
+            {
+
+                _hiddenNpcs.Remove(id);
+
+                if (_monsters.TryGetValue(id, out var mv))
+
+                {
+
+                    if (mv.Root != null)
+
+                        DestroyEntityRoot(mv.Root);
+
+                    _monsters.Remove(id);
+
+                }
+
+            }
+
+            
+
+            // 4) Listede olup lokal'de olmayan NPC'leri topla → C2S_REQ_NPCIN gönder
+
+            var unknownIds = new System.Collections.Generic.List<long>();
+
+            foreach (long id in nearbyNpcIds)
+
+            {
+
+                if (!_monsters.ContainsKey(id))
+
+                {
+
+                    unknownIds.Add(id);
+
+                }
+
+            }
+
+            
+
+            if (unknownIds.Count > 0)
+
+            {
+
+                // Open-KO birebir: WIZ_REQ_NPCIN
+
+                using var pkt = new KOPacketWriter(WizOpcode.WIZ_REQ_NPCIN);
+
+                pkt.WriteInt16((short)unknownIds.Count);
+
+                foreach (long id in unknownIds)
+
+                {
+
+                    pkt.WriteInt16((short)id); // KO uses short IDs
+
+                }
+
+                KONetworkManager.Instance?.SendPacket(pkt);
+
+            }
+
+        }
+
+        
+
+        /// <summary>
+
+        /// Open-KO birebir: MsgRecv_NPCInRequested (GameProcMain.cpp:3168-3186)
+
+        /// C2S_REQ_NPCIN yanıtı — her NPC için MsgRecv_NPCIn çağrılır.
+
+        /// HP bilgisi YOK — C++ GetNpcInfo HP göndermez.
+
+        /// </summary>
+
+        private void HandleNpcInfoResponse(NpcInfoData[] npcInfos)
+
+        {
+
+            // C++ birebir (cpp:3182-3183):
+
+            // for (int i = 0; i < iNPCCount; i++)
+
+            //     MsgRecv_NPCIn(pkt);
+
+            foreach (var info in npcInfos)
+
+            {
+
+                SpawnNpcFromRegion(info);
+
+            }
+
+        }
+
+        
+
+        /// <summary>
+
+        /// S2C_DESPAWN_MONSTER — Monster despawn paketi.
+
+        /// </summary>
+
+        private void HandleDespawnMonster(long instanceId)
+
+        {
+
+            // C++ birebir: NPCDelete (PlayerOtherMgr.h:185-194)
+
+            // delete it->second; m_NPCs.erase(it);
+
+            if (_monsters.TryGetValue(instanceId, out var mv))
+
+            {
+
+                if (mv.Root != null)
+
+                    DestroyEntityRoot(mv.Root);
+
+                _monsters.Remove(instanceId);
+
+            }
+
+            // Kuyrukta pending model varsa temizle
+
+            _monsterModelQueuedIds.Remove(instanceId);
+
+        }
+
+
+
+        public void RemoveMonsterFromDictionary(long instanceId)
+
+        {
+
+            _monsters.Remove(instanceId);
+
+        }
+
+        
+
+        private static readonly System.Collections.Generic.HashSet<string> BlacklistedNpcNames = new(System.StringComparer.OrdinalIgnoreCase)
+
+        {
+
+            "Proconsul",
+
+            "Isaac[event]",
+
+            "Guard Trainee",
+
+            "Offering Trader Kim",
+
+            "Veronica",
+
+            "Priest Athian",
+
+            "Judge",
+
+            "Recon",
+
+            "Captain Falkwine",
+
+            "Captain Fargo",
+
+            "Warrior Master Skaky",
+
+            "Secret Agent Clarence",
+
+            "Arch Mage Drake",
+
+            "Priest Minerva"
+
+        };
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: MsgRecv_NPCIn (GameProcMain.cpp:2853-3063)
+
+        /// NPC/Monster'ı region sistemi üzerinden spawn eder.
+
+        /// C++ GetNpcInfo HP göndermez — NPC canlı olarak oluşturulur.
+
+        /// HP bilgisi sadece oyuncu NPC'yi hedef seçtiğinde WIZ_TARGET_HP ile gelir.
+
+        /// </summary>
+
+        private void SpawnNpcFromRegion(NpcInfoData info)
+
+        {
+
+            long instanceId = info.InstanceId;
+
+            
+
+            // C++ birebir (cpp:2894-2902): Zaten varsa → canlandır ve pozisyonunu güncelle
+
+            if (_monsters.TryGetValue(instanceId, out var existing))
+
+            {
+
+                // C++ (cpp:2899): pNPC->Action(PSA_BASIC, true, nullptr, true); — canlandır
+
+                // C++ (cpp:2900): pNPC->m_fTimeAfterDeath = 0;
+
+                // C++ (cpp:2901): pNPC->PositionSet(__Vector3(fXPos, fYPos, fZPos), true);
+
+                existing.SetPosition(info.PosX, info.PosY, info.PosZ);
+
+                if (existing.Root != null)
+
+                {
+
+                    existing.Root.SetActive(true);
+
+                    var koEntity = existing.Root.GetComponent<KOEntity>();
+
+                    if (koEntity != null && koEntity.IsDead)
+
+                    {
+
+                        koEntity.ResetDeath();
+
+                    }
+
+                    var wander = existing.Root.GetComponent<KONpcIdleWander>();
+
+                    if (wander != null) wander.enabled = true;
+
+                }
+
+                return;
+
+            }
+
+            
+
+            // C++ birebir (cpp:2907-3061): Yeni NPC oluştur
+
+            // C++ HP bilgisi göndermez — NPC canlı olarak oluşturulur
+
+            // HandleSpawnMonster'ı çağırıyoruz ama hp=-1 sentinel değeri ile
+
+            // HandleSpawnMonster 0 HP ile çağrıldığında entity'yi ölü olarak işaretlemez
+
+            // çünkü ölüm sadece S2C_ENTITY_DEATH paketi ile tetiklenir
+
+            HandleSpawnMonster(
+
+                instanceId,
+
+                info.Pid,           // C++ (cpp:2856): iIDResrc — model resource ID
+
+                info.Name,          // C++ (cpp:2862-2867): szName
+
+                info.Level,         // C++ (cpp:2874): iLevel
+
+                info.PosX,          // C++ (cpp:2876): fXPos
+
+                info.PosY,          // C++ (cpp:2878): fYPos
+
+                info.PosZ,          // C++ (cpp:2877): fZPos
+
+                1,                  // HP: C++ göndermez, canlı olarak oluştur (sentinel: 1)
+
+                1,                  // MaxHP: C++ göndermez (sentinel: 1)
+
+                info.NpcType,
+
+                0,
+
+                info.Direction,
+
+                info.Size);
+
+            
+
+            // C++ birebir (cpp:3060): pNPC->Action(PSA_BASIC, true, nullptr, true);
+
+            // NPC canlı ve idle durumunda oluşturuldu
+
+        }
+
+        
+
+        /// <summary>
+
+        /// Open-KO birebir: MsgRecv_NPCMove (GameProcMain.cpp:3188-3211)
+
+        /// NPC/Monster hareket güncellemesi.
+
+        /// 
+
+        /// C++ (cpp:3197-3201): NPC bulunamazsa → MsgSend_NPCInRequest(iID) — bilgi iste
+
+        /// C++ (cpp:3204): fY = ACT_WORLD->GetHeightWithTerrain(fXPos, fZPos) — terrain height
+
+        /// C++ (cpp:3205): iMoveMode = (fSpeed > 0) ? 2 : 0
+
+        /// C++ (cpp:3206): pNPC->MoveTo(fXPos, fY, fZPos, fSpeed, iMoveMode)
+
+        /// </summary>
+
+        private void HandleNpcMove(long npcId, float posX, float posZ, float posY, float speed)
+
+        {
+
+            // C++ birebir (cpp:3197): CPlayerNPC* pNPC = s_pOPMgr->NPCGetByID(iID, true);
+
+            if (!_monsters.TryGetValue(npcId, out var mv))
+
+            {
+
+                // C++ birebir (cpp:3200): MsgSend_NPCInRequest(iID);
+
+                // NPC bilgisi yok → sunucudan iste
+
+                // Open-KO birebir: WIZ_REQ_NPCIN
+
+                using var pkt = new KOPacketWriter(WizOpcode.WIZ_REQ_NPCIN);
+
+                pkt.WriteInt16(1); // 1 NPC isteniyor
+
+                pkt.WriteInt16((short)npcId);
+
+                KONetworkManager.Instance?.SendPacket(pkt);
+
+                return;
+
+            }
+
+            
+
+            if (mv.Root == null) return;
+
+            
+
+            // Soft-hide'daysa tekrar göster — NPC_MOVE paketi geliyorsa NPC yakınımızda demektir
+
+            if (_hiddenNpcs.ContainsKey(npcId))
+
+            {
+
+                _hiddenNpcs.Remove(npcId);
+
+                mv.Root.SetActive(true);
+
+            }
+
+            
+
+            var wander = mv.Root.GetComponent<KONpcIdleWander>();
+
+            if (speed > 0)
+
+            {
+
+                // C++ birebir (cpp:113-125): m_fMoveSpeedPerSec hesapla + yürüyüş başlat
+
+                if (wander != null)
+
+                {
+
+                    wander.SetMoveTarget(posX, posZ, speed);
+
+                }
+
+            }
+
+            else
+
+            {
+
+                // C++ birebir (cpp:105,109-110):
+
+                // m_vPosFromServer.Set(fPosX, fPosY, fPosZ);
+
+                // if (iMoveMode == 0) return;
+
+                // Sadece hedef pozisyonu guncelle, teleport YAPMA
+
+                if (wander != null)
+
+                {
+
+                    wander.UpdateTargetOnly(posX, posZ);
+
+                }
+
+            }
+
+        }
+
+
+
+        // ============================
+
+        // KO RAW WIRE FORMAT HANDLER METHODS
+
+        // ============================
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: MsgRecv_UserMove (GameProcMain.cpp:2327-2378)
+
+        /// Wire format handler for remote player movement.
+
+        /// 
+
+        /// C++ (cpp:2339-2360): byMoveFlag == 0xFF → forced position update (teleport)
+
+        /// C++ (cpp:2362-2366): iID == self → update m_vPosFromServer
+
+        /// C++ (cpp:2368-2376): pUPC->MoveTo(fX, fY, fZ, fSpeed, byMoveFlag) — smooth walk/run
+
+        /// 
+
+        /// byMoveFlag values:
+
+        ///   0x00 = stop, 0x01 = start, 0x02 = continue moving, 0xFF = forced teleport
+
+        /// </summary>
+
+        private void HandleRemotePlayerMove(short id, float x, float y, float z, float speed, byte moveFlag)
+
+        {
+
+            // C++ birebir (cpp:2339): 0xFF == byMoveFlag → forced position update
+
+            if (moveFlag == 0xFF)
+
+            {
+
+                // C++ (cpp:2341-2344): iID == self → InitPlayerPosition
+
+                if (GameManager.Instance != null && id == GameManager.Instance.CharacterId)
+
+                {
+
+                    // Kendi oyuncumuzun zorla yeri güncellenmeli — GameManager'a bildir
+
+                    // C++ birebir: this->InitPlayerPosition(__Vector3(fX, fY, fZ));
+
+                    return;
+
+                }
+
+
+
+                // C++ (cpp:2347-2357): Uzak oyuncu → MoveTo(fX, fY, fZ, 0, 0) + PositionSet
+
+                if (_remotePlayers.TryGetValue(id, out var rpForced))
+
+                {
+
+                    // C++ birebir (cpp:2356-2357):
+
+                    // pBPC->MoveTo(fX, fY, fZ, 0, 0);
+
+                    // pBPC->PositionSet(__Vector3(fX, fY, fZ), true);
+
+                    float terrainY = 0f;
+
+                    if (WorldBuilder.Instance != null)
+
+                        terrainY = WorldBuilder.Instance.GetTerrainHeight(x, z);
+
+                    rpForced.TargetPosition = new Vector3(x, terrainY, z);
+
+                    rpForced.Root.transform.position = new Vector3(x, terrainY, z); // Snap, no lerp
+
+                    rpForced.IsMoving = false;
+
+                }
+
+                return;
+
+            }
+
+
+
+            // C++ birebir (cpp:2362-2366): iID == self → kendi vPosFromServer güncelle
+
+            if (GameManager.Instance != null && id == GameManager.Instance.CharacterId)
+
+            {
+
+                // C++ birebir: s_pPlayer->m_vPosFromServer.Set(fX, fY, fZ);
+
+                return;
+
+            }
+
+
+
+            // C++ birebir (cpp:2368-2376): Uzak oyuncu → pUPC->MoveTo(fX, fY, fZ, fSpeed, byMoveFlag)
+
+            if (_remotePlayers.TryGetValue(id, out var rp))
+
+            {
+
+                float terrainY = 0f;
+
+                if (WorldBuilder.Instance != null)
+
+                    terrainY = WorldBuilder.Instance.GetTerrainHeight(x, z);
+
+
+
+                Vector3 newTargetPos = new Vector3(x, terrainY, z);
+
+
+
+                // Calculate direction angle based on target position relative to current position
+
+                Vector3 moveDelta = newTargetPos - rp.Root.transform.position;
+
+                moveDelta.y = 0f;
+
+                if (moveDelta.sqrMagnitude > 0.001f)
+
+                {
+
+                    rp.TargetRotation = Mathf.Atan2(moveDelta.x, moveDelta.z) * Mathf.Rad2Deg;
+
+                }
+
+
+
+                rp.TargetPosition = newTargetPos;
+
+
+
+                if (speed > 0 && (moveFlag == 1 || moveFlag == 2))
+
+                {
+
+                    // C++ birebir: pUPC->MoveTo(fX, fY, fZ, fSpeed, byMoveFlag)
+
+                    // moveFlag=1 (start) veya moveFlag=2 (continue) → hareket halinde
+
+                    rp.IsMoving = true;
+
+                }
+
+                else
+
+                {
+
+                    // moveFlag=0 (stop) veya speed==0 → duruyor
+
+                    rp.IsMoving = false;
+
+                }
+
+            }
+
+        }
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: MsgRecv_Attack (GameProcMain.cpp:3213-3327)
+
+        /// KO wire format overload — raw type/result bytes from packet.
+
+        /// 
+
+        /// Wire: [type:byte][result:byte][attackerId:int16][targetId:int16]
+
+        /// 
+
+        /// C++ (cpp:3215): iType — 0x01=physical, 0x02=magic, 0x03=sustained magic
+
+        /// C++ (cpp:3216): iResult — 0x00=miss, 0x01=hit, 0x02=kill
+
+        /// C++ (cpp:3220-3221): iIDAttacker == iIDTarget → return false
+
+        /// C++ (cpp:3298-3306): result==0x00 → guard/miss (no damage)
+
+        /// C++ (cpp:3313-3325): result==0x02 → target dies
+
+        /// </summary>
+
+        private void HandleAttackResult(short attackerId, short targetId, byte type, byte result)
+
+        {
+
+            // C++ birebir (cpp:3220-3221): Attacker == target → ignore
+
+            if (attackerId == targetId)
+
+                return;
+
+
+
+            // C++ birebir (cpp:3298): result==0x00 → miss/guard — no damage
+
+            // C++ birebir (cpp:3313): result==0x02 → kill
+
+            bool targetDied = (result == 0x02);
+
+
+
+            // Determine if target is player or NPC
+
+            // C++ birebir: ID < 10000 → player, >= 10000 → NPC
+
+            bool targetIsPlayer = (targetId < 10000);
+
+
+
+            // C++ birebir (cpp:3268-3277): Attacker anim
+
+            // Attacker is remote player → rotate to target + attack action
+
+            if (GameManager.Instance == null || attackerId != GameManager.Instance.CharacterId)
+
+            {
+
+                // C++ birebir (cpp:3230): pAttacker = s_pOPMgr->CharacterGetByID(iIDAttacker, true)
+
+                // CharacterGetByID(id, true) hem UPC (uzak oyuncu) hem NPC arar
+
+
+
+                // Önce uzak oyuncularda ara
+
+                if (_remotePlayers.TryGetValue(attackerId, out var rpAttacker))
+
+                {
+
+                    // C++ birebir (cpp:3270): pAttacker->RotateTo(pTarget)
+
+                    GameObject targetObj = FindTargetObject(targetId);
+
+                    if (targetObj != null && rpAttacker.Root != null)
+
+                    {
+
+                        Vector3 dir = targetObj.transform.position - rpAttacker.Root.transform.position;
+
+                        dir.y = 0;
+
+                        if (dir.sqrMagnitude > 0.001f)
+
+                            rpAttacker.Root.transform.rotation = Quaternion.LookRotation(dir.normalized);
+
+                    }
+
+
+
+                    // C++ birebir (cpp:3272-3275):
+
+                    // type==0x01 → PSA_ATTACK, type==0x02 → PSA_SPELLMAGIC
+
+                    var rpe = rpAttacker.Root?.GetComponent<RemotePlayerEntity>();
+
+                    if (rpe != null)
+
+                    {
+
+                        if (type == 0x01)
+
+                            rpe.ActionAttack();
+
+                        else if (type == 0x02)
+
+                            rpe.ActionSpellMagic(0, 0f);
+
+                    }
+
+                }
+
+                // C++ birebir (cpp:3230): CharacterGetByID — NPC'lerde de ara
+
+                else if (_monsters.TryGetValue(attackerId, out var mvAttacker) && mvAttacker.Root != null)
+
+                {
+
+                    // C++ birebir (cpp:3270): ((CPlayerNPC*)pAttacker)->RotateTo(pTarget)
+
+                    GameObject targetObj = FindTargetObject(targetId);
+
+                    if (targetObj != null)
+
+                    {
+
+                        Vector3 dir = targetObj.transform.position - mvAttacker.Root.transform.position;
+
+                        dir.y = 0;
+
+                        if (dir.sqrMagnitude > 0.001f)
+
+                            mvAttacker.Root.transform.rotation = Quaternion.LookRotation(dir.normalized);
+
+                    }
+
+
+
+                    // C++ birebir (cpp:3272-3275): pAttacker->Action(PSA_ATTACK, false, pTarget)
+
+                    var koEntity = mvAttacker.Root.GetComponent<KOEntity>();
+
+                    if (koEntity != null && !koEntity.IsDead)
+
+                    {
+
+                        if (type == 0x01)
+
+                            koEntity.ActionAttack();
+
+                        // type==0x02 → PSA_SPELLMAGIC (NPC spell — nadir)
+
+                    }
+
+
+
+                    // Saldırı sırasında idle wander'ı durdur — C++ state machine (PlayerNPC.cpp:93-98)
+
+                    // ReturnToIdleAfterAttack coroutine'i anim bitince idle'a döndürür
+
+                    var wander = mvAttacker.Root.GetComponent<KONpcIdleWander>();
+
+                    if (wander != null) wander.enabled = false;
+
+                }
+
+            }
+
+
+
+            // C++ birebir (cpp:3297): pTarget->m_bGuardSuccess = false
+
+            // C++ birebir (cpp:3298-3304): result==0x00 → guard anim
+
+            if (result == 0x00)
+
+            {
+
+                // Miss/Guard — C++ birebir: pTarget->Action(PSA_GUARD, false)
+
+                // Sadece log — guard animasyonu henüz implemente edilmedi
+
+                return;
+
+            }
+
+
+
+            // C++ birebir (cpp:3313-3325): result==0x02 → death
+
+            if (targetDied)
+
+            {
+
+                // C++ birebir (cpp:3322): pTarget->m_fTimeAfterDeath = 0.1f
+
+                if (!targetIsPlayer && _monsters.TryGetValue(targetId, out var mv))
+
+                {
+
+                    var wander = mv.Root.GetComponent<KONpcIdleWander>();
+
+                    if (wander != null) wander.enabled = false;
+
+
+
+                    var koEntity = mv.Root.GetComponent<KOEntity>();
+
+                    if (koEntity != null)
+
+                        koEntity.ActionDying();
+
+
+
+                    // Hedeften düşür
+
+                    var targetSelector = KOTargetSelector.Instance;
+
+                    if (targetSelector != null && targetSelector.SelectedEntity != null
+
+                        && targetSelector.SelectedEntity.ServerInstanceId == targetId)
+
+                    {
+
+                        targetSelector.ClearTarget();
+
+                        if (TargetInfoUI.Instance != null)
+
+                            TargetInfoUI.Instance.ClearTarget();
+
+                    }
+
+                }
+
+                else if (targetIsPlayer && _remotePlayers.TryGetValue(targetId, out var rpDead))
+
+                {
+
+                    if (rpDead.Root.activeInHierarchy)
+
+                        StartCoroutine(PlayerDeathAnimation(rpDead));
+
+                }
+
+            }
+
+            else if (result == 0x01)
+            {
+                // Hit — C++ birebir: ProcessAttack → struck + blood FX
+                if (!targetIsPlayer && _monsters.TryGetValue(targetId, out var mv))
+                {
+                    TriggerLinkedKOEntityStruck(targetId);
+
+                    if (KOFXManager.Instance != null && KOFXManager.Instance.IsReady)
+                    {
+                        Vector3 targetPos = mv.Root.transform.position;
+                        KOFXManager.Instance.TriggerBundle(
+                            (int)targetId, 0, KOFXManager.FXID_BLOOD, targetPos);
+                    }
+                }
+            }
+
+
+
+        }
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: MagicPacketRecv router
+
+        /// MagicSkillMng.cpp — subOp'a göre Casting/Flying/Effecting/Fail'e yönlendirir.
+
+        /// 
+
+        /// PacketDef.h birebir:
+
+        ///   N3_SP_MAGIC_CASTING       = 0x01
+
+        ///   N3_SP_MAGIC_FLYING        = 0x02
+
+        ///   N3_SP_MAGIC_EFFECTING     = 0x03
+
+        ///   N3_SP_MAGIC_FAIL          = 0x04
+
+        ///   N3_SP_MAGIC_TYPE4BUFFTYPE = 0x05
+
+        ///   N3_SP_MAGIC_CANCEL        = 0x06
+
+        /// </summary>
+        private void HandleMagicProcess(byte subOp, int magicId, short sourceId, short targetId,
+            short d0, short d1, short d2, short d3, short d4, short d5)
+        {
+            // C++ birebir: MagicPacketRecv switch (iSubOp)
+            switch (subOp)
+            {
+                case 0x01: // N3_SP_MAGIC_CASTING
+                    HandleMagicCasting(magicId, sourceId, targetId, d0, d1, d2, d3, d4, d5);
+                    break;
+
+                case 0x02: // N3_SP_MAGIC_FLYING
+                    HandleMagicFlying(magicId, sourceId, targetId, d0, d1, d2, d3, d4, d5);
+                    break;
+
+                case 0x03: // N3_SP_MAGIC_EFFECTING
+
+                    HandleMagicEffecting(magicId, sourceId, targetId, d0, d1, d2, d3, d4, d5);
+
+                    break;
+
+
+
+                case 0x04: // N3_SP_MAGIC_FAIL
+
+                    // d3 = fail reason, others = data
+
+                    HandleMagicFail(magicId, sourceId, targetId,
+
+                        (MagicFailReason)d3, d0, d1, d2, d4, d5);
+
+                    break;
+
+
+
+                // 0x05 (TYPE4BUFFTYPE) ve 0x06 (CANCEL) HandleMagicProcess_KO'da
+
+                // farklı wire format ile doğrudan handle ediliyor — buraya gelmez.
+
+
+
+                default:
+
+                    Debug.LogWarning($"[MAGIC] Unknown subOp: 0x{subOp:X2} MagicId={magicId}");
+
+                    break;
+
+            }
+
+        }
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: MsgRecv_Dead (GameProcMain.cpp:3330-3363)
+
+        /// 1-parameter overload — determines player vs NPC by KO ID convention.
+
+        /// 
+
+        /// C++ (cpp:3332): iIDTarget = pkt.read&lt;int16_t&gt;()
+
+        /// C++ (cpp:3335-3343): iIDTarget == self → regen dialog
+
+        /// C++ (cpp:3347): pTarget = CharacterGetByID(iIDTarget, false) — hem UPC hem NPC arar
+
+        /// C++ (cpp:3352-3358): pTarget->m_fTimeAfterDeath = 0.1f + ActionDying
+
+        /// 
+
+        /// KO ID convention: player IDs &lt; 10000, NPC IDs &gt;= 10000
+
+        /// </summary>
+
+        private void HandleEntityDeath(short targetId)
+
+        {
+
+            // C++ birebir (cpp:3335-3343): Kendi oyuncumuz mu?
+
+            if (GameManager.Instance != null && targetId == GameManager.Instance.CharacterId)
+
+            {
+
+                // C++ birebir: pTarget = s_pPlayer → regen dialog
+
+                // Regen dialog tetiklemesi GameManager tarafından yapılır
+
+                return;
+
+            }
+
+
+
+            // C++ birebir (cpp:3347): CharacterGetByID(iIDTarget, false) — UPC + NPC arar
+
+            // Önce NPC'lerde ara
+
+            if (_monsters.TryGetValue(targetId, out var mv))
+
+            {
+
+                // C++ birebir (cpp:3356-3357):
+
+                //   pTarget->m_fTimeAfterDeath = 0.1f;
+
+                //   pTarget->ActionDying(PSD_KEEP_POSITION, __Vector3(0, 0, 1));
+
+                HandleEntityDeath(targetId, false);
+
+                return;
+
+            }
+
+
+
+            // Sonra uzak oyuncularda ara
+
+            if (_remotePlayers.TryGetValue(targetId, out var rp))
+
+            {
+
+                HandleEntityDeath(targetId, true);
+
+                return;
+
+            }
+
+
+
+            Debug.LogWarning($"[DEAD] Entity bulunamadı: ID={targetId}");
+
+        }
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: CPlayerOtherMgr::ReleaseNPCs (PlayerOtherMgr.cpp:31-37)
+
+        /// Tüm NPC/Monster'ları temizler. NPC region boş geldiğinde çağrılır.
+
+        /// 
+
+        /// C++ (cpp:33-34): for (; it != itEnd; it++) delete it->second;
+
+        /// C++ (cpp:36): m_NPCs.clear();
+
+        /// </summary>
+
+        private void ClearAllMonsters()
+
+        {
+
+            foreach (var kvp in _monsters)
+
+            {
+
+                if (kvp.Value.Root != null)
+
+                    DestroyEntityRoot(kvp.Value.Root);
+
+            }
+
+            _monsters.Clear();
+
+            _hiddenNpcs.Clear();
+
+        }
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: MsgRecv_NPCMove (GameProcMain.cpp:3188-3211)
+
+        /// KO wire format handler for NPC/monster movement.
+
+        /// Delegates to HandleNpcMove which implements the full C++ logic.
+
+        /// 
+
+        /// C++ (cpp:3193): fYPos ignored — terrain height kullanılır
+
+        /// C++ (cpp:3204): fY = ACT_WORLD->GetHeightWithTerrain(fXPos, fZPos)
+
+        /// C++ (cpp:3205): iMoveMode = (fSpeed > 0) ? 2 : 0
+
+        /// C++ (cpp:3206): pNPC->MoveTo(fXPos, fY, fZPos, fSpeed, iMoveMode)
+
+        /// </summary>
+
+        private void HandleMonsterMove(short id, float x, float z, float speed)
+
+        {
+
+            // C++ birebir (cpp:3204): fY = terrain height
+
+            float y = 0f;
+
+            if (WorldBuilder.Instance != null)
+
+                y = WorldBuilder.Instance.GetTerrainHeight(x, z);
+
+
+
+            // Delegate to existing HandleNpcMove which implements full C++ logic
+
+            HandleNpcMove(id, x, z, y, speed);
+
+        }
+
+
+
+        // ============================
+
+        // HAREKET
+
+        // ============================
+
+
+
+        private void HandlePlayerMove(long charId, float x, float y, float z, float rotation, bool isMoving)
+
+        {
+
+            // Kendi karakterimiz değilse
+
+            if (GameManager.Instance != null && charId == GameManager.Instance.CharacterId)
+
+                return;
+
+
+
+            if (_remotePlayers.TryGetValue(charId, out var rp))
+
+            {
+
+                rp.TargetPosition = new Vector3(x, 0, z);
+
+                rp.TargetRotation = rotation;
+
+                rp.IsMoving = true;
+
+            }
+
+        }
+
+
+
+        private void HandlePlayerStop(long charId, float x, float y, float z, float rotation)
+
+        {
+
+            if (GameManager.Instance != null && charId == GameManager.Instance.CharacterId)
+
+                return;
+
+
+
+            if (_remotePlayers.TryGetValue(charId, out var rp))
+
+            {
+
+                rp.TargetPosition = new Vector3(x, 0, z);
+
+                rp.TargetRotation = rotation;
+
+                rp.IsMoving = false;
+
+            }
+
+        }
+
+
+
+        // ============================
+
+        // SAVAŞ SONUÇLARI
+
+        // ============================
+
+
+
+        private void HandleAttackResult(long attackerId, long targetId, bool targetIsPlayer,
+
+            int damage, int targetHp, bool targetDied)
+
+        {
+
+            // Yaratığa hasar
+
+            if (!targetIsPlayer && _monsters.TryGetValue(targetId, out var mv))
+
+            {
+
+                mv.Entity.ApplyDamage(damage, targetHp);
+
+                mv.OverheadUI?.UpdateHpBar((float)targetHp / Mathf.Max(1, mv.Entity.MaxHp));
+
+
+
+                // Target Info UI güncelle
+
+                if (TargetInfoUI.Instance != null)
+
+                    TargetInfoUI.Instance.UpdateTargetHp(targetId, targetHp, mv.Entity.MaxHp);
+
+
+
+                // Eşleşen KOEntity (WorldBuilder model) HP'sini de güncelle.
+
+                // Open-KO'da HP güncellemesi WIZ_HP_CHANGE ile ayrı paket olarak gelir,
+
+                // bizim mimarimizde S2C_ATTACK_RESULT içinde geldiği için burada yapılır.
+
+                UpdateLinkedKOEntityHp(targetId, targetHp);
+
+
+
+                if (targetDied)
+
+                {
+
+                    // Open-KO birebir: MsgRecv_Attack result=0x02 (GameProcMain.cpp:3322)
+
+                    // pTarget->m_fTimeAfterDeath = 0.1f — ölüm zamanlayıcısı başlar.
+
+                    // pTarget->ActionDying(PSD_KEEP_POSITION, ...)
+
+                    var wander = mv.Root.GetComponent<KONpcIdleWander>();
+
+                    if (wander != null) wander.enabled = false;
+
+                    
+
+                    // Ölüm animasyonu tetikle (fade + çökme)
+
+                    var koEntity = mv.Root.GetComponent<KOEntity>();
+
+                    if (koEntity != null)
+
+                    {
+
+                        koEntity.ActionDying();
+
+                    }
+
+                    
+
+                    // Hedeften düşür — ölü monster hedef olarak kalmamalı
+
+                    var targetSelector = KOTargetSelector.Instance;
+
+                    if (targetSelector != null && targetSelector.SelectedEntity != null 
+
+                        && targetSelector.SelectedEntity.ServerInstanceId == targetId)
+
+                    {
+
+                        targetSelector.ClearTarget();
+
+                        if (TargetInfoUI.Instance != null)
+
+                            TargetInfoUI.Instance.ClearTarget();
+
+                    }
+
+                }
+
+                else
+
+                {
+
+                    // Open-KO birebir: ProcessAttack (PlayerBase.cpp:1329-1368)
+
+                    // target canlıysa ve guard başarısız ise:
+
+                    //   pTarget->DurationColorSet(crHit={1,0.2,0.2,1}, 0.3f)  (cpp:1358-1359)
+
+                    //   pTarget->Action(PSA_STRUCK, false)                      (cpp:1368)
+
+                    // KOEntity (WorldBuilder modeli) üzerinde struck + renk flash tetikle
+
+                    TriggerLinkedKOEntityStruck(targetId);
+
+
+
+                    // Open-KO birebir: PlayerBase.cpp:1352-1354
+
+                    //   if (!bAffected)
+
+                    //     s_pFX->TriggerBundle(pTarget->IDNumber(), 0, FXID_BLOOD, vCol);
+
+                    // Silah element efekti olmadığı için standard blood efekti tetiklenir.
+
+                    if (KOFXManager.Instance != null && KOFXManager.Instance.IsReady)
+
+                    {
+
+                        Vector3 targetPos = mv.Root.transform.position;
+
+                        KOFXManager.Instance.TriggerBundle(
+
+                            (int)targetId, 0, KOFXManager.FXID_BLOOD, targetPos);
+
+                    }
+
+                }
+
+            }
+
+
+
+            // Uzak oyuncuya hasar
+            if (targetIsPlayer && _remotePlayers.TryGetValue(targetId, out var rp))
+            {
+                rp.CurrentHp = targetHp;
+                rp.OverheadUI.UpdateHpBar((float)targetHp / Mathf.Max(1, rp.MaxHp));
+
+                if (targetDied)
+                {
+                    StartCoroutine(PlayerDeathAnimation(rp));
+                }
+            }
+
+        }
+
+
+
+        /// <summary>
+
+        /// ServerInstanceId ile eşleşen KOEntity'nin HP'sini güncelle.
+
+        /// WorldBuilder modeli (KOTargetSelector HP bar) bu değeri okur.
+
+        /// </summary>
+
+        private void UpdateLinkedKOEntityHp(long serverInstanceId, int currentHp)
+
+        {
+
+            var entities = FindObjectsByType<KOEntity>(FindObjectsInactive.Exclude);
+
+            foreach (var e in entities)
+
+            {
+
+                if (e.ServerInstanceId == serverInstanceId)
+
+                {
+
+                    e.CurrentHP = currentHp;
+
+                    return;
+
+                }
+
+            }
+
+        }
+
+
+
+        /// <summary>
+
+        /// ServerInstanceId ile eşleşen KOEntity üzerinde struck efekti tetikle.
+
+        ///
+
+        /// Open-KO birebir: ProcessAttack (PlayerBase.cpp:1358-1368)
+
+        ///   D3DCOLORVALUE crHit = { 1.0f, 0.2f, 0.2f, 1.0f };
+
+        ///   pTarget->DurationColorSet(crHit, 0.3f);
+
+        ///   pTarget->Action(PSA_STRUCK, false);
+
+        /// </summary>
+
+        private void TriggerLinkedKOEntityStruck(long serverInstanceId)
+
+        {
+
+            var entities = FindObjectsByType<KOEntity>(FindObjectsInactive.Exclude);
+
+            foreach (var e in entities)
+
+            {
+
+                if (e.ServerInstanceId == serverInstanceId)
+
+                {
+
+                    // Open-KO birebir: crHit = { 1.0f, 0.2f, 0.2f, 1.0f } (cpp:1358)
+
+                    Color crHit = new Color(1.0f, 0.2f, 0.2f, 1.0f);
+
+                    e.DurationColorSet(crHit, 0.3f);  // cpp:1359
+
+                    e.ActionStruck();                   // cpp:1368
+
+                    return;
+
+                }
+
+            }
+
+        }
+
+
+
+
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: MsgRecv_UserLookChange (GameProcMain.cpp:3438-3540)
+
+        /// 
+
+        /// Bir oyuncu görünür slot'una eşya taktığında/çıkardığında
+
+        /// yakındaki oyunculara broadcast edilir.
+
+        /// 
+
+        /// C++ akış:
+
+        ///   1. iID == s_pPlayer->IDNumber() → kendi oyuncumuz ise atla (satır 3445)
+
+        ///   2. s_pOPMgr->UPCGetByID(iID) → uzak oyuncuyu bul (satır 3448)
+
+        ///   3. s_pTbl_Items_Basic.Find(dwItemID / 1000 * 1000) → item basic (satır 3452)
+
+        ///   4. s_pTbl_Items_Exts[byExtIndex].Find(dwItemID % 1000) → item ext (satır 3456)
+
+        ///   5. Slot → ePartPos / ePlugPos eşleme (satır 3466-3479)
+
+        ///   6. dwItemID != 0 → MakeResrcFileNameForUPC → PlugSet (satır 3514-3516)
+
+        ///   7. dwItemID == 0 → PlugSet("") kaldır (satır 3521)
+
+        /// </summary>
+
+        private void HandleUserLookChange(long charId, byte slotPos, int itemId, short durability)
+
+        {
+
+            // C++ satır 3445: if (iID == s_pPlayer->IDNumber()) return false;
+
+            if (GameManager.Instance != null && charId == GameManager.Instance.CharacterId)
+
+                return;
+
+
+
+            // C++ satır 3448: CPlayerOther* pUPC = s_pOPMgr->UPCGetByID(iID, false);
+
+            if (!_remotePlayers.TryGetValue(charId, out var rp))
+
+                return;
+
+
+
+            // C++ satır 3466-3479: Slot → ePartPos / ePlugPos eşleme
+
+            // Open-KO birebir: GameDef.h:998-1013 (e_ItemSlot enum)
+
+            #pragma warning disable CS0219 // Open-KO enum parity — henüz kullanılmayan slotlar
+
+            const int ITEM_SLOT_EAR_RIGHT  = 0;
+
+            const int ITEM_SLOT_HEAD       = 1;
+
+            const int ITEM_SLOT_EAR_LEFT   = 2;
+
+            const int ITEM_SLOT_NECK       = 3;
+
+            const int ITEM_SLOT_UPPER      = 4;
+
+            const int ITEM_SLOT_SHOULDER   = 5;
+
+            const int ITEM_SLOT_HAND_RIGHT = 6;
+
+            const int ITEM_SLOT_BELT       = 7;
+
+            const int ITEM_SLOT_HAND_LEFT  = 8;
+
+            const int ITEM_SLOT_RING_RIGHT = 9;
+
+            const int ITEM_SLOT_LOWER      = 10;
+
+            const int ITEM_SLOT_RING_LEFT  = 11;
+
+            const int ITEM_SLOT_GLOVES     = 12;
+
+            const int ITEM_SLOT_SHOES      = 13;
+
+            #pragma warning restore CS0219
+
+
+
+            const int PLUG_POS_RIGHTHAND = 0;
+
+            const int PLUG_POS_LEFTHAND = 1;
+
+            const int PLUG_POS_UNKNOWN = -1;
+
+            const int PART_POS_UNKNOWN = -1;
+
+
+
+            int ePartPos = PART_POS_UNKNOWN;
+
+            int ePlugPos = PLUG_POS_UNKNOWN;
+
+
+
+            // C++ satır 3466-3479 birebir
+
+            // PART_POS enum (GameDef.h:363-370):
+
+            //   UPPER=0, LOWER=1, FACE=2, HANDS=3, FEET=4, HAIR_HELMET=5
+
+            if (slotPos == ITEM_SLOT_HEAD)
+
+                ePartPos = 5; // PART_POS_HAIR_HELMET
+
+            else if (slotPos == ITEM_SLOT_UPPER)
+
+                ePartPos = 0; // PART_POS_UPPER
+
+            else if (slotPos == ITEM_SLOT_LOWER)
+
+                ePartPos = 1; // PART_POS_LOWER
+
+            else if (slotPos == ITEM_SLOT_GLOVES)
+
+                ePartPos = 3; // PART_POS_HANDS
+
+            else if (slotPos == ITEM_SLOT_SHOES)
+
+                ePartPos = 4; // PART_POS_FEET
+
+            else if (slotPos == ITEM_SLOT_HAND_RIGHT)
+
+                ePlugPos = PLUG_POS_RIGHTHAND;
+
+            else if (slotPos == ITEM_SLOT_HAND_LEFT)
+
+                ePlugPos = PLUG_POS_LEFTHAND;
+
+
+
+            // C++ satır 3510: else if (ePlugPos != PLUG_POS_UNKNOWN)
+
+            if (ePlugPos != PLUG_POS_UNKNOWN)
+
+            {
+
+                // Plug attach — silah/kalkan
+
+                if (rp.Root == null) return;
+
+
+
+                // Karakter modelini bul — skeleton joint'leri olan GameObject
+
+                GameObject charModel = FindCharacterModel(rp.Root);
+
+                if (charModel == null)
+
+                {
+
+                    return;
+
+                }
+
+
+
+                string plugTag = ePlugPos == PLUG_POS_RIGHTHAND ? "PLUG_RH" : "PLUG_LH";
+
+
+
+                if (itemId != 0)
+
+                {
+
+                    // C++ satır 3512-3517: dwItemID != 0 → MakeResrcFileNameForUPC → PlugSet
+
+                    // C++ satır 3452: pItem = s_pTbl_Items_Basic.Find(dwItemID / 1000 * 1000)
+
+                    if (KOInventory.s_pTbl_Items_Basic == null) return;
+
+                    var pItem = KOTableReader.FindItemBasic(KOInventory.s_pTbl_Items_Basic, itemId);
+
+                    if (pItem == null) return;
+
+
+
+                    // C++ satır 3454-3456: pItemExt = s_pTbl_Items_Exts[byExtIndex].Find(dwItemID % 1000)
+
+                    KOTableReader.TableItemExt pItemExt = null;
+
+                    if (KOInventory.s_pTbl_Items_Exts != null)
+
+                        pItemExt = KOTableReader.FindItemExt(KOInventory.s_pTbl_Items_Exts, pItem.byExtIndex, itemId);
+
+
+
+                    // C++ satır 3514-3515: MakeResrcFileNameForUPC → szItemFN
+
+                    // dwIDResrc override — GameBase.cpp:584-587
+
+                    uint iIDResrc = pItem.dwIDResrc;
+
+                    if (pItemExt != null && pItemExt.dwIDResrc != 0)
+
+                        iIDResrc = pItemExt.dwIDResrc;
+
+
+
+                    if (iIDResrc == 0) return;
+
+
+
+                    int d1 = (int)(iIDResrc / 10000000);
+
+                    int d2 = (int)((iIDResrc / 1000) % 10000);
+
+                    int d3 = (int)((iIDResrc / 10) % 100);
+
+                    int d4 = (int)(iIDResrc % 10);
+
+                    string szItemFN = $"Item\\{d1}_{d2:D4}_{d3:D2}_{d4}.n3cplug";
+
+
+
+                    // C++ satır 3516: pUPC->PlugSet(ePlugPos, szItemFN, pItem, pItemExt)
+
+                    N3CharBuilder.PlugRemove(charModel, plugTag);
+
+                    var plugObj = N3CharBuilder.PlugSet(charModel, szItemFN, -1, plugTag);
+
+                    if (plugObj != null && pItemExt != null)
+
+                    {
+
+                        var glow = plugObj.GetComponent<KOWeaponGlow>() ?? plugObj.AddComponent<KOWeaponGlow>();
+
+                        glow.Initialize(pItemExt);
+
+
+
+                        var trail = plugObj.GetComponent<KOWeaponTrail>() ?? plugObj.GetComponentInChildren<KOWeaponTrail>();
+
+                        if (trail != null)
+
+                        {
+
+                            const int LIMIT_FX_DAMAGE = 64;
+
+                            const int ITEM_ATTRIB_UNIQUE = 4;
+
+                            if ((pItemExt.byMagicOrRare == ITEM_ATTRIB_UNIQUE && pItemExt.byDamageFire > 0)
+
+                                     || (pItemExt.byDamageFire >= LIMIT_FX_DAMAGE))
+
+                            {
+
+                                trail.crTrace = 0xffff0000;
+
+                            }
+
+                            else if ((pItemExt.byMagicOrRare == ITEM_ATTRIB_UNIQUE && pItemExt.byDamageIce > 0)
+
+                                     || (pItemExt.byDamageIce >= LIMIT_FX_DAMAGE))
+
+                            {
+
+                                trail.crTrace = 0xff0000ff;
+
+                            }
+
+                            else if ((pItemExt.byMagicOrRare == ITEM_ATTRIB_UNIQUE && pItemExt.byDamageThuner > 0)
+
+                                     || (pItemExt.byDamageThuner >= LIMIT_FX_DAMAGE))
+
+                            {
+
+                                trail.crTrace = 0xffffffff;
+
+                            }
+
+                            else if ((pItemExt.byMagicOrRare == ITEM_ATTRIB_UNIQUE && pItemExt.byDamagePoison > 0)
+
+                                     || (pItemExt.byDamagePoison >= LIMIT_FX_DAMAGE))
+
+                            {
+
+                                trail.crTrace = 0xffff00ff;
+
+                            }
+
+                        }
+
+                    }
+
+                }
+
+                else
+
+                {
+
+                    // C++ satır 3521: pUPC->PlugSet(ePlugPos, "", nullptr, nullptr) — kaldır
+
+                    N3CharBuilder.PlugRemove(charModel, plugTag);
+
+                }
+
+            }
+
+            else if (ePartPos != PART_POS_UNKNOWN)
+
+            {
+
+                // Part attach — zırh/kıyafet
+
+                // Open-KO birebir: GameProcMain.cpp satır 3481-3506
+
+                // C++ satır 3487: pUPC->PartSet(ePartPos, szItemFN, pItem, pItemExt)
+
+                // Bu çağrı CPlayerBase::PartSet'i tetikler — Robe UPPER/LOWER mantığı dahil.
+
+                if (rp.Root == null) return;
+
+
+
+                GameObject charModel = FindCharacterModel(rp.Root);
+
+                if (charModel == null)
+
+                {
+
+                    return;
+
+                }
+
+
+
+                if (itemId != 0)
+
+                {
+
+                    // C++ satır 3483-3488: dwItemID != 0 → MakeResrcFileNameForUPC → PartSet
+
+                    if (KOInventory.s_pTbl_Items_Basic == null) return;
+
+                    var pItem = KOTableReader.FindItemBasic(KOInventory.s_pTbl_Items_Basic, itemId);
+
+                    if (pItem == null) return;
+
+
+
+                    KOTableReader.TableItemExt pItemExt = null;
+
+                    if (KOInventory.s_pTbl_Items_Exts != null)
+
+                        pItemExt = KOTableReader.FindItemExt(KOInventory.s_pTbl_Items_Exts, pItem.byExtIndex, itemId);
+
+
+
+                    // dwIDResrc override — GameBase.cpp:584-587
+
+                    uint iIDResrc = pItem.dwIDResrc;
+
+                    if (pItemExt != null && pItemExt.dwIDResrc != 0)
+
+                        iIDResrc = pItemExt.dwIDResrc;
+
+
+
+                    if (iIDResrc == 0) return;
+
+
+
+                    // Open-KO birebir: GameBase.cpp satır 599-602 — Part dosya adı (race EKLENİR)
+
+                    int d1 = (int)(iIDResrc / 10000000);
+
+                    int d2 = (int)((iIDResrc / 1000) % 10000);
+
+                    int d3 = (int)((iIDResrc / 10) % 100);
+
+                    int d4 = (int)(iIDResrc % 10);
+
+                    int d2WithRace = d2 + rp.Race;
+
+                    string szItemFN = $"Item\\{d1}_{d2WithRace:D4}_{d3:D2}_{d4}.n3cpart";
+
+
+
+                    // C++ satır 3487: pUPC->PartSet(ePartPos, szItemFN, pItem, pItemExt)
+
+                    // CPlayerBase::PartSet — Robe mantığı dahil
+
+                    rp.RemotePartSet(charModel, ePartPos, szItemFN, pItem, pItemExt);
+
+                }
+
+                else
+
+                {
+
+                    // C++ satır 3490-3505: dwItemID == 0
+
+                    // satır 3501: HAIR_HELMET ise → InitHair()
+
+                    // satır 3504: diğer → PartSet(ePartPos, pLooks->szPartFNs[ePartPos], nullptr, nullptr)
+
+                    // RemotePartSet wrapper bu mantığı PlayerBase.cpp:1906-1927'den zaten handle eder
+
+                    rp.RemotePartSet(charModel, ePartPos, "", null, null);
+
+                }
+
+            }
+
+
+
+            else
+
+            {
+
+                // C++ satır 3535: Unknown slot — log at
+
+                Debug.LogWarning($"[LOOK-CHG] CharId={charId}: Bilinmeyen slot={slotPos} ItemId={itemId}");
+
+            }
+
+        }
+
+
+
+        /// <summary>
+
+        /// Uzak oyuncunun root objesinden karakter modelini bul.
+
+        /// Skeleton joint'leri olan ilk child'ı döndürür.
+
+        /// </summary>
+
+        private static GameObject FindCharacterModel(GameObject root)
+
+        {
+
+            // Animation component varsa → o model root
+
+            var anim = root.GetComponentInChildren<Animation>();
+
+            if (anim != null) return anim.gameObject;
+
+
+
+            // SkinnedMeshRenderer varsa → parent'ı model root
+
+            var smr = root.GetComponentInChildren<SkinnedMeshRenderer>();
+
+            if (smr != null)
+
+                return smr.transform.parent?.gameObject ?? smr.gameObject;
+
+
+
+            return null;
+
+        }
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: MsgRecv_Effecting (MagicSkillMng.cpp:1866-1928)
+
+        /// EFFECTING = FX efekt tetikleme. Damage/HP bilgisi bu pakette YOKTUR.
+
+        /// HP bar güncelleme → HandleAttackResult
+
+        /// Ölüm → HandleEntityDeath (S2C_ENTITY_DEATH)
+
+        /// </summary>
+
+        private void HandleMagicEffecting(int magicId, long sourceId, long targetId,
+            short data0, short data1, short data2, short data3, short data4, short data5)
+        {
+            // ================================================================
+
+            // Open-KO birebir: MsgRecv_Effecting (MagicSkillMng.cpp:1866-1928)
+
+            // ================================================================
+
+
+
+            // C++ satır 1880-1882: pPlayer = CharacterGetByID(iSourceID, false)
+
+            // Source entity'yi bul — hem kendi oyuncumuz hem uzak oyuncular
+
+            // (C++'da pPlayer == nullptr → return)
+
+            // Bizde source'un varlığını kontrol etmemiz lazım ama
+
+            // kendi oyuncumuz her zaman var, uzak oyuncu entity'de olabilir.
+
+
+
+            // C++ satır 1884-1886: pSkill = s_pTbl_Skill.Find(dwMagicID)
+
+            var pSkill = SkillTableParser.Find(magicId);
+
+            if (pSkill == null) return;
+
+
+
+            var gm = GameManager.Instance;
+
+            long myId = gm != null ? gm.CharacterId : -1;
+
+
+
+            // C++ satır 1890-1895: iSourceID != s_pPlayer → uzak oyuncu anim transition
+
+            // pPlayer->m_iMagicAni = pSkill->iSelfAnimID2
+
+            // pPlayer->m_fCastFreezeTime = 0.0f
+
+            // pPlayer->Action(PSA_SPELLMAGIC, false)
+
+            if (sourceId != myId)
+            {
+                // Open-KO birebir: cpp:1890 — pPlayer->State() == PSA_SPELLMAGIC kontrolu
+                if (_remotePlayers.TryGetValue(sourceId, out var rpEffect))
+                {
+                    var rpe = rpEffect.Root?.GetComponent<RemotePlayerEntity>();
+                    if (rpe != null && rpe.State() == Character.PlayerStateAction.PSA_SPELLMAGIC)
+                    {
+                        // cpp:1892-1894
+                        rpe.ActionSpellEffecting(pSkill.SelfAnimID2);
+                    }
+                }
+            }
+            else
+            {
+                var pc = Character.PlayerController.Instance;
+                if (pc != null && pc.State() == Character.PlayerStateAction.PSA_SPELLMAGIC)
+                {
+                    // Okçu skilleri tek parça tam animasyonla akar, sunucu paketi yerel animasyonu kesmez
+                    if (pSkill.FirstTableType != 2 && pSkill.SecondTableType != 2)
+                    {
+                        pc.ActionSpellEffecting(pSkill.SelfAnimID2);
+                    }
+                }
+            }
+
+
+
+            // C++ satır 1897-1898: s_pFX->Stop(iSourceID, iSourceID, pSkill->iSelfFX1, -1, true)
+
+            //                      s_pFX->Stop(iSourceID, iSourceID, pSkill->iSelfFX1, -2, true)
+
+            var fxMgr = KOFXManager.Instance;
+
+            if (fxMgr != null && fxMgr.IsReady && pSkill.SelfFX1 > 0)
+
+            {
+
+                fxMgr.Stop((int)sourceId, (int)sourceId, pSkill.SelfFX1, -1, true);
+
+                fxMgr.Stop((int)sourceId, (int)sourceId, pSkill.SelfFX1, -2, true);
+
+            }
+
+
+
+            // C++ satır 1900-1903: Type1 → EffectingType1(dwMagicID, iSourceID, iTargetID)
+
+            // Type1 = combo melee skill — animasyon + hasar efekti
+
+            if (pSkill.FirstTableType == 1 || pSkill.SecondTableType == 1)
+
+            {
+
+                EffectingType1(magicId, sourceId, targetId, pSkill);
+
+            }
+
+
+
+            // C++ satır 1906-1910: Type4 → EffectingType4(dwMagicID)
+
+            // Type4 = buff — client-side stat delta
+
+            if (pSkill.FirstTableType == 4 || pSkill.SecondTableType == 4)
+
+            {
+
+                if (targetId == myId)
+
+                {
+
+                    // Open-KO birebir: MagicSkillMng.cpp:1909 — EffectingType4(dwMagicID)
+
+                    var magicMgr = Combat.KOMagicSkillManager.Instance;
+
+                    if (magicMgr != null)
+
+                        magicMgr.EffectingType4(magicId);
+
+                }
+
+            }
+
+
+
+            // C++ satır 1912-1916: Type3 → EffectingType3(dwMagicID)
+            // Type3 = magic damage/heal/DoT/HoT
+            if (pSkill.FirstTableType == 3 || pSkill.SecondTableType == 3)
+            {
+                bool isTargetLocalPlayer = (targetId == myId || targetId == 0 || (gm != null && targetId == gm.CharacterId));
+                if (isTargetLocalPlayer)
+                {
+                    // Open-KO birebir: MagicSkillMng.cpp:1915 — EffectingType3(dwMagicID)
+                    var magicMgr = Combat.KOMagicSkillManager.Instance;
+                    if (magicMgr != null)
+                        magicMgr.EffectingType3(magicId);
+                }
+            }
+
+            // Type 9 = buff/state change (Stealth, Hide, Lupin Eyes, Cat's Eyes)
+            if (pSkill.FirstTableType == 9 || pSkill.SecondTableType == 9)
+            {
+                if (targetId == myId)
+                {
+                    var magicMgr = Combat.KOMagicSkillManager.Instance;
+                    if (magicMgr != null)
+                        magicMgr.EffectingType9(magicId);
+                }
+            }
+
+
+
+            // C++ satır 1921-1927: Target FX tetikleme
+
+            if (fxMgr != null && fxMgr.IsReady && pSkill.TargetFX > 0)
+
+            {
+
+                if (pSkill.TargetPart == 255)
+                {
+
+                    var wb = WorldBuilder.Instance;
+
+                    float y = wb != null ? wb.GetTerrainHeight(data0, data2) : (float)data1;
+
+                    Vector3 vTargetPos = new Vector3(data0, y, data2);
+
+                    fxMgr.TriggerAreaTargetFX((int)sourceId, pSkill.TargetFX, vTargetPos, pSkill.Id);
+
+                }
+
+                else
+
+                {
+
+                    if (targetId == -1)
+
+                    {
+
+                        // C++ satır 1923-1924: __Vector3 vTargetPos(Data[0], Data[1], Data[2])
+
+                        // s_pFX->TriggerBundle(iSourceID, 0, iTargetFX, vTargetPos)
+
+                        var wb = WorldBuilder.Instance;
+
+                        float y = wb != null ? wb.GetTerrainHeight(data0, data2) : (float)data1;
+
+                        Vector3 vTargetPos = new Vector3(data0, y, data2);
+
+                        fxMgr.TriggerBundle((int)sourceId, 0, pSkill.TargetFX, vTargetPos);
+
+                    }
+
+                    else
+                    {
+                        // C++ satır 1927: s_pFX->TriggerBundle(iSourceID, 0, iTargetFX, iTargetID, iTargetPart)
+                        // C++ birebir: Hedef bulunamadıysa pozisyon overload'u ile çağır ((0,0,0) glitch'ini önlemek için)
+                        GameObject targetObj = FindTargetObject(targetId);
+                        if (targetObj != null)
+                        {
+                            fxMgr.TriggerBundle((int)sourceId, 0, pSkill.TargetFX, (int)targetId, pSkill.TargetPart);
+                        }
+                        else
+                        {
+                            var wb = WorldBuilder.Instance;
+                            float y = wb != null ? wb.GetTerrainHeight(data0, data2) : (float)data1;
+                            Vector3 vTargetPos = new Vector3(data0, y, data2);
+                            fxMgr.TriggerBundle((int)sourceId, 0, pSkill.TargetFX, vTargetPos);
+                        }
+                    }
+
+                }
+
+            }
+
+        }
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: EffectingType1 (MagicSkillMng.cpp:2284-2310)
+
+        /// Type1 melee skill effecting — uzak oyuncu combo anim.
+
+        ///
+
+        /// C++ satır 2286: pTarget = CharacterGetByID(iTargetID, false)
+
+        /// C++ satır 2289: iSourceID != s_pPlayer → uzak oyuncu dalı
+
+        /// C++ satır 2291: pType1 = m_pTbl_Type_1->Find(dwMagicID)
+
+        /// C++ satır 2298: pPlayer->RotateTo(pTarget)
+
+        /// C++ satır 2303: pPlayer->Action(PSA_SPELLMAGIC, false, pTarget, false)
+
+        /// C++ satır 2304: pPlayer->AnimationAdd(eAni, true)
+
+        /// </summary>
+
+        private void EffectingType1(int magicId, long sourceId, long targetId, SkillEntry pSkill)
+
+        {
+
+            var gm = GameManager.Instance;
+
+            long myId = gm != null ? gm.CharacterId : -1;
+
+
+
+            // C++ satır 2289-2304: iSourceID != s_pPlayer → uzak oyuncunun combo anim'ini tetikle
+
+            if (sourceId != myId)
+
+            {
+
+                // C++ satır 2294: pPlayer = CharacterGetByID(iSourceID, true)
+
+                if (_remotePlayers.TryGetValue(sourceId, out var rpType1))
+
+                {
+
+                    var rpe = rpType1.Root?.GetComponent<RemotePlayerEntity>();
+
+                    if (rpe != null)
+
+                    {
+
+                        // C++ satır 2298: pPlayer->RotateTo(pTarget)
+
+                        GameObject targetObj = FindTargetObject(targetId);
+
+                        if (targetObj != null)
+
+                        {
+
+                            Vector3 dir = (targetObj.transform.position - rpType1.Root.transform.position);
+
+                            dir.y = 0;
+
+                            if (dir.sqrMagnitude > 0.001f)
+
+                                rpType1.Root.transform.rotation = Quaternion.LookRotation(dir.normalized);
+
+                        }
+
+
+
+                        // C++ satır 2302-2304: birebir
+
+                        //   e_Ani eAni = (e_Ani) pType1->iAct[0];
+
+                        //   pPlayer->Action(PSA_SPELLMAGIC, false, pTarget, false);
+
+                        //   pPlayer->AnimationAdd(eAni, true);
+
+                        var pType1Data = KOImport.SkillType1Parser.Find(magicId);
+
+                        if (pType1Data != null && pType1Data.Act != null && pType1Data.Act.Length > 0)
+
+                        {
+
+                            Character.KOAni comboAni = (Character.KOAni)pType1Data.Act[0];  // cpp:2302
+
+
+
+                            // cpp:2303: Action(PSA_SPELLMAGIC) — state geçişi
+
+                            rpe.ActionSpellMagic(pType1Data.Act[0], 0f);
+
+
+
+                            // cpp:2304: AnimationAdd(eAni, true) — combo animasyonunu doğrudan oynat
+
+                            rpe.AnimationAdd(comboAni, true);
+
+                        }
+
+                    }
+
+                }
+
+            }
+
+            // C++ satır 2309: return true — başka bir şey yapılmaz
+
+        }
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: CMagicSkillMng::FlyingType2 (MagicSkillMng.cpp:2157-2278)
+
+        /// Type2 (bow/range) multi-arrow flying FX.
+
+        ///
+
+        /// C++ satır 2162-2164: pType2 = m_pTbl_Type_2->Find(pSkill->dwID)
+
+        /// C++ satır 2177: spart1 = pSkill->iSelfPart1 % 1000
+
+        /// C++ satır 2188: NumArrow = (pType2->iNumArrow - 1) >> 1
+
+        /// C++ satır 2196: fAng = (PI * i) / 12.0f — 15° aralıklı ok yayılımı
+
+        /// </summary>
+
+        private void FlyingType2(SkillEntry pSkill, long sourceId, long targetId, short data3)
+
+        {
+
+            var pType2 = KOImport.SkillType2Parser.Find(pSkill.Id);
+
+            if (pType2 == null) return;
+
+
+
+            var fxMgr = KOFXManager.Instance;
+
+            if (fxMgr == null || !fxMgr.IsReady || pSkill.FlyingFX <= 0) return;
+
+
+
+            int spart1 = pSkill.SelfPart1 % 1000;
+
+
+
+            GameObject sourceObj = FindTargetObject(sourceId);
+
+            if (sourceObj == null) return;
+
+
+
+            Vector3 sourcePos = sourceObj.transform.position;
+
+
+
+            GameObject targetObj = FindTargetObject(targetId);
+
+
+
+            // C++ satır 2181-2210: pTarget == nullptr → fixedTarget dalı
+
+            if (targetObj == null)
+
+            {
+
+                // C++ satır 2184: vTargetPos = pPlayer->Position() + pPlayer->Direction()
+
+                Vector3 vDir = sourceObj.transform.forward;
+
+                Vector3 sourceChest = KOFXManager.ResolveEntityPosition((int)sourceId);
+
+                Vector3 vTargetPos = sourceChest + vDir;
+
+
+
+                // C++ satır 2185-2186: Ana ok
+
+                fxMgr.TriggerBundle((int)sourceId, spart1, pSkill.FlyingFX,
+
+                    vTargetPos, data3, pType2.SuccessType);
+
+
+
+                // C++ satır 2188-2209: Multi-arrow spread
+
+                int numArrow = (pType2.NumArrow - 1) >> 1;
+
+                int idx = data3;
+
+                Vector3 vTargetPos2 = vTargetPos - sourceChest;
+
+
+
+                for (int i = 1; i <= numArrow; i++)
+
+                {
+
+                    // C++ satır 2196: fAng = (PI * i) / 12.0f — 15° aralık
+
+                    float fAng = (Mathf.PI * i) / 12.0f;
+
+
+
+                    // C++ satır 2198-2202: Sola dönmüş ok
+
+                    Quaternion rotLeft = Quaternion.AngleAxis(-fAng * Mathf.Rad2Deg, Vector3.up);
+
+                    Vector3 vLeft = rotLeft * vTargetPos2;
+
+                    fxMgr.TriggerBundle((int)sourceId, spart1, pSkill.FlyingFX,
+
+                        vLeft + sourceChest, ++idx, pType2.SuccessType);
+
+
+
+                    // C++ satır 2204-2208: Sağa dönmüş ok
+
+                    Quaternion rotRight = Quaternion.AngleAxis(fAng * Mathf.Rad2Deg, Vector3.up);
+
+                    Vector3 vRight = rotRight * vTargetPos2;
+
+                    fxMgr.TriggerBundle((int)sourceId, spart1, pSkill.FlyingFX,
+
+                        vRight + sourceChest, ++idx, pType2.SuccessType);
+
+                }
+
+            }
+
+            // C++ satır 2211-2273: pTarget != nullptr
+
+            else
+
+            {
+
+                Vector3 vTargetPos = KOFXManager.ResolveEntityPosition((int)targetId);
+
+
+
+                // C++ satır 2215: iSuccessType == FX_BUNDLE_MOVE_DIR_FIXEDTARGET
+
+                if (pType2.SuccessType == KOFXManager.FX_BUNDLE_MOVE_DIR_FIXEDTARGET)
+
+                {
+
+                    // C++ satır 2217-2218: Ana ok
+
+                    fxMgr.TriggerBundle((int)sourceId, spart1, pSkill.FlyingFX,
+
+                        vTargetPos, data3, KOFXManager.FX_BUNDLE_MOVE_DIR_FIXEDTARGET);
+
+
+
+                    // C++ satır 2220-2242: Multi-arrow spread
+
+                    int numArrow = (pType2.NumArrow - 1) >> 1;
+
+                    int idx = data3;
+
+                    Vector3 vTargetPos2 = vTargetPos - sourcePos;
+
+
+
+                    for (int i = 1; i <= numArrow; i++)
+
+                    {
+
+                        float fAng = (Mathf.PI * i) / 12.0f;
+
+
+
+                        Quaternion rotLeft = Quaternion.AngleAxis(-fAng * Mathf.Rad2Deg, Vector3.up);
+
+                        Vector3 vLeft = rotLeft * vTargetPos2;
+
+                        fxMgr.TriggerBundle((int)sourceId, spart1, pSkill.FlyingFX,
+
+                            vLeft + sourcePos, ++idx, KOFXManager.FX_BUNDLE_MOVE_DIR_FIXEDTARGET);
+
+
+
+                        Quaternion rotRight = Quaternion.AngleAxis(fAng * Mathf.Rad2Deg, Vector3.up);
+
+                        Vector3 vRight = rotRight * vTargetPos2;
+
+                        fxMgr.TriggerBundle((int)sourceId, spart1, pSkill.FlyingFX,
+
+                            vRight + sourcePos, ++idx, KOFXManager.FX_BUNDLE_MOVE_DIR_FIXEDTARGET);
+
+                    }
+
+                }
+
+                // C++ satır 2245-2273: FLEXABLETARGET (tracking)
+
+                else
+
+                {
+
+                    // C++ satır 2247-2248: Ana ok
+
+                    fxMgr.TriggerBundle((int)sourceId, spart1, pSkill.FlyingFX,
+
+                        (int)targetId, pSkill.TargetPart, data3, pType2.SuccessType);
+
+
+
+                    // C++ satır 2250-2272: Multi-arrow spread (flexable bile olsa yön vektörüyle)
+
+                    int numArrow = (pType2.NumArrow - 1) >> 1;
+
+                    int idx = data3;
+
+                    Vector3 vTargetPos2 = vTargetPos - sourcePos;
+
+
+
+                    for (int i = 1; i <= numArrow; i++)
+
+                    {
+
+                        float fAng = (Mathf.PI * i) / 12.0f;
+
+
+
+                        Quaternion rotLeft = Quaternion.AngleAxis(-fAng * Mathf.Rad2Deg, Vector3.up);
+
+                        Vector3 vLeft = rotLeft * vTargetPos2;
+
+                        fxMgr.TriggerBundle((int)sourceId, spart1, pSkill.FlyingFX,
+
+                            vLeft + sourcePos, ++idx, pType2.SuccessType);
+
+
+
+                        Quaternion rotRight = Quaternion.AngleAxis(fAng * Mathf.Rad2Deg, Vector3.up);
+
+                        Vector3 vRight = rotRight * vTargetPos2;
+
+                        fxMgr.TriggerBundle((int)sourceId, spart1, pSkill.FlyingFX,
+
+                            vRight + sourcePos, ++idx, pType2.SuccessType);
+
+                    }
+
+                }
+
+            }
+
+        }
+
+
+
+        /// <summary>
+
+        /// Target entity'nin GameObject'ini bul (monster veya remote player).
+
+        /// </summary>
+
+        private GameObject FindTargetObject(long targetId)
+        {
+            // Local player? (C++ s_pPlayer)
+            long myId = GameManager.Instance != null ? GameManager.Instance.CharacterId : -1;
+            if ((targetId == myId || targetId == 0 || (GameManager.Instance != null && targetId == GameManager.Instance.CharacterId)) && Character.PlayerController.Instance != null)
+                return Character.PlayerController.Instance.gameObject;
+
+            // Monster?
+            if (_monsters.TryGetValue(targetId, out var mv) && mv.Root != null)
+                return mv.Root;
+
+            // Remote player?
+            if (_remotePlayers.TryGetValue(targetId, out var rp) && rp.Root != null)
+                return rp.Root;
+
+            return null;
+        }
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: MsgRecv_Casting (MagicSkillMng.cpp:1707-1792)
+
+        /// Uzak oyuncu casting başlatıyor — SelfFX1 tetikle + anim.
+
+        ///
+
+        /// C++ satır 1722-1723: iSourceID == s_pPlayer → return (kendi paketimiz)
+
+        /// C++ satır 1766-1772: SelfFX1 tetikleme (spart1/spart2)
+
+        /// C++ satır 1774-1788: Anim tetikleme (iSelfAnimID1, PSA_SPELLMAGIC)
+
+        /// </summary>
+
+        private void HandleMagicCasting(int magicId, long sourceId, long targetId,
+
+            short data0, short data1, short data2, short data3, short data4, short data5)
+
+        {
+
+            var gm = GameManager.Instance;
+
+            long myId = gm != null ? gm.CharacterId : -1;
+
+
+
+            // C++ satır 1722-1723: kendi paketimiz → return
+            if (sourceId < 0 || sourceId == myId) return;
+
+            // Open-KO birebir: MagicSkillMng.cpp:1725 — pSource->RotateTo(pTarget)
+            if (targetId >= 0 && targetId != sourceId)
+            {
+                GameObject srcObj = FindTargetObject(sourceId);
+                GameObject tgtObj = FindTargetObject(targetId);
+                if (srcObj != null && tgtObj != null)
+                {
+                    Vector3 dir = tgtObj.transform.position - srcObj.transform.position;
+                    dir.y = 0;
+                    if (dir.sqrMagnitude > 0.001f)
+                    {
+                        srcObj.transform.rotation = Quaternion.LookRotation(dir.normalized);
+                    }
+                }
+            }
+
+            var pSkill = SkillTableParser.Find(magicId);
+
+            if (pSkill == null) return;
+
+
+
+            var fxMgr = KOFXManager.Instance;
+
+
+
+            // C++ satır 1766-1772: SelfFX1 tetikleme
+
+            // spart1 = pSkill->iSelfPart1 % 1000
+
+            // spart2 = abs(pSkill->iSelfPart1 / 1000)
+
+            if (fxMgr != null && fxMgr.IsReady && pSkill.SelfFX1 > 0)
+
+            {
+
+                int spart1 = pSkill.SelfPart1 % 1000;
+
+                int spart2 = Mathf.Abs(pSkill.SelfPart1 / 1000);
+
+
+
+                // satır 1770: s_pFX->TriggerBundle(iSourceID, spart1, iSelfFX1, iSourceID, spart1, -1)
+
+                fxMgr.TriggerBundle((int)sourceId, spart1, pSkill.SelfFX1, (int)sourceId, spart1, -1);
+
+                // satır 1771-1772: if (spart2 != 0) TriggerBundle(..., spart2, ..., -2)
+
+                if (spart2 != 0)
+
+                    fxMgr.TriggerBundle((int)sourceId, spart2, pSkill.SelfFX1, (int)sourceId, spart2, -2);
+
+            }
+
+
+
+            // C++ satır 1774-1788: Uzak oyuncu anim transition
+
+            // Open-KO birebir: MsgRecv_Casting (MagicSkillMng.cpp:1774-1788)
+
+            //   pPlayer->ActionMove(PSM_STOP);
+
+            //   pPlayer->m_iMagicAni = pSkill->iSelfAnimID1;
+
+            //   // Type2 crossbow override...
+
+            //   pPlayer->m_fCastFreezeTime = 10.0f;
+
+            //   pPlayer->Action(PSA_SPELLMAGIC, false, pTargetPlayer);
+
+            if (_remotePlayers.TryGetValue(sourceId, out var rpCast))
+
+            {
+
+                var rpe = rpCast.Root?.GetComponent<RemotePlayerEntity>();
+
+                if (rpe != null)
+
+                {
+
+                    // cpp:1777 — m_iMagicAni = pSkill->iSelfAnimID1
+
+                    int magicAni = pSkill.SelfAnimID1;
+
+
+
+                    // cpp:1778-1785 — Type2 crossbow override
+
+                    // Open-KO birebir: MagicSkillMng.cpp:1778-1785
+
+                    if (pSkill.FirstTableType == 2 || pSkill.SecondTableType == 2)
+
+                    {
+
+                        if (rpe.ItemClass_RightHand == Character.KOItemClass.ITEM_CLASS_BOW_CROSS
+
+                            || rpe.ItemClass_LeftHand == Character.KOItemClass.ITEM_CLASS_BOW_CROSS)
+
+                        {
+
+                            magicAni = (int)Character.KOAni.ANI_SHOOT_QUARREL_A;
+
+                        }
+
+                    }
+
+
+
+                    // cpp:1787-1788 — m_fCastFreezeTime = 10.0f + Action(PSA_SPELLMAGIC)
+
+                    rpe.ActionSpellMagic(magicAni, 10.0f);
+
+                }
+
+            }
+
+            else
+
+            {
+
+            }
+
+        }
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: MsgRecv_Flying (MagicSkillMng.cpp:1794-1864)
+
+        /// Uzak oyuncu flying (projectile) FX — SelfFX stop + FlyingFX tetikle.
+
+        ///
+
+        /// C++ satır 1838-1839: SelfFX1 stop
+
+        /// C++ satır 1847-1863: FlyingFX TriggerBundle (target veya pos)
+
+        /// </summary>
+
+        private void HandleMagicFlying(int magicId, long sourceId, long targetId,
+
+            short data0, short data1, short data2, short data3, short data4, short data5)
+
+        {
+
+            var gm = GameManager.Instance;
+
+            long myId = gm != null ? gm.CharacterId : -1;
+
+
+
+            // C++ satır 1807-1809: if (iSourceID == s_pPlayer->IDNumber()) return;
+
+            if (sourceId == myId) return;
+
+
+
+            var pSkill = SkillTableParser.Find(magicId);
+
+            if (pSkill == null) return;
+
+
+
+            var fxMgr = KOFXManager.Instance;
+
+
+
+            // C++ satır 1838-1839: s_pFX->Stop(iSourceID, iSourceID, iSelfFX1, -1/-2, true)
+
+            if (fxMgr != null && fxMgr.IsReady && pSkill.SelfFX1 > 0)
+
+            {
+
+                fxMgr.Stop((int)sourceId, (int)sourceId, pSkill.SelfFX1, -1, true);
+
+                fxMgr.Stop((int)sourceId, (int)sourceId, pSkill.SelfFX1, -2, true);
+
+            }
+
+
+
+            // C++ satır 1841-1844: Type2 (bow) → FlyingType2(pSkill, iSourceID, iTargetID, Data)
+
+            if (pSkill.FirstTableType == 2 || pSkill.SecondTableType == 2)
+
+            {
+
+                FlyingType2(pSkill, sourceId, targetId, data3);
+
+                return;
+
+            }
+
+
+
+            // C++ satır 1847-1863: FlyingFX TriggerBundle (non-Type2)
+
+            if (fxMgr != null && fxMgr.IsReady && pSkill.FlyingFX > 0)
+
+            {
+
+                int spart1 = pSkill.SelfPart1 % 1000;
+
+
+
+                GameObject targetObj = FindTargetObject(targetId);
+
+                if (targetObj == null)
+
+                {
+
+                    // C++ satır 1851-1857: pTarget == nullptr → fixedTarget
+
+                    // vTargetPos = pPlayer->Position() + pPlayer->Direction()
+
+                    GameObject sourceObj = FindTargetObject(sourceId);
+
+                    if (sourceObj != null)
+
+                    {
+
+                        Vector3 vTargetPos = sourceObj.transform.position + sourceObj.transform.forward;
+
+                        fxMgr.TriggerBundle((int)sourceId, spart1, pSkill.FlyingFX, vTargetPos,
+
+                            data3, KOFXManager.FX_BUNDLE_MOVE_DIR_FIXEDTARGET);
+
+                    }
+
+                }
+
+                else
+
+                {
+
+                    // C++ satır 1861-1863: pTarget != nullptr → flexableTarget (tracking)
+
+                    fxMgr.TriggerBundle((int)sourceId, spart1, pSkill.FlyingFX,
+
+                        (int)targetId, 0, data3, KOFXManager.FX_BUNDLE_MOVE_DIR_FLEXABLETARGET);
+
+                }
+
+            }
+
+        }
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: MsgRecv_Fail (MagicSkillMng.cpp:1930-2061)
+
+        /// Fail paketi — FX durdurup fail reason'a göre işlem.
+
+        ///
+
+        /// C++ satır 1953-1961: Uzak oyuncu casting stop + SelfFX stop
+
+        /// C++ satır 1963-2015: ATTACKZERO / NOEFFECT / CASTING fail
+
+        /// C++ satır 2017-2056: KILLFLYING — flying FX stop + target FX tetikle
+
+        /// </summary>
+
+        private void HandleMagicFail(int magicId, long sourceId, long targetId,
+
+            MagicFailReason reason, short data0, short data1, short data2, short data4, short data5)
+
+        {
+
+            var pSkill = SkillTableParser.Find(magicId);
+
+            if (pSkill == null) return;
+
+
+
+            var gm = GameManager.Instance;
+
+            long myId = gm != null ? gm.CharacterId : -1;
+
+            var fxMgr = KOFXManager.Instance;
+
+
+
+            // C++ satır 1953-1961: Uzak oyuncu casting duruyor → anim + SelfFX stop
+
+            // Open-KO birebir: pPlayer->State() == PSA_SPELLMAGIC kontrolü
+
+            if (sourceId != myId)
+
+            {
+
+                // cpp:1953: pPlayer->State() == PSA_SPELLMAGIC
+
+                if (_remotePlayers.TryGetValue(sourceId, out var rpFail))
+
+                {
+
+                    var rpe = rpFail.Root?.GetComponent<RemotePlayerEntity>();
+
+                    if (rpe != null && rpe.State() == Character.PlayerStateAction.PSA_SPELLMAGIC)
+
+                    {
+
+                        // cpp:1955-1957: effecting animasyonuna geçiş
+
+                        rpe.ActionSpellEffecting(pSkill.SelfAnimID2);
+
+                    }
+
+                }
+
+
+
+                // cpp:1959-1960: SelfFX stop
+
+                if (fxMgr != null && fxMgr.IsReady && pSkill.SelfFX1 > 0)
+
+                {
+
+                    fxMgr.Stop((int)sourceId, (int)sourceId, pSkill.SelfFX1, -1, true);
+
+                    fxMgr.Stop((int)sourceId, (int)sourceId, pSkill.SelfFX1, -2, true);
+
+                }
+
+            }
+
+
+
+            // C++ satır 1963-2015: Fail reason bazlı işlem
+
+            switch (reason)
+
+            {
+
+                case MagicFailReason.AttackZero:
+
+                    // C++ satır 1965-1966: SelfFX stop
+
+                    if (fxMgr != null && fxMgr.IsReady && pSkill.SelfFX1 > 0)
+
+                    {
+
+                        fxMgr.Stop((int)sourceId, (int)sourceId, pSkill.SelfFX1, -1, true);
+
+                        fxMgr.Stop((int)sourceId, (int)sourceId, pSkill.SelfFX1, -2, true);
+
+                    }
+
+                    // C++ satır 1968-1974: kendi oyuncumuz ise → casting reset
+
+                    if (sourceId == myId)
+
+                    {
+
+                        KOMagicSkillManager.Instance?.CancelCasting();
+
+                    }
+
+                    break;
+
+
+
+                case MagicFailReason.NoEffect:
+
+                    if (fxMgr != null && fxMgr.IsReady && pSkill.SelfFX1 > 0)
+
+                    {
+
+                        fxMgr.Stop((int)sourceId, (int)sourceId, pSkill.SelfFX1, -1, true);
+
+                        fxMgr.Stop((int)sourceId, (int)sourceId, pSkill.SelfFX1, -2, true);
+
+                    }
+
+                    if (sourceId == myId)
+
+                    {
+
+                        KOMagicSkillManager.Instance?.CancelCasting();
+
+                    }
+
+                    break;
+
+
+
+                case MagicFailReason.Casting:
+
+                    if (fxMgr != null && fxMgr.IsReady && pSkill.SelfFX1 > 0)
+
+                    {
+
+                        fxMgr.Stop((int)sourceId, (int)sourceId, pSkill.SelfFX1, -1, true);
+
+                        fxMgr.Stop((int)sourceId, (int)sourceId, pSkill.SelfFX1, -2, true);
+
+                    }
+
+                    if (sourceId == myId)
+
+                    {
+
+                        KOMagicSkillManager.Instance?.CancelCasting();
+
+                    }
+
+                    break;
+
+
+
+                // C++ satır 2017-2056: KILLFLYING
+
+                case MagicFailReason.KillFlying:
+
+                    // C++ satır 2019-2023: RemoveIdx koşulu
+
+                    // iSourceID == self || (iTargetID == self && source is NPC)
+
+                    if (sourceId == myId
+
+                        || (targetId == myId && _monsters.ContainsKey(sourceId)))
+
+                    {
+
+                        KOMagicSkillManager.Instance?.RemoveIdx(data4);
+
+                    }
+
+                    // C++ satır 2024-2025: else → Stop FlyingFX
+
+                    else if (fxMgr != null && fxMgr.IsReady && pSkill.FlyingFX > 0)
+
+                    {
+
+                        fxMgr.Stop((int)sourceId, (int)targetId, pSkill.FlyingFX, data4);
+
+                    }
+
+
+
+                    // C++ satır 2027-2042: targetId==self → casting interrupt + stun
+
+                    if (targetId == myId)
+
+                    {
+
+                        // C++ satır 2029-2032: Type2 → StopCastingByRatio
+
+                        if (pSkill.FirstTableType == 2 || pSkill.SecondTableType == 2)
+
+                        {
+
+                            KOMagicSkillManager.Instance?.CancelCasting();
+
+                        }
+
+                        // C++ satır 2033-2042: Type3 attribute==3 → StopCasting + Stun
+
+                        else if (pSkill.FirstTableType == 3 || pSkill.SecondTableType == 3)
+
+                        {
+
+                            var pType3 = KOImport.SkillType3Parser.Find(magicId);
+
+                            if (pType3 != null && pType3.Attribute == 3)
+
+                            {
+
+                                // C++ birebir: cpp:2039 — StopCastingByRatio()
+
+                                KOMagicSkillManager.Instance?.CancelCasting();
+
+                                // C++ birebir: cpp:2040 — StunMySelf(pType3)
+
+                                // StunMySelf aynı Type3 stun formülünü kullanır
+
+                                // EffectingType3 içindeki StunMySelf çağrısı ile aynı
+
+                                // ancak burada buff tracking yoktur, sadece stun kontrolü
+
+                                KOMagicSkillManager.Instance?.EffectingType3(magicId);
+
+                            }
+
+                        }
+
+                    }
+
+
+
+                    // C++ satır 2045-2054: target FX tetikle
+
+                    if (fxMgr != null && fxMgr.IsReady && pSkill.TargetFX > 0)
+
+                    {
+
+                        GameObject targetObj = FindTargetObject(targetId);
+
+                        if (targetObj != null)
+
+                        {
+
+                            // C++ satır 2048: TriggerBundle(iSourceID, iTargetPart, iTargetFX, iTargetID, iTargetPart)
+
+                            fxMgr.TriggerBundle((int)sourceId, pSkill.TargetPart, pSkill.TargetFX,
+
+                                (int)targetId, pSkill.TargetPart);
+
+                        }
+
+                        else
+
+                        {
+
+                            // C++ satır 2052-2053: pTarget==null → Data[0-2] position kullan
+
+                            Vector3 targetPos = new Vector3(data0, data1, data2);
+
+                            fxMgr.TriggerBundle((int)sourceId, 0, pSkill.TargetFX, targetPos);
+
+                        }
+
+                    }
+
+                    break;
+
+            }
+
+        }
+
+
+
+        private void HandleEntityDeath(long entityId, bool isPlayer)
+
+        {
+
+            if (!isPlayer && _monsters.TryGetValue(entityId, out var mv))
+
+            {
+
+                // Open-KO birebir: MsgRecv_Dead (GameProcMain.cpp:3354-3357)
+
+                //   pTarget->m_fTimeAfterDeath = 0.1f;
+
+                //   pTarget->ActionDying(PSD_KEEP_POSITION, __Vector3(0, 0, 1));
+
+                var koEntity = mv.Root.GetComponent<KOEntity>();
+
+                if (koEntity != null)
+
+                {
+
+                    koEntity.ActionDying();
+
+                }
+
+            }
+
+
+
+            if (isPlayer && _remotePlayers.TryGetValue(entityId, out var rp))
+
+            {
+
+                if (rp.Root.activeInHierarchy)
+
+                    StartCoroutine(PlayerDeathAnimation(rp));
+
+            }
+
+        }
+
+
+
+
+
+        // ============================
+
+        // ÖLÜM ANİMASYONU
+
+        // ============================
+
+        // Open-KO birebir: Ölüm lifecycle'ı KOEntity.Update() → TimeAfterDeath timer ile yapılır.
+
+        // HandleEntityDeath → koEntity.ActionDying() çağrılır, gerisini KOEntity halleder.
+
+        // (PlayerBase::Tick → m_fTimeAfterDeath += s_fSecPerFrm → fade → remove)
+
+
+
+        private System.Collections.IEnumerator PlayerDeathAnimation(RemotePlayerVisual rp)
+
+        {
+
+            if (rp.Renderer != null)
+
+                rp.Renderer.material = _deadMaterial;
+
+
+
+            // Düşme animasyonu
+
+            float elapsed = 0f;
+
+            float duration = 1.0f;
+
+
+
+            while (elapsed < duration)
+
+            {
+
+                elapsed += Time.deltaTime;
+
+                float t = elapsed / duration;
+
+
+
+                // Yana devrilme
+
+                rp.Root.transform.rotation = Quaternion.Euler(0, 0, t * 90f);
+
+                rp.OverheadUI.SetAlpha(1f - t);
+
+
+
+                yield return null;
+
+            }
+
+
+
+            rp.Root.SetActive(false);
+
+        }
+
+
+
+        // ============================
+
+        // OVERHEAD UI (Dünya uzayında isim + HP bar)
+
+        // ============================
+
+
+
+        private OverheadDisplay CreateOverheadUI(Transform parent, string name, short level,
+
+            float height, Color barColor)
+
+        {
+
+            // Ana container
+
+            var container = new GameObject("OverheadUI");
+
+            container.transform.SetParent(parent);
+
+            container.transform.localPosition = Vector3.up * height;
+
+
+
+            // Canvas (world space, billboard)
+
+            var canvas = container.AddComponent<Canvas>();
+
+            canvas.renderMode = RenderMode.WorldSpace;
+
+            canvas.sortingOrder = 50;
+
+
+
+            var rt = container.GetComponent<RectTransform>();
+
+            rt.sizeDelta = new Vector2(2f, 0.6f);
+
+            rt.localScale = Vector3.one * 0.01f; // UI → World dönüşümü
+
+
+
+            // Billboard (kameraya bak)
+
+            container.AddComponent<BillboardUI>();
+
+
+
+            // İsim yazısı
+
+            var nameObj = new GameObject("Name");
+
+            nameObj.transform.SetParent(container.transform, false);
+
+            var nameRt = nameObj.AddComponent<RectTransform>();
+
+            nameRt.anchorMin = new Vector2(0, 0.5f);
+
+            nameRt.anchorMax = new Vector2(1, 1);
+
+            nameRt.offsetMin = Vector2.zero;
+
+            nameRt.offsetMax = Vector2.zero;
+
+            var nameText = nameObj.AddComponent<Text>();
+
+            nameText.text = $"{name} (Lv.{level})";
+
+            nameText.fontSize = 14;
+
+            nameText.font = Font.CreateDynamicFontFromOSFont("Arial", 14);
+
+            nameText.alignment = TextAnchor.MiddleCenter;
+
+            nameText.color = Color.white;
+
+            nameText.horizontalOverflow = HorizontalWrapMode.Overflow;
+
+
+
+            // Gölge
+
+            var shadow = nameObj.AddComponent<Shadow>();
+
+            shadow.effectColor = new Color(0, 0, 0, 0.8f);
+
+            shadow.effectDistance = new Vector2(1, -1);
+
+
+
+            // HP Bar arka plan
+
+            var hpBg = new GameObject("HpBar_Bg");
+
+            hpBg.transform.SetParent(container.transform, false);
+
+            var hpBgRt = hpBg.AddComponent<RectTransform>();
+
+            hpBgRt.anchorMin = new Vector2(0.1f, 0);
+
+            hpBgRt.anchorMax = new Vector2(0.9f, 0.4f);
+
+            hpBgRt.offsetMin = Vector2.zero;
+
+            hpBgRt.offsetMax = Vector2.zero;
+
+            var hpBgImg = hpBg.AddComponent<Image>();
+
+            hpBgImg.color = new Color(0.15f, 0.15f, 0.15f, 0.85f);
+
+
+
+            // HP Bar dolgu
+
+            var hpFill = new GameObject("HpBar_Fill");
+
+            hpFill.transform.SetParent(hpBg.transform, false);
+
+            var hpFillRt = hpFill.AddComponent<RectTransform>();
+
+            hpFillRt.anchorMin = Vector2.zero;
+
+            hpFillRt.anchorMax = Vector2.one;
+
+            hpFillRt.offsetMin = new Vector2(1, 1);
+
+            hpFillRt.offsetMax = new Vector2(-1, -1);
+
+            var hpFillImg = hpFill.AddComponent<Image>();
+
+            hpFillImg.color = barColor;
+
+            hpFillImg.type = Image.Type.Filled;
+
+            hpFillImg.fillMethod = Image.FillMethod.Horizontal;
+
+            hpFillImg.fillAmount = 1.0f;
+
+
+
+            return new OverheadDisplay
+
+            {
+
+                Container = container,
+
+                NameText = nameText,
+
+                HpFillImage = hpFillImg,
+
+                CanvasGroup = container.AddComponent<CanvasGroup>()
+
+            };
+
+        }
+
+
+
+        // ============================
+
+        // PUBLIC API
+
+        // ============================
+
+
+
+        /// <summary>Yaratık objesine ID ile ulaş.</summary>
+
+        public MonsterVisual GetMonster(long instanceId)
+
+        {
+
+            _monsters.TryGetValue(instanceId, out var mv);
+
+            return mv;
+
+        }
+
+
+
+        /// <summary>Monster'ın pozisyonunu döner (loot visual için).</summary>
+
+        public Vector3? GetMonsterPosition(long instanceId)
+
+        {
+
+            if (_monsters.TryGetValue(instanceId, out var mv) && mv.Root != null)
+
+                return mv.Root.transform.position;
+
+            return null;
+
+        }
+
+
+
+        /// <summary>Uzak oyuncu objesine ID ile ulaş.</summary>
+
+        public RemotePlayerVisual GetRemotePlayer(long charId)
+
+        {
+
+            _remotePlayers.TryGetValue(charId, out var rp);
+
+            return rp;
+
+        }
+
+
+
+        /// <summary>Sahnedeki tüm aktif yaratıkları getir.</summary>
+
+        public IReadOnlyDictionary<long, MonsterVisual> GetAllMonsters() => _monsters;
+
+
+
+        /// <summary>Sahnedeki tüm uzak oyuncuları getir — C++ s_pOPMgr->m_UPCs karşılığı.</summary>
+
+        public IReadOnlyDictionary<long, RemotePlayerVisual> GetAllRemotePlayers() => _remotePlayers;
+
+
+
+        /// <summary>
+
+        /// Tüm entity'leri temizle (zone transfer sırasında çağrılır).
+
+        /// Tüm monster ve uzak oyuncu GameObject'lerini yok eder.
+
+        /// </summary>
+
+        public void ClearAll()
+
+        {
+
+            foreach (var kvp in _monsters)
+
+            {
+
+                if (kvp.Value.Root != null)
+
+                    DestroyEntityRoot(kvp.Value.Root);
+
+            }
+
+            _monsters.Clear();
+
+
+
+            foreach (var kvp in _remotePlayers)
+
+            {
+
+                if (kvp.Value.Root != null)
+
+                    Destroy(kvp.Value.Root);
+
+            }
+
+            _remotePlayers.Clear();
+
+        }
+
+
+
+        private void DestroyEntityRoot(GameObject root)
+
+        {
+
+            if (root == null) return;
+
+
+
+            // KOWorldEvent (Anvil vb.) haritadaki static sahne nesnesidir.
+
+            // Onu yok etmemek için parent'ını null yapıp kurtarıyoruz.
+
+            var worldEvent = root.GetComponentInChildren<KOWorldEvent>();
+
+            if (worldEvent != null)
+
+            {
+
+                worldEvent.transform.SetParent(null, true);
+
+                
+
+                // KOEntity referansını sıfırla ki bir sonraki spawn'da temiz başlasın
+
+                var koEntity = root.GetComponent<KOEntity>();
+
+                if (koEntity != null)
+
+                {
+
+                    koEntity.IsObjectNpc = false;
+
+                }
+
+            }
+
+
+
+            Destroy(root);
+
+        }
+
+
+
+
+
+        /// <summary>
+
+        /// Entity ID'den isim döndürür.
+
+        /// C++ referans: GameProcMain.cpp IDToName() satır 2842-2862
+
+        /// Önce monster, sonra uzak oyuncu sözlüğünde arar.
+
+        /// </summary>
+
+        public string GetEntityName(long entityId)
+
+        {
+
+            if (_monsters.TryGetValue(entityId, out var mv))
+
+                return mv.Entity?.MonsterName ?? "";
+
+
+
+            if (_remotePlayers.TryGetValue(entityId, out var rp))
+
+                return rp.Name ?? "";
+
+
+
+            return null;
+
+        }
+
+
+
+        public void UpdateRemotePlayerClan(long charId, short knightsId, byte duty)
+
+        {
+
+            if (_remotePlayers.TryGetValue(charId, out var existing))
+
+            {
+
+                existing.KnightsId = knightsId;
+
+                existing.KnightsDuty = duty;
+
+                if (knightsId == 0)
+
+                {
+
+                    existing.ClanName = string.Empty;
+
+                    existing.CapeId = 0;
+
+                    var fn = existing.Root.GetComponent<EntropyOnline.World.FloatingName>();
+
+                    if (fn != null)
+
+                    {
+
+                        fn.SetClanName(string.Empty);
+
+                        fn.SetKnightsDuty(0);
+
+                    }
+
+                    UpdatePlayerCloakVisual(existing, 0);
+
+                }
+
+                else
+
+                {
+
+                    var fn = existing.Root.GetComponent<EntropyOnline.World.FloatingName>();
+
+                    if (fn != null)
+
+                    {
+
+                        fn.SetKnightsDuty(duty);
+
+                    }
+
+
+
+                    var knightsMgr = KOKnightsManager.Instance;
+
+                    if (knightsMgr != null)
+
+                    {
+
+                        var info = knightsMgr.KnightsInfoFind(knightsId);
+
+                        if (info != null)
+
+                        {
+
+                            existing.ClanName = info.Name;
+
+                            if (fn != null)
+
+                            {
+
+                                fn.SetClanName(info.Name);
+
+                            }
+
+                        }
+
+                    }
+
+                }
+
+            }
+
+        }
+
+
+
+        public void UpdateRemotePlayersCapeByClan(short clanId, short capeId, byte r, byte g, byte b)
+
+        {
+
+            foreach (var kvp in _remotePlayers)
+
+            {
+
+                var rp = kvp.Value;
+
+                if (rp.KnightsId == clanId)
+
+                {
+
+                    rp.CapeId = capeId;
+
+                    rp.CapeR = r;
+
+                    rp.CapeG = g;
+
+                    rp.CapeB = b;
+
+                    UpdatePlayerCloakVisual(rp, capeId);
+
+                }
+
+            }
+
+        }
+
+
+
+        public void RefreshAllCapesVisibility()
+
+        {
+
+            foreach (var kvp in _remotePlayers)
+
+            {
+
+                var rp = kvp.Value;
+
+                UpdatePlayerCloakVisual(rp, rp.CapeId);
+
+            }
+
+        }
+
+
+
+        private void UpdatePlayerCloakVisual(RemotePlayerVisual visual, short capeId)
+
+        {
+
+            if (visual == null || visual.Root == null) return;
+
+            var charModel = GetCharacterModel(visual.Root);
+
+            if (charModel == null) return;
+
+
+
+            bool shouldHide = false;
+
+            if (UI.GameOptionsManager.Instance != null)
+
+            {
+
+                if (UI.GameOptionsManager.Instance.Effect_HideCapeFX || UI.GameOptionsManager.Instance.Hide_AllCapes)
+
+                {
+
+                    shouldHide = true;
+
+                }
+
+            }
+
+
+
+            if (capeId > 0 && !shouldHide)
+
+            {
+
+                if (KOEquipmentVisualizer.s_pTbl_UPC_Looks != null &&
+
+                    KOEquipmentVisualizer.s_pTbl_UPC_Looks.TryGetValue(visual.Race, out var pLooks))
+
+                {
+
+                    int jointCloak = pLooks.iJointCloak;
+
+                    N3CharBuilder.PlugSet(charModel, $"Item\\cloak_{capeId:D3}.n3cplug", jointCloak, "PLUG_BACK");
+
+                }
+
+            }
+
+            else
+
+            {
+
+                N3CharBuilder.PlugRemove(charModel, "PLUG_BACK");
+
+            }
+
+        }
+
+
+
+        private GameObject GetCharacterModel(GameObject root)
+
+        {
+
+            if (root == null) return null;
+
+            var anim = root.GetComponentInChildren<Animation>();
+
+            if (anim != null)
+
+                return anim.gameObject;
+
+            if (root.transform.childCount > 0)
+
+                return root.transform.GetChild(0).gameObject;
+
+            return null;
+
+        }
+
+    }
+
+
+
+    // ============================
+
+    // YARDIMCI SINIFLAR
+
+    // ============================
+
+
+
+    /// <summary>Sahnedeki bir yaratık nesnesinin visual verisi.</summary>
+
+    public class MonsterVisual
+
+    {
+
+        public GameObject Root;
+
+        public Combat.MonsterEntity Entity;
+
+        public Renderer Renderer;
+
+        public OverheadDisplay OverheadUI;
+
+
+
+        public void SetPosition(float x, float y, float z)
+
+        {
+
+            if (Root != null) Root.transform.position = new Vector3(x, y, z);
+
+        }
+
+
+
+        public void UpdateData(int hp, int maxHp)
+
+        {
+
+            if (Entity != null)
+
+            {
+
+                Entity.CurrentHp = hp;
+
+                Entity.MaxHp = maxHp;
+
+            }
+
+            OverheadUI?.UpdateHpBar((float)hp / Mathf.Max(1, maxHp));
+
+        }
+
+    }
+
+
+
+    /// <summary>Sahnedeki bir uzak oyuncu nesnesinin visual verisi.</summary>
+
+    public class RemotePlayerVisual
+
+    {
+
+        public GameObject Root;
+
+        public long CharId;
+
+        public string Name;
+
+        public byte Nation;
+
+        public byte Race;
+
+        public byte CharClass;
+
+        public short Level;
+
+        // Open-KO birebir: CPlayerBase::m_InfoExt.iFace / iHair
+
+        // InitFace/InitHair çağrıları için gerekli
+
+        public byte Face;
+
+        public byte Hair;
+
+        public int CurrentHp;
+
+        public int MaxHp;
+
+        /// <summary>
+
+        /// Open-KO birebir: __InfoPlayerBase::iAuthority (globals.h:57-67)
+
+        /// 0 = AUTHORITY_MANAGER (GM), 1 = AUTHORITY_USER (normal)
+
+        /// Chat scramble'da bTalkerIsManager = (0 == pTalker->m_InfoBase.iAuthority)
+
+        /// </summary>
+
+        public byte Authority = 1; // Varsayılan: normal kullanıcı
+
+        public Renderer Renderer;
+
+        public OverheadDisplay OverheadUI;
+
+
+
+        // Knights and Cape details
+
+        public short KnightsId;
+
+        public string ClanName;
+
+        public byte KnightsDuty;
+
+        public short CapeId;
+
+        public byte CapeR = 255;
+
+        public byte CapeG = 255;
+
+        public byte CapeB = 255;
+
+
+
+        // Hareket enterpolasyonu
+
+        public Vector3 TargetPosition;
+
+        public float TargetRotation;
+
+        public bool IsMoving;
+
+        public RemotePlayerEntity Entity;
+
+
+
+        // ============================================================
+
+        // Open-KO birebir: CPlayerBase::m_pItemPartBasics[PART_POS_COUNT]
+
+        // (PlayerBase.h:93-94) — hangi pozisyonda hangi item olduğunu takip eder.
+
+        // Robe UPPER/LOWER etkileşimi bu state'e bağlıdır.
+
+        // ============================================================
+
+        public KOTableReader.TableItemBasic[] m_pItemPartBasics = new KOTableReader.TableItemBasic[N3CharBuilder.PART_POS_COUNT];
+
+        public KOTableReader.TableItemExt[] m_pItemPartExts = new KOTableReader.TableItemExt[N3CharBuilder.PART_POS_COUNT];
+
+        // Open-KO birebir: m_Chr.Part(ePos) != nullptr karşılığı
+
+        // PartSet sonrası mesh yüklendiyse true, boşaltıldıysa false
+
+        public bool[] m_partLoaded = new bool[N3CharBuilder.PART_POS_COUNT];
+
+
+
+        private const float INTERP_SPEED = 8f;
+
+
+
+        public void SetPosition(float x, float y, float z)
+
+        {
+
+            if (Root != null)
+
+            {
+
+                Root.transform.position = new Vector3(x, 0, z);
+
+                TargetPosition = Root.transform.position;
+
+            }
+
+        }
+
+
+
+        public void UpdateHp(int hp, int maxHp)
+
+        {
+
+            CurrentHp = hp;
+
+            MaxHp = maxHp;
+
+            OverheadUI?.UpdateHpBar((float)hp / Mathf.Max(1, maxHp));
+
+        }
+
+
+
+        public void UpdateInterpolation(float deltaTime)
+
+        {
+
+            if (Root == null || !Root.activeInHierarchy) return;
+
+
+
+            // Pozisyon enterpolasyonu
+
+            Root.transform.position = Vector3.Lerp(
+
+                Root.transform.position, TargetPosition,
+
+                deltaTime * INTERP_SPEED);
+
+
+
+            // Rotasyon enterpolasyonu
+
+            var targetRot = Quaternion.Euler(0, TargetRotation, 0);
+
+            Root.transform.rotation = Quaternion.Slerp(
+
+                Root.transform.rotation, targetRot,
+
+                deltaTime * INTERP_SPEED);
+
+        }
+
+
+
+        /// <summary>
+
+        /// Open-KO birebir: CPlayerBase::PartSet (PlayerBase.cpp:1852-1941)
+
+        /// Robe UPPER/LOWER etkileşimini uygulayan wrapper.
+
+        /// 
+
+        /// Remote player'lar CPlayerOther üzerinden CPlayerBase::PartSet'i
+
+        /// doğrudan çağırır — override yok (PlayerOther.cpp'de PartSet override yoktur).
+
+        /// 
+
+        /// Mantık:
+
+        ///   1. UPPER'a robe giyince → LOWER'ı boşalt (satır 1864-1867)
+
+        ///   2. UPPER'dan robe çıkarınca → LOWER'ı geri giydir (satır 1869-1890)
+
+        ///   3. LOWER'a giyerken UPPER'da robe varsa → LOWER görselini boş bırak (satır 1892-1901)
+
+        ///   4. szFN boşsa → varsayılan kıyafet (satır 1906-1927)
+
+        /// </summary>
+
+        public void RemotePartSet(
+
+            GameObject charModel, int ePos, string szFN,
+
+            KOTableReader.TableItemBasic pItemBasic, KOTableReader.TableItemExt pItemExt)
+
+        {
+
+            if (ePos < 0 || ePos >= N3CharBuilder.PART_POS_COUNT) return;
+
+
+
+            // -------------------------------------------------------
+
+            // PlayerBase.cpp:1860-1890 — UPPER pozisyonu özel işleme
+
+            // -------------------------------------------------------
+
+            if (ePos == N3CharBuilder.PART_POS_UPPER)
+
+            {
+
+                if (pItemBasic != null) // satır 1862: 입히는 경우 (giyilen)
+
+                {
+
+                    // satır 1864: robe tipi + LOWER'da mesh varsa → LOWER'ı boşalt
+
+                    // C++ birebir: pItemBasic->byIsRobeType && m_Chr.Part(PART_POS_LOWER)
+
+                    if (pItemBasic.byIsRobeType != 0 && m_partLoaded[N3CharBuilder.PART_POS_LOWER])
+
+                    {
+
+                        // satır 1866: this->PartSet(PART_POS_LOWER, "", m_pItemPartBasics[LOWER], m_pItemPartExts[LOWER])
+
+                        // Recursive çağrı — LOWER'ı boşalt
+
+                        RemotePartSet(charModel, N3CharBuilder.PART_POS_LOWER, "",
+
+                            m_pItemPartBasics[N3CharBuilder.PART_POS_LOWER],
+
+                            m_pItemPartExts[N3CharBuilder.PART_POS_LOWER]);
+
+                    }
+
+                }
+
+                else // satır 1869: 상체를 벗는 경우 (çıkarılan)
+
+                {
+
+                    // satır 1871: eski UPPER robe ise
+
+                    if (m_pItemPartBasics[ePos] != null && m_pItemPartBasics[ePos].byIsRobeType != 0)
+
+                    {
+
+                        if (m_pItemPartBasics[N3CharBuilder.PART_POS_LOWER] != null) // satır 1873
+
+                        {
+
+                            // satır 1879-1882: LOWER'da item var → MakeResrcFileNameForUPC → PartSet
+
+                            var lowerBasic = m_pItemPartBasics[N3CharBuilder.PART_POS_LOWER];
+
+                            var lowerExt = m_pItemPartExts[N3CharBuilder.PART_POS_LOWER];
+
+
+
+                            uint iIDResrc = lowerBasic.dwIDResrc;
+
+                            if (lowerExt != null && lowerExt.dwIDResrc != 0)
+
+                                iIDResrc = lowerExt.dwIDResrc;
+
+
+
+                            if (iIDResrc != 0)
+
+                            {
+
+                                int d1 = (int)(iIDResrc / 10000000);
+
+                                int d2 = (int)((iIDResrc / 1000) % 10000);
+
+                                int d3 = (int)((iIDResrc / 10) % 100);
+
+                                int d4 = (int)(iIDResrc % 10);
+
+                                string szFN2 = $"Item\\{d1}_{(d2 + Race):D4}_{d3:D2}_{d4}.n3cpart";
+
+
+
+                                RemotePartSet(charModel, N3CharBuilder.PART_POS_LOWER, szFN2,
+
+                                    lowerBasic, lowerExt);
+
+                            }
+
+                        }
+
+                        else // satır 1884-1888: LOWER item yok → varsayılan
+
+                        {
+
+                            KOTableReader.TablePlayerLooks pLooks = null;
+
+                            if (KOEquipmentVisualizer.s_pTbl_UPC_Looks != null)
+
+                                KOEquipmentVisualizer.s_pTbl_UPC_Looks.TryGetValue(Race, out pLooks);
+
+
+
+                            if (pLooks != null)
+
+                            {
+
+                                string defaultLower = pLooks.szPartFNs[N3CharBuilder.PART_POS_LOWER];
+
+                                defaultLower = N3CharBuilder.GetDefaultPartPath(N3CharBuilder.PART_POS_LOWER, Race, CharClass, defaultLower);
+
+                                RemotePartSet(charModel, N3CharBuilder.PART_POS_LOWER, defaultLower,
+
+                                    null, null);
+
+                            }
+
+                        }
+
+                    }
+
+                }
+
+            }
+
+            // -------------------------------------------------------
+
+            // PlayerBase.cpp:1892-1903 — LOWER pozisyonu
+
+            // -------------------------------------------------------
+
+            else if (ePos == N3CharBuilder.PART_POS_LOWER)
+
+            {
+
+                if (pItemBasic != null) // satır 1894: 착용하는 경우
+
+                {
+
+                    // satır 1896: UPPER'da robe varsa → LOWER görselini boş bırak
+
+                    if (m_pItemPartBasics[N3CharBuilder.PART_POS_UPPER] != null &&
+
+                        m_pItemPartBasics[N3CharBuilder.PART_POS_UPPER].byIsRobeType != 0)
+
+                    {
+
+                        // satır 1898-1900: item bilgisini kaydet ama görselini boşalt
+
+                        m_pItemPartBasics[ePos] = pItemBasic;
+
+                        m_pItemPartExts[ePos] = pItemExt;
+
+                        N3CharBuilder.PartSet(charModel, ePos, "");
+
+                        m_partLoaded[ePos] = false; // mesh boşaltıldı
+
+                        return; // satır 1900: return
+
+                    }
+
+                }
+
+            }
+
+
+
+            // -------------------------------------------------------
+
+            // PlayerBase.cpp:1905-1932 — Genel PartSet
+
+            // -------------------------------------------------------
+
+            if (string.IsNullOrEmpty(szFN)) // satır 1906: szFN boşsa → varsayılan
+
+            {
+
+                if (ePos == N3CharBuilder.PART_POS_HAIR_HELMET) // satır 1908-1911
+
+                {
+
+                    // C++ birebir: this->InitHair(); pPart = m_Chr.Part(ePos);
+
+                    KOTableReader.TablePlayerLooks pLooksHair = null;
+
+                    if (KOEquipmentVisualizer.s_pTbl_UPC_Looks != null)
+
+                        KOEquipmentVisualizer.s_pTbl_UPC_Looks.TryGetValue(Race, out pLooksHair);
+
+                    if (pLooksHair != null)
+
+                        N3CharBuilder.InitHair(charModel, pLooksHair, Hair);
+
+                }
+
+                else if (ePos == N3CharBuilder.PART_POS_FACE) // satır 1913-1916
+
+                {
+
+                    // C++ birebir: this->InitFace(); pPart = m_Chr.Part(ePos);
+
+                    KOTableReader.TablePlayerLooks pLooksFace = null;
+
+                    if (KOEquipmentVisualizer.s_pTbl_UPC_Looks != null)
+
+                        KOEquipmentVisualizer.s_pTbl_UPC_Looks.TryGetValue(Race, out pLooksFace);
+
+                    if (pLooksFace != null)
+
+                        N3CharBuilder.InitFace(charModel, pLooksFace, Face);
+
+                }
+
+                else // satır 1918-1927
+
+                {
+
+                    KOTableReader.TablePlayerLooks pLooks = null;
+
+                    if (KOEquipmentVisualizer.s_pTbl_UPC_Looks != null)
+
+                        KOEquipmentVisualizer.s_pTbl_UPC_Looks.TryGetValue(Race, out pLooks);
+
+
+
+                    if (pLooks != null && ePos < pLooks.szPartFNs.Length)
+
+                    {
+
+                        string defaultPart = pLooks.szPartFNs[ePos];
+
+                        defaultPart = N3CharBuilder.GetDefaultPartPath(ePos, Race, CharClass, defaultPart);
+
+                        N3CharBuilder.PartSet(charModel, ePos, defaultPart);
+
+                    }
+
+                }
+
+            }
+
+            else // satır 1929-1932
+
+            {
+
+                N3CharBuilder.PartSet(charModel, ePos, szFN);
+
+            }
+
+
+
+            // satır 1934-1935: item state güncelle
+
+            m_pItemPartBasics[ePos] = pItemBasic;
+
+            m_pItemPartExts[ePos] = pItemExt;
+
+            // m_Chr.Part(ePos) state güncelle — PartSet sonuna ulaştıysa mesh yüklendi
+
+            m_partLoaded[ePos] = true;
+
+        }
+
+    }
+
+
+
+    /// <summary>Entity başının üstündeki isim + HP bar gösterimi.</summary>
+
+    public class OverheadDisplay
+
+    {
+
+        public GameObject Container;
+
+        public Text NameText;
+
+        public Image HpFillImage;
+
+        public CanvasGroup CanvasGroup;
+
+
+
+        public void UpdateHpBar(float fillAmount)
+
+        {
+
+            if (HpFillImage != null)
+
+                HpFillImage.fillAmount = Mathf.Clamp01(fillAmount);
+
+        }
+
+
+
+        public void SetAlpha(float alpha)
+
+        {
+
+            if (CanvasGroup != null)
+
+                CanvasGroup.alpha = alpha;
+
+        }
+
+    }
+
+
+
+    /// <summary>
+
+    /// World Space UI'yı her zaman kameraya döndürür (billboard efekti).
+
+    /// </summary>
+
+    public class BillboardUI : MonoBehaviour
+
+    {
+
+        private global::UnityEngine.Camera _cam;
+
+
+
+        private void Start()
+
+        {
+
+            _cam = global::UnityEngine.Camera.main;
+
+        }
+
+
+
+        private void LateUpdate()
+
+        {
+
+            if (_cam == null)
+
+            {
+
+                _cam = global::UnityEngine.Camera.main;
+
+                if (_cam == null) return;
+
+            }
+
+
+
+            // Kameraya bak (y ekseni sabit)
+
+            transform.forward = _cam.transform.forward;
+
+        }
+
+    }
+
+}
+
