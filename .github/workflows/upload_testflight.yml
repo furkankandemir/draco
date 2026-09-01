@@ -1,0 +1,28 @@
+name: Upload to TestFlight
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  upload:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Setup App Store Connect Private Key
+        run: |
+          mkdir -p ~/.appstoreconnect/private_keys
+          mkdir -p ~/.private_keys
+          cp BuildScripts/AuthKey_7B3D9LQ8HH.p8 ~/.appstoreconnect/private_keys/AuthKey_7B3D9LQ8HH.p8
+          cp BuildScripts/AuthKey_7B3D9LQ8HH.p8 ~/.private_keys/AuthKey_7B3D9LQ8HH.p8
+
+      - name: Upload IPA to TestFlight
+        run: |
+          echo "Starting TestFlight upload..."
+          xcrun altool --upload-app -f "BuildScripts/DracoOnlineWorld.ipa" -t ios --apiKey "7B3D9LQ8HH" --apiIssuer "354a8957-c515-4976-9a5d-9223d6eb6b60" --show-progress
