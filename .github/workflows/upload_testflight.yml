@@ -38,7 +38,7 @@ jobs:
           echo "Available Identities:"
           security find-identity -v -p codesigning $KEYCHAIN_PATH
 
-      - name: Re-sign IPA with Apple Distribution Certificate
+      - name: Compile 1024x1024 Icon & Re-sign IPA
         run: |
           KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain
           security list-keychains -d user -s $KEYCHAIN_PATH $(security list-keychains -d user | tr -d '"')
@@ -47,14 +47,59 @@ jobs:
           IDENTITY=$(security find-identity -v -p codesigning $KEYCHAIN_PATH | grep -o '".*"' | head -n 1 | tr -d '"')
           echo "Selected Signing Identity: $IDENTITY"
 
-          echo "Extracting IPA..."
+          echo "Extracting Build 6 IPA..."
           TMP_UNPACK=$RUNNER_TEMP/ipa_unpack
           mkdir -p $TMP_UNPACK
           unzip -q BuildScripts/DracoOnlineWorld.ipa -d $TMP_UNPACK
 
           APP_PATH=$(find $TMP_UNPACK/Payload -name "*.app" | head -n 1)
-          echo "Signing App bundle: $APP_PATH"
+          echo "Target App Bundle: $APP_PATH"
 
+          # 1. Compile 1024x1024 icon into Assets.car using Apple actool
+          XC_DIR=$RUNNER_TEMP/AppIcon.xcassets/AppIcon.appiconset
+          mkdir -p $XC_DIR
+          cp BuildScripts/AppIcon1024.png $XC_DIR/AppIcon-1024.png
+
+          cat << 'EOF' > $XC_DIR/Contents.json
+          {
+            "images" : [
+              {
+                "size" : "1024x1024",
+                "idiom" : "ios-marketing",
+                "filename" : "AppIcon-1024.png",
+                "scale" : "1x"
+              },
+              {
+                "size" : "60x60",
+                "idiom" : "iphone",
+                "filename" : "AppIcon-1024.png",
+                "scale" : "2x"
+              },
+              {
+                "size" : "60x60",
+                "idiom" : "iphone",
+                "filename" : "AppIcon-1024.png",
+                "scale" : "3x"
+              },
+              {
+                "size" : "76x76",
+                "idiom" : "ipad",
+                "filename" : "AppIcon-1024.png",
+                "scale" : "2x"
+              }
+            ],
+            "info" : {
+              "version" : 1,
+              "author" : "xcode"
+            }
+          }
+          EOF
+
+          echo "Compiling Asset Catalog with actool..."
+          xcrun actool $RUNNER_TEMP/AppIcon.xcassets --compile "$APP_PATH" --platform iphoneos --minimum-deployment-target 14.0 --app-icon AppIcon --output-partial-info-plist $RUNNER_TEMP/partial_info.plist
+          cp BuildScripts/AppIcon1024.png "$APP_PATH/AppIcon-1024.png"
+
+          # 2. Re-sign all Frameworks
           if [ -d "$APP_PATH/Frameworks" ]; then
             for f in "$APP_PATH"/Frameworks/*; do
               if [ -d "$f" ] || [ -f "$f" ]; then
@@ -63,15 +108,17 @@ jobs:
             done
           fi
 
+          # 3. Re-sign App Bundle
           codesign --keychain $KEYCHAIN_PATH -f -s "$IDENTITY" --timestamp "$APP_PATH"
           echo "Signature Verification:"
           codesign -dv --verbose=4 "$APP_PATH"
 
+          # 4. Repackage IPA
           rm -f BuildScripts/DracoOnlineWorld.ipa
           (cd $TMP_UNPACK && zip -q -r "$GITHUB_WORKSPACE/BuildScripts/DracoOnlineWorld.ipa" .)
-          echo "Re-signed IPA successfully created!"
+          echo "Re-signed Xcode 26 IPA ready for TestFlight upload!"
 
       - name: Upload IPA to TestFlight
         run: |
-          echo "Starting TestFlight upload..."
+          echo "Starting TestFlight upload via xcrun altool..."
           xcrun altool --upload-app -f "BuildScripts/DracoOnlineWorld.ipa" -t ios --apiKey "7B3D9LQ8HH" --apiIssuer "354a8957-c515-4976-9a5d-9223d6eb6b60" --show-progress
