@@ -31,9 +31,8 @@ namespace EntropyOnline.Network.KO
         public static bool EnableDebugLogs = false;
 
         [Header("Ebenezer Server")]
-        [SerializeField] private string serverIP = "192.168.1.8";
+        [SerializeField] private string serverIP = "192.168.1.16";
         [SerializeField] private int serverPort = 15001;
-        [SerializeField] private string configUrl = "https://raw.githubusercontent.com/furkankandemir/draco/main/server.txt";
         public string ServerIP => serverIP;
 
         // Connection state
