@@ -55,8 +55,8 @@ jobs:
           APP_PATH=$(find $TMP_UNPACK/Payload -name "*.app" | head -n 1)
           echo "Target App Bundle: $APP_PATH"
 
-          # Update Build Number to 3 for TestFlight update
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion 3" "$APP_PATH/Info.plist"
+          # Update Build Number to 4 for TestFlight update
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion 4" "$APP_PATH/Info.plist"
           /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" "$APP_PATH/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :ITSAppUsesNonExemptEncryption false" "$APP_PATH/Info.plist"
           
           # Add Local Network Privacy permission for Wi-Fi test server
@@ -64,18 +64,18 @@ jobs:
           /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity dict" "$APP_PATH/Info.plist" 2>/dev/null || true
           /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true" "$APP_PATH/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :NSAppTransportSecurity:NSAllowsArbitraryLoads true" "$APP_PATH/Info.plist"
           /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsLocalNetworking bool true" "$APP_PATH/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :NSAppTransportSecurity:NSAllowsLocalNetworking true" "$APP_PATH/Info.plist"
-          echo "Updated Info.plist to Build 3 with Local Network permissions."
+          echo "Updated Info.plist to Build 4 with Local Network permissions."
 
-          # Patch Server IP in global-metadata.dat (12 bytes -> 12 bytes exact match)
+          # Patch Server IP in global-metadata.dat (12 bytes -> 12 bytes exact match: bore.pub\0\0\0\0)
           python3 -c '
           meta_file = "'"$APP_PATH"'/Data/Managed/Metadata/global-metadata.dat"
           with open(meta_file, "rb") as f:
               data = bytearray(f.read())
-          for old_ip in [b"192.168.1.10", b"192.168.1.06"]:
+          for old_ip in [b"192.168.1.10", b"192.168.1.16", b"192.168.1.06"]:
               pos = data.find(old_ip)
               if pos != -1:
-                  data[pos:pos+12] = b"192.168.1.16"
-                  print(f"Patched IP {old_ip.decode()} -> 192.168.1.16 at offset {pos}")
+                  data[pos:pos+12] = b"bore.pub\x00\x00\x00\x00"
+                  print(f"Patched IP {old_ip.decode()} -> bore.pub at offset {pos}")
           with open(meta_file, "wb") as f:
               f.write(data)
           '
