@@ -26,7 +26,11 @@ jobs:
           security create-keychain -p "" $KEYCHAIN_PATH
           security default-keychain -s $KEYCHAIN_PATH
           security unlock-keychain -p "" $KEYCHAIN_PATH
-          security import BuildScripts/Draco_Distribution.p12 -k $KEYCHAIN_PATH -P "Draco2026!" -T /usr/bin/codesign
+
+          # Convert P12 to legacy format supported by macOS security tool
+          openssl pkcs12 -in BuildScripts/Draco_Distribution.p12 -passin pass:Draco2026! -nodes -out $RUNNER_TEMP/cert.pem
+          openssl pkcs12 -export -in $RUNNER_TEMP/cert.pem -out $RUNNER_TEMP/legacy.p12 -passout pass:Draco2026! -legacy
+          security import $RUNNER_TEMP/legacy.p12 -k $KEYCHAIN_PATH -P "Draco2026!" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k "" $KEYCHAIN_PATH
 
       - name: Re-sign IPA with Apple Distribution Certificate
