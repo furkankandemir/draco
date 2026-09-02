@@ -31,7 +31,7 @@ namespace EntropyOnline.Network.KO
         public static bool EnableDebugLogs = false;
 
         [Header("Ebenezer Server")]
-        [SerializeField] private string serverIP = "192.168.1.16";
+        [SerializeField] private string serverIP = "bore.pub";
         [SerializeField] private int serverPort = 15001;
         public string ServerIP => serverIP;
 
