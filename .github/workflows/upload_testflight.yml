@@ -55,6 +55,25 @@ jobs:
           APP_PATH=$(find $TMP_UNPACK/Payload -name "*.app" | head -n 1)
           echo "Target App Bundle: $APP_PATH"
 
+          # Update Build Number to 2 for TestFlight update
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion 2" "$APP_PATH/Info.plist"
+          /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" "$APP_PATH/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :ITSAppUsesNonExemptEncryption false" "$APP_PATH/Info.plist"
+          echo "Updated Info.plist to Build 2 with NonExemptEncryption=false."
+
+          # Patch Server IP in global-metadata.dat (12 bytes -> 12 bytes exact match)
+          python3 -c '
+          meta_file = "'"$APP_PATH"'/Data/Managed/Metadata/global-metadata.dat"
+          with open(meta_file, "rb") as f:
+              data = bytearray(f.read())
+          for old_ip in [b"192.168.1.10", b"192.168.1.06"]:
+              pos = data.find(old_ip)
+              if pos != -1:
+                  data[pos:pos+12] = b"192.168.1.16"
+                  print(f"Patched IP {old_ip.decode()} -> 192.168.1.16 at offset {pos}")
+          with open(meta_file, "wb") as f:
+              f.write(data)
+          '
+
           # 1. Generate all required Apple icons automatically from single AppIcon.png
           SRC_ICON="Assets/Textures/AppIcon.png"
           XC_DIR=$RUNNER_TEMP/AppIcon.xcassets/AppIcon.appiconset
