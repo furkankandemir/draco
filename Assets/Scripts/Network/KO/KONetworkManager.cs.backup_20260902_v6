@@ -182,28 +182,6 @@ namespace EntropyOnline.Network.KO
                 return;
             }
 
-            // Dinamik server.txt yapılandırmasını internetten oku (hata durumunda yerel serverIP kullanılır)
-            if (!string.IsNullOrEmpty(configUrl))
-            {
-                try
-                {
-                    using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(2) };
-                    string remoteData = await http.GetStringAsync(configUrl);
-                    if (!string.IsNullOrWhiteSpace(remoteData))
-                    {
-                        string[] parts = remoteData.Trim().Split(':');
-                        if (parts.Length >= 1 && !string.IsNullOrEmpty(parts[0].Trim()))
-                            serverIP = parts[0].Trim();
-                        if (parts.Length >= 2 && int.TryParse(parts[1].Trim(), out int port))
-                            serverPort = port;
-                    }
-                }
-                catch
-                {
-                    // İnternet veya okuma hatasında yerel serverIP kullanılır
-                }
-            }
-
             try
             {
                 Log($"[KO-NET] Connecting to {serverIP}:{serverPort}...");
