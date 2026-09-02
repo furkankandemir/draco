@@ -55,8 +55,8 @@ jobs:
           APP_PATH=$(find $TMP_UNPACK/Payload -name "*.app" | head -n 1)
           echo "Target App Bundle: $APP_PATH"
 
-          # Update Build Number to 7 for TestFlight update
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion 7" "$APP_PATH/Info.plist"
+          # Update Build Number to 8 for TestFlight update
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion 8" "$APP_PATH/Info.plist"
           /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" "$APP_PATH/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :ITSAppUsesNonExemptEncryption false" "$APP_PATH/Info.plist"
           
           # Add Local Network Privacy permission for Wi-Fi test server
@@ -64,40 +64,7 @@ jobs:
           /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity dict" "$APP_PATH/Info.plist" 2>/dev/null || true
           /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true" "$APP_PATH/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :NSAppTransportSecurity:NSAllowsArbitraryLoads true" "$APP_PATH/Info.plist"
           /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsLocalNetworking bool true" "$APP_PATH/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :NSAppTransportSecurity:NSAllowsLocalNetworking true" "$APP_PATH/Info.plist"
-          echo "Updated Info.plist to Build 7 with Local Network permissions."
-
-          # Patch Server IP in global-metadata.dat with clean 11-byte Wi-Fi IP 192.168.1.8
-          python3 -c '
-          import struct
-          meta_file = "'"$APP_PATH"'/Data/Managed/Metadata/global-metadata.dat"
-          with open(meta_file, "rb") as f:
-              meta = bytearray(f.read())
-          
-          str_lit_offset = 392
-          str_lit_size = 85096
-          str_data_offset = 85488
-          str_data_size = 613422
-          offset_in_table = 6128
-          
-          num_entries = str_lit_size // 4
-          entry_idx = (offset_in_table - str_lit_offset) // 4
-          
-          new_str = b"192.168.1.8"
-          delta = len(new_str) - 12  # 11 - 12 = -1
-          
-          # 1. Set clean string
-          meta[str_data_offset + 45195 : str_data_offset + 45195 + len(new_str)] = new_str
-          # 2. Shift subsequent string literal data
-          meta[str_data_offset + 45195 + len(new_str) : str_data_offset + str_data_size + delta] = meta[str_data_offset + 45207 : str_data_offset + str_data_size]
-          # 3. Update table offset entries
-          for i in range(entry_idx + 1, num_entries):
-              old_val = struct.unpack_from("<I", meta, str_lit_offset + i*4)[0]
-              struct.pack_into("<I", meta, str_lit_offset + i*4, old_val + delta)
-          
-          with open(meta_file, "wb") as f:
-              f.write(meta)
-          print("Verified clean 11-byte direct local IP 192.168.1.8 applied successfully!")
-          '
+          echo "Updated Info.plist to Build 8 with Local Network permissions."
 
           # 1. Generate all required Apple icons automatically from single AppIcon.png
           SRC_ICON="Assets/Textures/AppIcon.png"
