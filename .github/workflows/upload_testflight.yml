@@ -58,7 +58,12 @@ jobs:
           # 1. Compile 1024x1024 icon into Assets.car using Apple actool
           XC_DIR=$RUNNER_TEMP/AppIcon.xcassets/AppIcon.appiconset
           mkdir -p $XC_DIR
-          cp BuildScripts/AppIcon1024.png $XC_DIR/AppIcon-1024.png
+
+          ICON_SRC="BuildScripts/AppIcon1024.png"
+          if [ ! -f "$ICON_SRC" ]; then
+            ICON_SRC="Assets/Textures/AppIcon.png"
+          fi
+          cp "$ICON_SRC" $XC_DIR/AppIcon-1024.png
 
           cat << 'EOF' > $XC_DIR/Contents.json
           {
