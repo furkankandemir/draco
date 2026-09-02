@@ -103,19 +103,19 @@ jobs:
 
           # 3. Create Entitlements for TestFlight distribution
           cat << 'EOF' > $RUNNER_TEMP/Entitlements.plist
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>application-identifier</key>
-    <string>XZYN89GYCH.com.dracoonlineworld.game</string>
-    <key>get-task-allow</key>
-    <false/>
-    <key>beta-reports-active</key>
-    <true/>
-</dict>
-</plist>
-EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>application-identifier</key>
+              <string>XZYN89GYCH.com.dracoonlineworld.game</string>
+              <key>get-task-allow</key>
+              <false/>
+              <key>beta-reports-active</key>
+              <true/>
+          </dict>
+          </plist>
+          EOF
 
           # Re-sign App Bundle with Entitlements
           codesign --keychain $KEYCHAIN_PATH -f -s "$IDENTITY" --entitlements $RUNNER_TEMP/Entitlements.plist --timestamp "$APP_PATH"
