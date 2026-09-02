@@ -38,7 +38,7 @@ jobs:
           echo "Available Identities:"
           security find-identity -v -p codesigning $KEYCHAIN_PATH
 
-      - name: Compile 1024x1024 Icon & Re-sign IPA
+      - name: Inject Complete Icon Suite & Re-sign IPA
         run: |
           KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain
           security list-keychains -d user -s $KEYCHAIN_PATH $(security list-keychains -d user | tr -d '"')
@@ -55,43 +55,36 @@ jobs:
           APP_PATH=$(find $TMP_UNPACK/Payload -name "*.app" | head -n 1)
           echo "Target App Bundle: $APP_PATH"
 
-          # 1. Compile 1024x1024 icon into Assets.car using Apple actool
+          # 1. Copy all required iPhone & iPad icon sizes directly into App bundle
+          cp BuildScripts/AppIcons/*.png "$APP_PATH/"
+          echo "Copied all resolution icons to App root."
+
+          # 2. Compile Asset Catalog with actool
           XC_DIR=$RUNNER_TEMP/AppIcon.xcassets/AppIcon.appiconset
           mkdir -p $XC_DIR
-
-          ICON_SRC="BuildScripts/AppIcon1024.png"
-          if [ ! -f "$ICON_SRC" ]; then
-            ICON_SRC="Assets/Textures/AppIcon.png"
-          fi
-          cp "$ICON_SRC" $XC_DIR/AppIcon-1024.png
+          cp BuildScripts/AppIcons/*.png "$XC_DIR/"
 
           cat << 'EOF' > $XC_DIR/Contents.json
           {
             "images" : [
-              {
-                "size" : "1024x1024",
-                "idiom" : "ios-marketing",
-                "filename" : "AppIcon-1024.png",
-                "scale" : "1x"
-              },
-              {
-                "size" : "60x60",
-                "idiom" : "iphone",
-                "filename" : "AppIcon-1024.png",
-                "scale" : "2x"
-              },
-              {
-                "size" : "60x60",
-                "idiom" : "iphone",
-                "filename" : "AppIcon-1024.png",
-                "scale" : "3x"
-              },
-              {
-                "size" : "76x76",
-                "idiom" : "ipad",
-                "filename" : "AppIcon-1024.png",
-                "scale" : "2x"
-              }
+              { "size" : "1024x1024", "idiom" : "ios-marketing", "filename" : "AppIcon-1024.png", "scale" : "1x" },
+              { "size" : "20x20", "idiom" : "iphone", "filename" : "AppIcon20x20@2x.png", "scale" : "2x" },
+              { "size" : "20x20", "idiom" : "iphone", "filename" : "AppIcon20x20@3x.png", "scale" : "3x" },
+              { "size" : "29x29", "idiom" : "iphone", "filename" : "AppIcon29x29@2x.png", "scale" : "2x" },
+              { "size" : "29x29", "idiom" : "iphone", "filename" : "AppIcon29x29@3x.png", "scale" : "3x" },
+              { "size" : "40x40", "idiom" : "iphone", "filename" : "AppIcon40x40@2x.png", "scale" : "2x" },
+              { "size" : "40x40", "idiom" : "iphone", "filename" : "AppIcon40x40@3x.png", "scale" : "3x" },
+              { "size" : "60x60", "idiom" : "iphone", "filename" : "AppIcon60x60@2x.png", "scale" : "2x" },
+              { "size" : "60x60", "idiom" : "iphone", "filename" : "AppIcon60x60@3x.png", "scale" : "3x" },
+              { "size" : "20x20", "idiom" : "ipad", "filename" : "AppIcon20x20~ipad.png", "scale" : "1x" },
+              { "size" : "20x20", "idiom" : "ipad", "filename" : "AppIcon20x20@2x~ipad.png", "scale" : "2x" },
+              { "size" : "29x29", "idiom" : "ipad", "filename" : "AppIcon29x29~ipad.png", "scale" : "1x" },
+              { "size" : "29x29", "idiom" : "ipad", "filename" : "AppIcon29x29@2x~ipad.png", "scale" : "2x" },
+              { "size" : "40x40", "idiom" : "ipad", "filename" : "AppIcon40x40~ipad.png", "scale" : "1x" },
+              { "size" : "40x40", "idiom" : "ipad", "filename" : "AppIcon40x40@2x~ipad.png", "scale" : "2x" },
+              { "size" : "76x76", "idiom" : "ipad", "filename" : "AppIcon76x76~ipad.png", "scale" : "1x" },
+              { "size" : "76x76", "idiom" : "ipad", "filename" : "AppIcon76x76@2x~ipad.png", "scale" : "2x" },
+              { "size" : "83.5x83.5", "idiom" : "ipad", "filename" : "AppIcon83.5x83.5@2x~ipad.png", "scale" : "2x" }
             ],
             "info" : {
               "version" : 1,
@@ -100,11 +93,9 @@ jobs:
           }
           EOF
 
-          echo "Compiling Asset Catalog with actool..."
           xcrun actool $RUNNER_TEMP/AppIcon.xcassets --compile "$APP_PATH" --platform iphoneos --minimum-deployment-target 14.0 --app-icon AppIcon --output-partial-info-plist $RUNNER_TEMP/partial_info.plist
-          cp BuildScripts/AppIcon1024.png "$APP_PATH/AppIcon-1024.png"
 
-          # 2. Re-sign all Frameworks
+          # 3. Re-sign all Frameworks
           if [ -d "$APP_PATH/Frameworks" ]; then
             for f in "$APP_PATH"/Frameworks/*; do
               if [ -d "$f" ] || [ -f "$f" ]; then
@@ -113,15 +104,15 @@ jobs:
             done
           fi
 
-          # 3. Re-sign App Bundle
+          # 4. Re-sign App Bundle
           codesign --keychain $KEYCHAIN_PATH -f -s "$IDENTITY" --timestamp "$APP_PATH"
           echo "Signature Verification:"
           codesign -dv --verbose=4 "$APP_PATH"
 
-          # 4. Repackage IPA
+          # 5. Repackage IPA
           rm -f BuildScripts/DracoOnlineWorld.ipa
           (cd $TMP_UNPACK && zip -q -r "$GITHUB_WORKSPACE/BuildScripts/DracoOnlineWorld.ipa" .)
-          echo "Re-signed Xcode 26 IPA ready for TestFlight upload!"
+          echo "Re-signed Xcode 26 IPA with full icon suite ready for TestFlight upload!"
 
       - name: Upload IPA to TestFlight
         run: |
