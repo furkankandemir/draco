@@ -15,12 +15,45 @@ jobs:
         with:
           lfs: true
 
-      - name: Setup App Store Connect Private Key
+      - name: Setup App Store Connect Private Key & Keychain
         run: |
           mkdir -p ~/.appstoreconnect/private_keys
           mkdir -p ~/.private_keys
           cp BuildScripts/AuthKey_7B3D9LQ8HH.p8 ~/.appstoreconnect/private_keys/AuthKey_7B3D9LQ8HH.p8
           cp BuildScripts/AuthKey_7B3D9LQ8HH.p8 ~/.private_keys/AuthKey_7B3D9LQ8HH.p8
+
+          KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain
+          security create-keychain -p "" $KEYCHAIN_PATH
+          security default-keychain -s $KEYCHAIN_PATH
+          security unlock-keychain -p "" $KEYCHAIN_PATH
+          security import BuildScripts/Draco_Distribution.p12 -k $KEYCHAIN_PATH -P "Draco2026!" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" $KEYCHAIN_PATH
+
+      - name: Re-sign IPA with Apple Distribution Certificate
+        run: |
+          echo "Extracting IPA..."
+          TMP_UNPACK=$RUNNER_TEMP/ipa_unpack
+          mkdir -p $TMP_UNPACK
+          unzip -q BuildScripts/DracoOnlineWorld.ipa -d $TMP_UNPACK
+
+          APP_PATH=$(find $TMP_UNPACK/Payload -name "*.app" | head -n 1)
+          echo "Signing App bundle: $APP_PATH"
+
+          if [ -d "$APP_PATH/Frameworks" ]; then
+            for f in "$APP_PATH"/Frameworks/*; do
+              if [ -d "$f" ] || [ -f "$f" ]; then
+                codesign -f -s "Apple Distribution: Furkan KANDEMIR (XZYN89GYCH)" --timestamp "$f" 2>/dev/null || true
+              fi
+            done
+          fi
+
+          codesign -f -s "Apple Distribution: Furkan KANDEMIR (XZYN89GYCH)" --timestamp "$APP_PATH"
+          echo "Verification:"
+          codesign -dv --verbose=4 "$APP_PATH"
+
+          rm -f BuildScripts/DracoOnlineWorld.ipa
+          (cd $TMP_UNPACK && zip -q -r "$GITHUB_WORKSPACE/BuildScripts/DracoOnlineWorld.ipa" .)
+          echo "Re-signed IPA successfully created!"
 
       - name: Upload IPA to TestFlight
         run: |
