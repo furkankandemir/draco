@@ -182,6 +182,11 @@ namespace EntropyOnline.Network.KO
                 return;
             }
 
+#if UNITY_EDITOR
+            serverIP = "127.0.0.1";
+            serverPort = 15001;
+            _ = configUrl;
+#else
             // Dinamik server.txt yapılandırmasını internetten oku (hata durumunda yerel serverIP kullanılır)
             if (!string.IsNullOrEmpty(configUrl))
             {
@@ -203,6 +208,7 @@ namespace EntropyOnline.Network.KO
                     // İnternet veya okuma hatasında yerel serverIP kullanılır
                 }
             }
+#endif
 
             try
             {

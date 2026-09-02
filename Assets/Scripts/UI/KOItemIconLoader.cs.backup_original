@@ -238,20 +238,9 @@ namespace EntropyOnline.UI
                 return cached;
 
             string baseName = GetSkillIconFileName(dwSkillID);
-            Texture2D tex = null;
-            if (!string.IsNullOrEmpty(baseName))
-            {
-                tex = LoadTextureFromResources(baseName);
-            }
+            if (string.IsNullOrEmpty(baseName)) return null;
 
-            if (tex == null)
-            {
-                int part2 = dwSkillID / 100;
-                tex = LoadTextureFromResources($"skillicon_00_{part2}")
-                   ?? LoadTextureFromResources($"skillicon_00_{dwSkillID}")
-                   ?? LoadTextureFromResources($"skillicon_{dwSkillID}");
-            }
-
+            Texture2D tex = LoadTextureFromResources(baseName);
             if (tex == null)
             {
                 _skillCache[dwSkillID] = null;
