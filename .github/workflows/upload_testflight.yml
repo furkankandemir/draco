@@ -55,10 +55,16 @@ jobs:
           APP_PATH=$(find $TMP_UNPACK/Payload -name "*.app" | head -n 1)
           echo "Target App Bundle: $APP_PATH"
 
-          # Update Build Number to 2 for TestFlight update
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion 2" "$APP_PATH/Info.plist"
+          # Update Build Number to 3 for TestFlight update
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion 3" "$APP_PATH/Info.plist"
           /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" "$APP_PATH/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :ITSAppUsesNonExemptEncryption false" "$APP_PATH/Info.plist"
-          echo "Updated Info.plist to Build 2 with NonExemptEncryption=false."
+          
+          # Add Local Network Privacy permission for Wi-Fi test server
+          /usr/libexec/PlistBuddy -c "Add :NSLocalNetworkUsageDescription string 'Draco Online yerel test sunucusuna baglanmak icin yerel ag erisimi gereklidir.'" "$APP_PATH/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :NSLocalNetworkUsageDescription 'Draco Online yerel test sunucusuna baglanmak icin yerel ag erisimi gereklidir.'" "$APP_PATH/Info.plist"
+          /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity dict" "$APP_PATH/Info.plist" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true" "$APP_PATH/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :NSAppTransportSecurity:NSAllowsArbitraryLoads true" "$APP_PATH/Info.plist"
+          /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsLocalNetworking bool true" "$APP_PATH/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :NSAppTransportSecurity:NSAllowsLocalNetworking true" "$APP_PATH/Info.plist"
+          echo "Updated Info.plist to Build 3 with Local Network permissions."
 
           # Patch Server IP in global-metadata.dat (12 bytes -> 12 bytes exact match)
           python3 -c '
