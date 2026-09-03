@@ -948,7 +948,7 @@ namespace KO
                 string dirPart = Path.GetDirectoryName(cleanPath)?.Replace('\\', '/') ?? "";
                 string fileBase = Path.GetFileNameWithoutExtension(cleanPath);
 
-                string[] searchDirs = {
+                string[] relSearchPaths = {
                     $"KOTextures/{cleanPath}",
                     $"KOTextures/{cleanPath.ToLowerInvariant()}",
                     $"KOTextures/fx/{cleanPath}",
@@ -959,7 +959,7 @@ namespace KO
                     $"KOTextures/fx/billboard/{fileBase.ToLowerInvariant()}"
                 };
 
-                foreach (var path in searchDirs)
+                foreach (var path in relSearchPaths)
                 {
                     tex = Resources.Load<Texture2D>(path);
                     if (tex != null) break;
