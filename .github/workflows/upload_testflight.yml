@@ -55,8 +55,8 @@ jobs:
           APP_PATH=$(find $TMP_UNPACK/Payload -name "*.app" | head -n 1)
           echo "Target App Bundle: $APP_PATH"
 
-          # Update Build Number to 15 for TestFlight update
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion 15" "$APP_PATH/Info.plist"
+          # Update Build Number to 16 for TestFlight update
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion 16" "$APP_PATH/Info.plist"
           /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" "$APP_PATH/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :ITSAppUsesNonExemptEncryption false" "$APP_PATH/Info.plist"
           
           # Add Local Network Privacy permission for Wi-Fi test server
@@ -64,7 +64,7 @@ jobs:
           /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity dict" "$APP_PATH/Info.plist" 2>/dev/null || true
           /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true" "$APP_PATH/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :NSAppTransportSecurity:NSAllowsArbitraryLoads true" "$APP_PATH/Info.plist"
           /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsLocalNetworking bool true" "$APP_PATH/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :NSAppTransportSecurity:NSAllowsLocalNetworking true" "$APP_PATH/Info.plist"
-          echo "Updated Info.plist to Build 15 with Local Network permissions."
+          echo "Updated Info.plist to Build 16 with Local Network permissions."
 
           # 1. Generate all required Apple icons automatically from single AppIcon.png
           SRC_ICON="Assets/Textures/AppIcon.png"
