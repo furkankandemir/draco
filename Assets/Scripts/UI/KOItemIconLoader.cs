@@ -247,9 +247,12 @@ namespace EntropyOnline.UI
             if (tex == null)
             {
                 int part2 = dwSkillID / 100;
+                int part1 = dwSkillID % 100;
                 tex = LoadTextureFromResources($"skillicon_00_{part2}")
+                   ?? LoadTextureFromResources($"skillicon_{part1:D2}_{part2}")
                    ?? LoadTextureFromResources($"skillicon_00_{dwSkillID}")
-                   ?? LoadTextureFromResources($"skillicon_{dwSkillID}");
+                   ?? LoadTextureFromResources($"skillicon_{dwSkillID}")
+                   ?? LoadTextureFromResources($"{dwSkillID}");
             }
 
             if (tex == null)
@@ -300,17 +303,28 @@ namespace EntropyOnline.UI
         public static void SetAssetsPath(string path) { }
         public static string GetAssetsPath() => "";
 
-        // ================================================
-        // Private
-        // ================================================
-
         private static Texture2D LoadTextureFromResources(string baseName)
         {
-            var tex = Resources.Load<Texture2D>($"KOTextures/UI/{baseName}");
-            if (tex != null) return tex;
+            if (string.IsNullOrEmpty(baseName)) return null;
 
-            tex = Resources.Load<Texture2D>($"KOTextures/DTex/{baseName}");
-            return tex;
+            string[] searchDirs = {
+                "KOTextures/UI",
+                "UI",
+                "KOTextures/DTex",
+                "KOTextures/UI_US",
+                "KOTextures/Misc",
+                "KOTextures/Item",
+                "KOTextures/ChrSelect",
+                "KOTextures/Object"
+            };
+
+            foreach (var dir in searchDirs)
+            {
+                var tex = Resources.Load<Texture2D>($"{dir}/{baseName}");
+                if (tex != null) return tex;
+            }
+
+            return null;
         }
     }
 }
