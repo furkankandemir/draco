@@ -163,7 +163,27 @@ namespace EntropyOnline.Camera
             float actualRotationSpeed = rotationSpeed * sensMultiplier;
 
             // --- Dokunmatik Giriş (Mobil) ---
-            // Tek parmakla kamera döndürme (Zoom ayarı Option panelinden yönetilir)
+            // İki parmakla yakınlaştırma/uzaklaştırma (Pinch-to-Zoom)
+            if (Touch.activeTouches.Count == 2)
+            {
+                var touch0 = Touch.activeTouches[0];
+                var touch1 = Touch.activeTouches[1];
+
+                if (touch0.phase == UnityEngine.InputSystem.TouchPhase.Moved ||
+                    touch1.phase == UnityEngine.InputSystem.TouchPhase.Moved)
+                {
+                    float currentDist = Vector2.Distance(touch0.screenPosition, touch1.screenPosition);
+                    Vector2 prevPos0 = touch0.screenPosition - touch0.delta;
+                    Vector2 prevPos1 = touch1.screenPosition - touch1.delta;
+                    float prevDist = Vector2.Distance(prevPos0, prevPos1);
+
+                    float delta = currentDist - prevDist;
+                    // Hassasiyet: 0.015f
+                    distance -= delta * 0.015f;
+                    distance = Mathf.Clamp(distance, minDistance, maxDistance);
+                }
+            }
+            else
             {
                 // Tek parmakla kamera döndürme
                 foreach (var touch in Touch.activeTouches)

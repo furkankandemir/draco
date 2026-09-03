@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
 
@@ -147,7 +147,7 @@ namespace EntropyOnline.Import
             string baseName = Path.GetFileNameWithoutExtension(normalized);
             if (string.IsNullOrEmpty(baseName)) return null;
 
-            string[] searchDirs = { "fx", "FX", "UI", "UI_US", "DTex", "Chr", "Item", "Misc", "Object", "Zones" };
+            string[] searchDirs = { "FX", "UI", "UI_US", "DTex", "Chr", "Item", "Misc", "Object", "Zones" };
 
             // 1. Try with full relative path structure (e.g. misc/river/caust00 -> KOTextures/Misc/river/caust00)
             string dirName = Path.GetDirectoryName(normalized);

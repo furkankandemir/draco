@@ -942,40 +942,28 @@ namespace KO
             // relPath'teki dizin yapısını doğrudan dene
             // Örnek: relPath = "FX/Billboard/0714blow_target0000.dxt"
             // → KOTextures/FX/Billboard/0714blow_target/0714blow_target0000
-            if (tex == null)
+            if (tex == null && relPath.Contains("/"))
             {
-                string cleanPath = relPath.Replace(".dxt", "").Replace(".DXT", "").Replace('\\', '/');
-                string dirPart = Path.GetDirectoryName(cleanPath)?.Replace('\\', '/') ?? "";
-                string fileBase = Path.GetFileNameWithoutExtension(cleanPath);
+                // relPath'ten dizin + dosya adını çıkar
+                string cleanPath = relPath.Replace(".dxt", "").Replace(".DXT", "");
+                // Önce doğrudan dene
+                tex = Resources.Load<Texture2D>($"KOTextures/{cleanPath}");
 
-                string[] searchDirs = {
-                    $"KOTextures/{cleanPath}",
-                    $"KOTextures/{cleanPath.ToLowerInvariant()}",
-                    $"KOTextures/fx/{cleanPath}",
-                    $"KOTextures/fx/{cleanPath.ToLowerInvariant()}",
-                    $"KOTextures/fx/particle/{fileBase}",
-                    $"KOTextures/fx/particle/{fileBase.ToLowerInvariant()}",
-                    $"KOTextures/fx/billboard/{fileBase}",
-                    $"KOTextures/fx/billboard/{fileBase.ToLowerInvariant()}"
-                };
+                // Yoksa lowercase dene
+                if (tex == null)
+                    tex = Resources.Load<Texture2D>($"KOTextures/{cleanPath.ToLowerInvariant()}");
 
-                foreach (var path in searchDirs)
+                // Yoksa grup dizini ekle
+                if (tex == null)
                 {
-                    tex = Resources.Load<Texture2D>(path);
-                    if (tex != null) break;
-                }
-
-                if (tex == null && !string.IsNullOrEmpty(dirPart))
-                {
+                    string dirPart = Path.GetDirectoryName(cleanPath)?.Replace('\\', '/') ?? "";
+                    string fileBase = Path.GetFileNameWithoutExtension(cleanPath);
                     string grp = fileBase;
                     if (grp.Length > 4 && int.TryParse(grp.Substring(grp.Length - 4), out _))
                         grp = grp.Substring(0, grp.Length - 4);
-
-                    if (!dirPart.EndsWith(grp, System.StringComparison.OrdinalIgnoreCase))
-                    {
-                        tex = Resources.Load<Texture2D>($"KOTextures/{dirPart}/{grp}/{fileBase}")
-                           ?? Resources.Load<Texture2D>($"KOTextures/{dirPart.ToLowerInvariant()}/{grp}/{fileBase}");
-                    }
+                    tex = Resources.Load<Texture2D>($"KOTextures/{dirPart}/{grp}/{fileBase}");
+                    if (tex == null)
+                        tex = Resources.Load<Texture2D>($"KOTextures/{dirPart.ToLowerInvariant()}/{grp}/{fileBase}");
                 }
             }
 
@@ -983,7 +971,10 @@ namespace KO
             if (tex == null)
                 tex = KOTextureProvider.Load(relPath);
 
-            _texCache[relPath] = tex; // Cache result (or null) to prevent 60fps log spam
+            if (tex != null)
+                _texCache[relPath] = tex;
+            else
+                Debug.LogWarning($"[KOFXRenderer] Texture NOT FOUND: relPath='{relPath}' baseName='{baseName}'");
 
             return tex;
         }
