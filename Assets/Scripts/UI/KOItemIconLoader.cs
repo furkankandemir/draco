@@ -178,6 +178,15 @@ namespace EntropyOnline.UI
             string baseName = GetIconFileName(dwIDIcon);
             if (string.IsNullOrEmpty(baseName)) return null;
 
+            // 1. Try direct Sprite load (Unity UI Sprites on iOS IL2CPP)
+            Sprite sp = LoadSpriteFromResources(baseName);
+            if (sp != null)
+            {
+                _cache[dwIDIcon] = sp;
+                return sp;
+            }
+
+            // 2. Fallback: Texture2D load
             Texture2D tex = LoadTextureFromResources(baseName);
             if (tex == null)
             {
@@ -238,38 +247,51 @@ namespace EntropyOnline.UI
                 return cached;
 
             string baseName = GetSkillIconFileName(dwSkillID);
-            Texture2D tex = null;
+            Sprite sp = null;
             if (!string.IsNullOrEmpty(baseName))
             {
-                tex = LoadTextureFromResources(baseName);
+                sp = LoadSpriteFromResources(baseName);
             }
 
-            if (tex == null)
+            if (sp == null)
             {
                 int part2 = dwSkillID / 100;
                 int part1 = dwSkillID % 100;
-                tex = LoadTextureFromResources($"skillicon_00_{part2}")
-                   ?? LoadTextureFromResources($"skillicon_{part1:D2}_{part2}")
-                   ?? LoadTextureFromResources($"skillicon_00_{dwSkillID}")
-                   ?? LoadTextureFromResources($"skillicon_{dwSkillID}")
-                   ?? LoadTextureFromResources($"{dwSkillID}");
+                sp = LoadSpriteFromResources($"skillicon_00_{part2}")
+                  ?? LoadSpriteFromResources($"skillicon_{part1:D2}_{part2}")
+                  ?? LoadSpriteFromResources($"skillicon_00_{dwSkillID}")
+                  ?? LoadSpriteFromResources($"skillicon_{dwSkillID}")
+                  ?? LoadSpriteFromResources($"{dwSkillID}");
             }
 
-            if (tex == null)
+            if (sp == null)
             {
-                _skillCache[dwSkillID] = null;
-                return null;
+                // Fallback: Try Texture2D
+                Texture2D tex = !string.IsNullOrEmpty(baseName) ? LoadTextureFromResources(baseName) : null;
+                if (tex == null)
+                {
+                    int part2 = dwSkillID / 100;
+                    int part1 = dwSkillID % 100;
+                    tex = LoadTextureFromResources($"skillicon_00_{part2}")
+                       ?? LoadTextureFromResources($"skillicon_{part1:D2}_{part2}")
+                       ?? LoadTextureFromResources($"skillicon_00_{dwSkillID}")
+                       ?? LoadTextureFromResources($"skillicon_{dwSkillID}")
+                       ?? LoadTextureFromResources($"{dwSkillID}");
+                }
+
+                if (tex != null)
+                {
+                    sp = Sprite.Create(
+                        tex,
+                        new Rect(0, 0, tex.width, tex.height),
+                        new Vector2(0.5f, 0.5f),
+                        100f
+                    );
+                }
             }
 
-            var sprite = Sprite.Create(
-                tex,
-                new Rect(0, 0, tex.width, tex.height),
-                new Vector2(0.5f, 0.5f),
-                100f
-            );
-
-            _skillCache[dwSkillID] = sprite;
-            return sprite;
+            _skillCache[dwSkillID] = sp;
+            return sp;
         }
 
         // ================================================
@@ -283,6 +305,13 @@ namespace EntropyOnline.UI
         {
             if (_enigmaIconLoaded) return _enigmaIconCache;
             _enigmaIconLoaded = true;
+
+            Sprite sp = LoadSpriteFromResources("skillicon_enigma");
+            if (sp != null)
+            {
+                _enigmaIconCache = sp;
+                return _enigmaIconCache;
+            }
 
             Texture2D tex = LoadTextureFromResources("skillicon_enigma");
             if (tex == null) return null;
@@ -302,6 +331,30 @@ namespace EntropyOnline.UI
         // ================================================
         public static void SetAssetsPath(string path) { }
         public static string GetAssetsPath() => "";
+
+        private static Sprite LoadSpriteFromResources(string baseName)
+        {
+            if (string.IsNullOrEmpty(baseName)) return null;
+
+            string[] searchDirs = {
+                "KOTextures/UI",
+                "UI",
+                "KOTextures/DTex",
+                "KOTextures/UI_US",
+                "KOTextures/Misc",
+                "KOTextures/Item",
+                "KOTextures/ChrSelect",
+                "KOTextures/Object"
+            };
+
+            foreach (var dir in searchDirs)
+            {
+                var sp = Resources.Load<Sprite>($"{dir}/{baseName}");
+                if (sp != null) return sp;
+            }
+
+            return null;
+        }
 
         private static Texture2D LoadTextureFromResources(string baseName)
         {
