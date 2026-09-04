@@ -1,4 +1,4 @@
-﻿using UnityEngine;
+using UnityEngine;
 
 namespace EntropyOnline.Core
 {
@@ -386,6 +386,13 @@ namespace EntropyOnline.Core
             
             // Ekran uyumama (idle sırasında ekran kararmasın)
             Screen.sleepTimeout = SleepTimeout.NeverSleep;
+
+            // Ekran yönü: Yalnızca yatay (Landscape) modda çalışmaya zorla
+            Screen.orientation = ScreenOrientation.AutoRotation;
+            Screen.autorotateToPortrait = false;
+            Screen.autorotateToPortraitUpsideDown = false;
+            Screen.autorotateToLandscapeLeft = true;
+            Screen.autorotateToLandscapeRight = true;
 
             // C++ birebir: GameProcedure::Init() — tüm prosedürler başlangıçta oluşturulur
             // cpp:198-213 — s_pProcLogIn, s_pProcCharacterSelect, s_pProcCharacterCreate, ...

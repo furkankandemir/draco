@@ -178,7 +178,27 @@ namespace EntropyOnline.UI
             string baseName = GetIconFileName(dwIDIcon);
             if (string.IsNullOrEmpty(baseName)) return null;
 
-            // 1. Try direct Sprite load (Unity UI Sprites on iOS IL2CPP)
+            // 1. Texture2D yükle ve C++ CN3UIIcon birebir 45x45 crop uygula
+            Texture2D tex = LoadTextureFromResources(baseName);
+            if (tex != null)
+            {
+                int iconSize = 45;
+                int cropW = Mathf.Min(iconSize, tex.width);
+                int cropH = Mathf.Min(iconSize, tex.height);
+                int cropY = Mathf.Max(0, tex.height - cropH);
+
+                var sprite = Sprite.Create(
+                    tex,
+                    new Rect(0, cropY, cropW, cropH),
+                    new Vector2(0.5f, 0.5f),
+                    100f
+                );
+
+                _cache[dwIDIcon] = sprite;
+                return sprite;
+            }
+
+            // 2. Fallback: Direct Sprite load
             Sprite sp = LoadSpriteFromResources(baseName);
             if (sp != null)
             {
@@ -186,29 +206,8 @@ namespace EntropyOnline.UI
                 return sp;
             }
 
-            // 2. Fallback: Texture2D load
-            Texture2D tex = LoadTextureFromResources(baseName);
-            if (tex == null)
-            {
-                _cache[dwIDIcon] = null;
-                return null;
-            }
-
-            // C++ CN3UIIcon birebir: 45x45 crop
-            int iconSize = 45;
-            int cropW = Mathf.Min(iconSize, tex.width);
-            int cropH = Mathf.Min(iconSize, tex.height);
-            int cropY = Mathf.Max(0, tex.height - cropH);
-
-            var sprite = Sprite.Create(
-                tex,
-                new Rect(0, cropY, cropW, cropH),
-                new Vector2(0.5f, 0.5f),
-                100f
-            );
-
-            _cache[dwIDIcon] = sprite;
-            return sprite;
+            _cache[dwIDIcon] = null;
+            return null;
         }
 
         public static void ClearCache()

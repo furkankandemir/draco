@@ -1142,7 +1142,8 @@ namespace EntropyOnline.Import
             // Material'ı part'ın texture adından ara
             if (!string.IsNullOrEmpty(part.TextureFileName))
             {
-                string texBaseName = Path.GetFileNameWithoutExtension(part.TextureFileName);
+                string cleanTexPath = (part.TextureFileName ?? "").Replace('\\', '/');
+                string texBaseName = Path.GetFileNameWithoutExtension(cleanTexPath);
                 // Önce convert edilmiş texture'ı KOTextures'tan dene
                 string[] texSearchDirs = { "Chr", "Item", "ChrSelect", "Object", "DTex", "Misc" };
                 Texture2D resTex = null;
@@ -1487,7 +1488,8 @@ namespace EntropyOnline.Import
             Texture2D plugTex = null;
             if (!string.IsNullOrEmpty(plugData.TextureFileName))
             {
-                string texBaseName = Path.GetFileNameWithoutExtension(plugData.TextureFileName);
+                string cleanPlugTexPath = (plugData.TextureFileName ?? "").Replace('\\', '/');
+                string texBaseName = Path.GetFileNameWithoutExtension(cleanPlugTexPath);
                 string[] texSearchDirs = { "Chr", "Item", "ChrSelect", "Object", "DTex", "Misc" };
                 foreach (var dir in texSearchDirs)
                 {
