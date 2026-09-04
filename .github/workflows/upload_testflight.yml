@@ -51,6 +51,7 @@ jobs:
           TMP_UNPACK=$RUNNER_TEMP/ipa_unpack
           mkdir -p $TMP_UNPACK
           unzip -q BuildScripts/DracoOnlineWorld.ipa -d $TMP_UNPACK
+          rm -rf $TMP_UNPACK/iTunesArtwork*
 
           APP_PATH=$(find $TMP_UNPACK/Payload -name "*.app" | head -n 1)
           echo "Target App Bundle: $APP_PATH"
@@ -133,7 +134,8 @@ jobs:
           echo "Signature Verification:"
           codesign -dv --verbose=4 "$APP_PATH"
 
-          # 4. Repackage IPA
+          # 4. Repackage IPA (Ensure disallowed iTunesArtwork is excluded)
+          rm -rf $TMP_UNPACK/iTunesArtwork*
           rm -f BuildScripts/DracoOnlineWorld.ipa
           (cd $TMP_UNPACK && zip -q -r "$GITHUB_WORKSPACE/BuildScripts/DracoOnlineWorld.ipa" .)
           echo "Clean Xcode 26 IPA ready for TestFlight upload!"
